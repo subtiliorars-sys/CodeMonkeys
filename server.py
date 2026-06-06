@@ -23,6 +23,7 @@ import os
 import re
 import secrets
 import select
+import shlex
 import subprocess
 import tempfile
 import threading
@@ -84,13 +85,41 @@ MCP_DESC_CAP = 1024        # cap each MCP tool description fed to the model
 # no silent pushes/deploys/destruction; git reset --hard has bitten us before)
 RISKY_PATTERNS = [
     r"\bgit\s+push\b",
-    r"\bfly\s+\w+",
+    r"\bfly(?:ctl)?\s+\w+",          # `fly` and the real binary name `flyctl`
     r"\brm\s+-rf\b",
     r"\bgit\s+reset\s+--hard\b",
     r"\bgit\s+clean\b",
     r"\bgh\s+repo\s+delete\b",
     r"\bsudo\b",
 ]
+
+
+def _is_risky(cmd: str) -> bool:
+    """True if *cmd* (or any quoted/escaped form of it) matches a RISKY pattern.
+
+    Matching the raw string alone is bypassable by shell quoting and escaping:
+    bash collapses `git "push"`, `g''it push`, and `git\\ push` all to `git push`,
+    but those forms never match `\\bgit\\s+push\\b` because the intervening quote
+    or backslash breaks the regex. We additionally normalize the command with
+    shlex (which strips quotes/escapes exactly as the shell would) and match the
+    rejoined token stream, so a quoted risky verb can no longer hide from the gate.
+
+    Fail closed: a command we cannot tokenize (e.g. unbalanced quotes) is treated
+    as risky and gated rather than waved through.
+
+    Residual (documented in SECURITY.md): runtime-only constructs such as
+    variable expansion (`g=git; $g push`), command substitution (`$(echo git) push`),
+    and `eval` are resolved by bash at execution time and are not visible to static
+    matching. Those are an accepted residual risk of gating a raw shell string.
+    """
+    candidates = [cmd]
+    try:
+        # posix shlex collapses quotes/escapes: 'git "push"' -> ['git', 'push']
+        candidates.append(" ".join(shlex.split(cmd, comments=False, posix=True)))
+    except ValueError:
+        return True  # unparseable → fail closed
+    return any(re.search(pat, text)
+               for text in candidates for pat in RISKY_PATTERNS)
 
 for _d in (DATA_DIR, SESSIONS_DIR, WORKSPACE_DIR):
     os.makedirs(_d, exist_ok=True)
@@ -1942,11 +1971,9 @@ def t_bash(args, session=None):
     cmd = args["command"]
     # auto mode skips the approval gate; default/plan still gate risky commands
     if session is not None and session.get("mode") != "auto":
-        for pat in RISKY_PATTERNS:
-            if re.search(pat, cmd):
-                if not request_approval(session, cmd):
-                    return "DENIED: user rejected this command"
-                break
+        if _is_risky(cmd):
+            if not request_approval(session, cmd):
+                return "DENIED: user rejected this command"
     env = dict(os.environ)
     try:
         r = subprocess.run(["bash", "-c", cmd], cwd=WORKSPACE_DIR, env=env,
