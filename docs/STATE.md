@@ -39,9 +39,24 @@ Daystrom agent corps in `corps/`. Full overview: `README.md` +
 - Pixel-art console + live swarm view (`static/forge/swarm.html`).
 
 ## Next up (from docs/IDEATION.md)
-1. **MCP client** — unlocks GitHub/Drive/Microsoft connectors.
+1. ~~MCP client~~ ✅ **SHIPPED 2026-06-06** (branch `work/mcp-client`, not yet
+   deployed — owner deploys manually). See "MCP connectors" below.
 2. **Self-heal loop** — run → fail → fix → rerun + lint/LSP feedback.
-Then spec-first plan mode (#3) and blackboard memory (#4).
+Then spec-first plan mode (#3) and blackboard memory (#4). MCP follow-ups
+#1a OAuth (Drive/MS), #1b stdio+Node image, #1c startup auto-connect in IDEATION.
+
+## MCP connectors (v1, shipped 2026-06-06)
+- Sync Streamable-HTTP JSON-RPC client over `requests` (no new deps, no SDK,
+  remote HTTP servers only). Owner-only `/api/mcp` CRUD + ⚙ MCP panel in
+  `static/forge/`. Per-server bearer/PAT (write-only, stored on `/data`).
+  GitHub preset: `https://api.githubcopilot.com/mcp/` (owner pastes a PAT).
+- Tools merged into the commander loop as `mcp_<slug>_<tool>` (NOT given to corps
+  subagents). Red-teamed + hardened: `readOnlyHint` is a UI hint only, never
+  trusted for gating — plan mode = no MCP tools, default mode gates every MCP
+  call, auto skips; https-only (localhost http ok); slowloris/byte-capped stream;
+  ≤128 tools/session; first-writer-wins namespacing. See SECURITY.md "MCP".
+- **Owner action to use it:** open ⚙ MCP, add GitHub (preset) + paste a PAT,
+  then `fly deploy --app codemonkeys` (this is on a branch, undeployed).
 
 ## How to work this repo
 - Branch per task (`work/<topic>`); the owner runs **concurrent consoles** —
