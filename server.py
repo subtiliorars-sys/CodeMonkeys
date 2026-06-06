@@ -1964,6 +1964,74 @@ def t_bash(args, session=None):
     return out[:OUTPUT_CAP]
 
 
+_PATCH_SIZE_CAP = 512 * 1024  # 512 KB — larger than any sane diff
+
+
+def t_apply_patch(args):
+    """Apply a standard unified diff (git-style) atomically to the workspace.
+
+    The patch may touch one or more files.  Every target path is jail-checked
+    before git apply is invoked; if any path escapes the workspace nothing is
+    written and an error is returned.  /dev/null markers (new-file / delete)
+    are handled — only the real side is jail-checked.
+    """
+    patch = args.get("patch", "")
+    if not patch or not patch.strip():
+        return "ERROR: patch is empty"
+    if len(patch) > _PATCH_SIZE_CAP:
+        return f"ERROR: patch exceeds size cap ({_PATCH_SIZE_CAP} bytes)"
+
+    # --- Parse target paths from --- / +++ headers ---
+    # Standard unified diff header lines look like:
+    #   --- a/path/to/file   or   --- /dev/null
+    #   +++ b/path/to/file   or   +++ /dev/null
+    # We strip the a/ / b/ prefixes; /dev/null means new/deleted file (skip jail).
+    _ab_prefix = re.compile(r"^[ab]/")
+    target_paths = set()
+    for line in patch.splitlines():
+        if line.startswith("--- ") or line.startswith("+++ "):
+            raw = line[4:].split("\t")[0].strip()  # strip optional timestamp
+            if raw == "/dev/null":
+                continue
+            clean = _ab_prefix.sub("", raw)
+            target_paths.add(clean)
+
+    if not target_paths:
+        return "ERROR: no target file paths found in patch headers"
+
+    # --- Jail-check every path before touching the filesystem ---
+    for p in target_paths:
+        # Absolute paths are an explicit escape attempt
+        if os.path.isabs(p):
+            return f"ERROR: patch targets a path outside the workspace: {p}"
+        try:
+            _jail(p)
+        except ValueError:
+            return f"ERROR: patch targets a path outside the workspace: {p}"
+
+    # --- Apply with git apply (atomic, works even without a git repo) ---
+    patch_bytes = patch.encode()
+    try:
+        r = subprocess.run(
+            ["git", "apply", "-"],
+            input=patch_bytes,
+            capture_output=True,
+            cwd=WORKSPACE_DIR,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        return "ERROR: git apply timed out after 60s"
+    except FileNotFoundError:
+        return "ERROR: git is not installed in this environment"
+
+    if r.returncode != 0:
+        stderr = (r.stderr or b"").decode(errors="replace").strip()
+        return ("ERROR: " + stderr)[:OUTPUT_CAP]
+
+    n = len(target_paths)
+    return f"Patch applied to {n} file(s): {', '.join(sorted(target_paths))}"
+
+
 _SPEC_ARTIFACTS = ("constitution", "spec", "plan", "tasks")
 # _SLUG_RE removed (was compiled but never referenced)
 
@@ -2070,6 +2138,19 @@ TOOL_SCHEMAS = {
                       "content": {"type": "string",
                                   "description": "Full markdown content for this artifact."}},
                       "required": ["slug", "artifact", "content"]}},
+    "apply_patch": {"name": "apply_patch",
+                    "description":
+                        "Apply a standard unified diff (git-style) to one or more files in the "
+                        "workspace.  Produce a normal `git diff` / `diff -u` patch with "
+                        "workspace-relative paths (e.g. `--- a/src/foo.py` / `+++ b/src/foo.py`). "
+                        "The patch is applied atomically — either every hunk succeeds or nothing "
+                        "is written.  On failure the exact git reject reason is returned so you "
+                        "can correct the diff and retry.  Paths that escape the workspace are "
+                        "rejected before any write occurs.",
+                    "parameters": {"type": "object", "properties": {
+                        "patch": {"type": "string",
+                                  "description": "A complete unified diff string (git format)."}},
+                        "required": ["patch"]}},
 }
 
 # Daystrom frontmatter tools -> our runtime tools
@@ -2078,7 +2159,7 @@ CORPS_TOOL_MAP = {
     "Grep": ["grep"],
     "Glob": ["glob_files", "list_dir"],
     "Bash": ["bash"],
-    "Edit": ["edit_file"],
+    "Edit": ["edit_file", "apply_patch"],
     "Write": ["write_file"],
 }
 
@@ -2297,6 +2378,9 @@ def make_executor(session, allowed, agent_label=None, depth=0):
             if name == "edit_file":
                 r = t_edit_file(args)
                 return r, not r.startswith("ERROR")
+            if name == "apply_patch":
+                r = t_apply_patch(args)
+                return r, not r.startswith("ERROR")
             if name == "list_dir":
                 return t_list_dir(args), True
             if name == "glob_files":
@@ -2450,7 +2534,7 @@ MODE_GUIDANCE = {
 }
 PLAN_TOOLS = ["read_file", "list_dir", "glob_files", "grep", "spawn_agent",
               "save_spec"]
-FULL_TOOLS = ["read_file", "write_file", "edit_file", "list_dir",
+FULL_TOOLS = ["read_file", "write_file", "edit_file", "apply_patch", "list_dir",
               "glob_files", "grep", "bash", "spawn_agent"]
 
 
