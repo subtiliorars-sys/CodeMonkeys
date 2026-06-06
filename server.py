@@ -22,6 +22,7 @@ import json
 import os
 import re
 import secrets
+import select
 import subprocess
 import tempfile
 import threading
@@ -718,6 +719,19 @@ def models_settings(req: ModelSettings, _: str = Depends(verify_owner)):
 # stdio entries additionally carry "proc": Popen handle (kept alive per session).
 _MCP_RUNTIME: dict[str, dict] = {}
 
+# Per-server connect lock: serializes connect/disconnect for the same sid so
+# concurrent refresh/toggle/warmup calls cannot spawn duplicate orphan children.
+_MCP_CONNECT_LOCKS: dict[str, threading.Lock] = {}
+_MCP_CONNECT_LOCKS_LOCK = threading.Lock()  # protects the dict itself
+
+
+def _mcp_connect_lock(sid: str) -> threading.Lock:
+    """Return (creating if needed) the per-sid connect/disconnect lock."""
+    with _MCP_CONNECT_LOCKS_LOCK:
+        if sid not in _MCP_CONNECT_LOCKS:
+            _MCP_CONNECT_LOCKS[sid] = threading.Lock()
+        return _MCP_CONNECT_LOCKS[sid]
+
 
 def _mcp_slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
@@ -853,46 +867,71 @@ def _mcp_auth_header(server: dict) -> str | None:
     return None
 
 
+_STDIO_BYTE_CAP = 256 * 1024  # 256 KB hard stop on stdout bytes consumed before newline
+
+
 def _mcp_stdio_rpc(proc: "subprocess.Popen[str]", payload: dict, timeout: int) -> dict:
     """Send one JSON-RPC request over newline-delimited stdio; return the parsed response.
 
-    Applies the same wall-clock deadline + byte-cap discipline as the HTTP/SSE path.
-    On timeout, the caller is responsible for killing/cleaning the child.
+    Uses select(2) so the wall-clock deadline is enforced even when the child goes
+    silent: if select times out, we raise immediately (fail closed) so the caller can
+    kill the child.  MED-1: _STDIO_BYTE_CAP is applied to bytes consumed from the
+    pipe, not to completed lines — a no-newline flood is aborted before OOM.
     """
-    _STDIO_BYTE_CAP = 256 * 1024  # 256 KB hard stop on stdout body
-    line_out = json.dumps(payload) + "\n"
+    line_out = (json.dumps(payload) + "\n").encode()
     proc.stdin.write(line_out)
     proc.stdin.flush()
     rid = payload.get("id")
     _deadline = time.time() + timeout
     _bytes_read = 0
+    _buf = b""
+    fd = proc.stdout.fileno()
+
     while True:
-        if time.time() > _deadline:
+        remaining = _deadline - time.time()
+        if remaining <= 0:
             raise RuntimeError("MCP stdio stream deadline exceeded")
-        raw = proc.stdout.readline()
-        if not raw:
-            # EOF before we got our response — child died
+
+        # select with the wall-clock remainder — returns empty on timeout
+        ready, _, _ = select.select([proc.stdout], [], [], remaining)
+        if not ready:
+            raise RuntimeError("MCP stdio stream deadline exceeded")
+
+        # Read a chunk (non-blocking now that select said ready)
+        chunk = os.read(fd, 4096)
+        if not chunk:
+            # EOF — child closed stdout
             raise RuntimeError("MCP stdio child closed stdout unexpectedly")
-        _bytes_read += len(raw.encode() if isinstance(raw, str) else raw)
+
+        _bytes_read += len(chunk)
         if _bytes_read > _STDIO_BYTE_CAP:
             raise RuntimeError("MCP stdio stream exceeded byte cap")
-        try:
-            obj = json.loads(raw)
-        except json.JSONDecodeError:
-            continue  # skip non-JSON lines (e.g. child startup noise)
-        # Notifications and log messages have no "id" — skip them
-        if obj.get("id") != rid:
-            continue
-        if "error" in obj:
-            raise RuntimeError(f"MCP error {obj['error'].get('code')}: "
-                               f"{obj['error'].get('message')}")
-        return obj.get("result", {})
+
+        _buf += chunk
+
+        # Process all complete newline-delimited objects in the buffer
+        while b"\n" in _buf:
+            line_bytes, _buf = _buf.split(b"\n", 1)
+            raw = line_bytes.decode(errors="replace").strip()
+            if not raw:
+                continue
+            try:
+                obj = json.loads(raw)
+            except json.JSONDecodeError:
+                continue  # skip non-JSON lines (e.g. child startup noise)
+            # Notifications and log messages have no "id" — skip them
+            if obj.get("id") != rid:
+                continue
+            if "error" in obj:
+                raise RuntimeError(f"MCP error {obj['error'].get('code')}: "
+                                   f"{obj['error'].get('message')}")
+            return obj.get("result", {})
 
 
 def _mcp_stdio_notify(proc: "subprocess.Popen[str]", payload: dict):
     """Send a JSON-RPC notification (no id) over stdio; fire-and-forget."""
     try:
-        proc.stdin.write(json.dumps(payload) + "\n")
+        proc.stdin.write((json.dumps(payload) + "\n").encode())
         proc.stdin.flush()
     except Exception:
         pass
@@ -1001,34 +1040,86 @@ def _mcp_connect(server: dict):
     Dispatches on server.get("transport","http"):
       "http"  — exactly the existing HTTP/SSE path (unchanged).
       "stdio" — spawns the child process ONCE, keeps it alive in _MCP_RUNTIME[sid]["proc"].
+
+    MED-2: serialized per-sid via _mcp_connect_lock so concurrent refresh/warmup
+    calls never spawn duplicate orphan children.
     """
     sid = server["id"]
     transport = server.get("transport", "http")
-    _MCP_RUNTIME[sid] = {"session_id_header": None, "protocol_version": None,
-                         "tools": [], "status": "connecting", "error": None,
-                         "proc": None}
-    try:
-        if transport == "stdio":
-            # ---- stdio path ----
-            cmd = server.get("command", "")
-            if not cmd:
-                raise ValueError("stdio MCP server missing 'command'")
-            args_list = server.get("args", [])
-            env_extra = server.get("env", {})
-            child_env = {**os.environ, **env_extra}
-            proc = subprocess.Popen(
-                [cmd, *args_list],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=child_env,
-                cwd=WORKSPACE_DIR,
-                # Never shell=True; args is always a list
-            )
-            _MCP_RUNTIME[sid]["proc"] = proc
 
-            _connect_timeout = 30
+    with _mcp_connect_lock(sid):
+        # Before overwriting runtime state, kill any existing live child so it is
+        # never orphaned (handles the refresh/concurrent-connect race).
+        _existing = _MCP_RUNTIME.get(sid, {})
+        _existing_proc = _existing.get("proc")
+        if _existing_proc and _existing_proc.poll() is None:
+            try:
+                _existing_proc.terminate()
+                _existing_proc.wait(timeout=3)
+            except Exception:
+                try:
+                    _existing_proc.kill()
+                    _existing_proc.wait()
+                except Exception:
+                    pass
+
+        _MCP_RUNTIME[sid] = {"session_id_header": None, "protocol_version": None,
+                             "tools": [], "status": "connecting", "error": None,
+                             "proc": None}
+        try:
+            if transport == "stdio":
+                # ---- stdio path ----
+                cmd = server.get("command", "")
+                if not cmd:
+                    raise ValueError("stdio MCP server missing 'command'")
+                args_list = server.get("args", [])
+                env_extra = server.get("env", {})
+                child_env = {**os.environ, **env_extra}
+                proc = subprocess.Popen(
+                    [cmd, *args_list],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,  # HIGH-2: never accumulate stderr → no 64KB deadlock
+                    env=child_env,
+                    cwd=WORKSPACE_DIR,
+                    # Never shell=True; args is always a list
+                    # text=False: we use os.read on the raw fd in _mcp_stdio_rpc
+                )
+                _MCP_RUNTIME[sid]["proc"] = proc
+
+                _connect_timeout = 30
+                init_payload = {
+                    "jsonrpc": "2.0", "id": uuid.uuid4().hex, "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-03-26",
+                        "capabilities": {},
+                        "clientInfo": {"name": "codemonkeys", "version": "0.1"},
+                    },
+                }
+                init_result = _mcp_stdio_rpc(proc, init_payload, _connect_timeout)
+                proto = init_result.get("protocolVersion", "2025-03-26")
+                _MCP_RUNTIME[sid]["protocol_version"] = proto
+
+                _mcp_stdio_notify(proc, {"jsonrpc": "2.0",
+                                         "method": "notifications/initialized",
+                                         "params": {}})
+
+                tl_result = _mcp_stdio_rpc(proc,
+                                           {"jsonrpc": "2.0", "id": uuid.uuid4().hex,
+                                            "method": "tools/list", "params": {}},
+                                           30)
+                raw_tools = tl_result.get("tools", [])
+                _MCP_RUNTIME[sid]["tools"] = raw_tools
+                _MCP_RUNTIME[sid]["status"] = "connected"
+                _MCP_RUNTIME[sid]["error"] = None
+                return
+
+            # ---- http path (auth via _mcp_auth_header: bearer or oauth) ----
+            headers_pre = {"Content-Type": "application/json",
+                           "Accept": "application/json, text/event-stream"}
+            auth_hdr = _mcp_auth_header(server)   # raises if oauth configured but not connected
+            if auth_hdr:
+                headers_pre["Authorization"] = auth_hdr
             init_payload = {
                 "jsonrpc": "2.0", "id": uuid.uuid4().hex, "method": "initialize",
                 "params": {
@@ -1037,124 +1128,99 @@ def _mcp_connect(server: dict):
                     "clientInfo": {"name": "codemonkeys", "version": "0.1"},
                 },
             }
-            init_result = _mcp_stdio_rpc(proc, init_payload, _connect_timeout)
+            _connect_timeout = 30
+            _connect_deadline = time.time() + _connect_timeout
+            _connect_byte_cap = 256 * 1024  # 256 KB hard stop on SSE body
+            resp = requests.post(server["url"], json=init_payload,
+                                 headers=headers_pre, timeout=_connect_timeout, stream=True)
+            resp.raise_for_status()
+            session_hdr = resp.headers.get("Mcp-Session-Id")
+            ct = resp.headers.get("Content-Type", "")
+            if "text/event-stream" in ct:
+                init_result = None
+                _bytes_read = 0
+                for line in resp.iter_lines():
+                    if time.time() > _connect_deadline:
+                        raise RuntimeError("MCP connect SSE stream deadline exceeded")
+                    if isinstance(line, bytes):
+                        _bytes_read += len(line)
+                        line = line.decode()
+                    else:
+                        _bytes_read += len(line.encode())
+                    if _bytes_read > _connect_byte_cap:
+                        raise RuntimeError("MCP connect SSE stream exceeded byte cap")
+                    if not line.startswith("data:"):
+                        continue
+                    chunk = line[5:].strip()
+                    if not chunk or chunk == "[DONE]":
+                        continue
+                    try:
+                        obj = json.loads(chunk)
+                    except json.JSONDecodeError:
+                        continue
+                    if "result" in obj or "error" in obj:
+                        if "error" in obj:
+                            raise RuntimeError(f"initialize error: {obj['error']}")
+                        init_result = obj["result"]
+                        break
+                if init_result is None:
+                    raise RuntimeError("No initialize result in SSE stream")
+            else:
+                obj = resp.json()
+                if "error" in obj:
+                    raise RuntimeError(f"initialize error: {obj['error']}")
+                init_result = obj.get("result", {})
+
             proto = init_result.get("protocolVersion", "2025-03-26")
+            _MCP_RUNTIME[sid]["session_id_header"] = session_hdr
             _MCP_RUNTIME[sid]["protocol_version"] = proto
 
-            _mcp_stdio_notify(proc, {"jsonrpc": "2.0",
-                                     "method": "notifications/initialized",
-                                     "params": {}})
+            # Step 2: notifications/initialized (no response expected)
+            _mcp_notify(server, "notifications/initialized", {})
 
-            tl_result = _mcp_stdio_rpc(proc,
-                                       {"jsonrpc": "2.0", "id": uuid.uuid4().hex,
-                                        "method": "tools/list", "params": {}},
-                                       30)
+            # Step 3: tools/list
+            tl_result = _mcp_rpc(server, "tools/list", {}, timeout=30)
             raw_tools = tl_result.get("tools", [])
             _MCP_RUNTIME[sid]["tools"] = raw_tools
             _MCP_RUNTIME[sid]["status"] = "connected"
             _MCP_RUNTIME[sid]["error"] = None
-            return
-
-        # ---- http path ----
-        headers_pre = {"Content-Type": "application/json",
-                       "Accept": "application/json, text/event-stream"}
-        auth_hdr = _mcp_auth_header(server)   # raises RuntimeError if oauth not connected
-        if auth_hdr:
-            headers_pre["Authorization"] = auth_hdr
-        init_payload = {
-            "jsonrpc": "2.0", "id": uuid.uuid4().hex, "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-03-26",
-                "capabilities": {},
-                "clientInfo": {"name": "codemonkeys", "version": "0.1"},
-            },
-        }
-        _connect_timeout = 30
-        _connect_deadline = time.time() + _connect_timeout
-        _connect_byte_cap = 256 * 1024  # 256 KB hard stop on SSE body
-        resp = requests.post(server["url"], json=init_payload,
-                             headers=headers_pre, timeout=_connect_timeout, stream=True)
-        resp.raise_for_status()
-        session_hdr = resp.headers.get("Mcp-Session-Id")
-        ct = resp.headers.get("Content-Type", "")
-        if "text/event-stream" in ct:
-            init_result = None
-            _bytes_read = 0
-            for line in resp.iter_lines():
-                if time.time() > _connect_deadline:
-                    raise RuntimeError("MCP connect SSE stream deadline exceeded")
-                if isinstance(line, bytes):
-                    _bytes_read += len(line)
-                    line = line.decode()
-                else:
-                    _bytes_read += len(line.encode())
-                if _bytes_read > _connect_byte_cap:
-                    raise RuntimeError("MCP connect SSE stream exceeded byte cap")
-                if not line.startswith("data:"):
-                    continue
-                chunk = line[5:].strip()
-                if not chunk or chunk == "[DONE]":
-                    continue
+        except Exception as exc:
+            _MCP_RUNTIME[sid]["status"] = "error"
+            _MCP_RUNTIME[sid]["error"] = str(exc)
+            _MCP_RUNTIME[sid]["tools"] = []
+            # If a stdio child was spawned but init failed, kill and reap it now
+            _proc = _MCP_RUNTIME[sid].get("proc")
+            if _proc and _proc.poll() is None:
                 try:
-                    obj = json.loads(chunk)
-                except json.JSONDecodeError:
-                    continue
-                if "result" in obj or "error" in obj:
-                    if "error" in obj:
-                        raise RuntimeError(f"initialize error: {obj['error']}")
-                    init_result = obj["result"]
-                    break
-            if init_result is None:
-                raise RuntimeError("No initialize result in SSE stream")
-        else:
-            obj = resp.json()
-            if "error" in obj:
-                raise RuntimeError(f"initialize error: {obj['error']}")
-            init_result = obj.get("result", {})
-
-        proto = init_result.get("protocolVersion", "2025-03-26")
-        _MCP_RUNTIME[sid]["session_id_header"] = session_hdr
-        _MCP_RUNTIME[sid]["protocol_version"] = proto
-
-        # Step 2: notifications/initialized (no response expected)
-        _mcp_notify(server, "notifications/initialized", {})
-
-        # Step 3: tools/list
-        tl_result = _mcp_rpc(server, "tools/list", {}, timeout=30)
-        raw_tools = tl_result.get("tools", [])
-        _MCP_RUNTIME[sid]["tools"] = raw_tools
-        _MCP_RUNTIME[sid]["status"] = "connected"
-        _MCP_RUNTIME[sid]["error"] = None
-    except Exception as exc:
-        _MCP_RUNTIME[sid]["status"] = "error"
-        _MCP_RUNTIME[sid]["error"] = str(exc)
-        _MCP_RUNTIME[sid]["tools"] = []
-        # If a stdio child was spawned but init failed, kill it now
-        _proc = _MCP_RUNTIME[sid].get("proc")
-        if _proc and _proc.poll() is None:
-            try:
-                _proc.terminate()
-                _proc.wait(timeout=3)
-            except Exception:
-                try:
-                    _proc.kill()
+                    _proc.terminate()
+                    _proc.wait(timeout=3)
                 except Exception:
-                    pass
+                    try:
+                        _proc.kill()
+                        _proc.wait()  # LOW: reap zombie after kill
+                    except Exception:
+                        pass
 
 
 def _mcp_disconnect(sid: str):
-    """Remove runtime state; for stdio servers, terminate the child process."""
-    rt = _MCP_RUNTIME.pop(sid, {})
-    proc = rt.get("proc")
-    if proc and proc.poll() is None:
-        try:
-            proc.terminate()
-            proc.wait(timeout=3)
-        except Exception:
+    """Remove runtime state; for stdio servers, terminate the child process.
+
+    MED-2: holds the per-sid connect lock so disconnect cannot race with a
+    concurrent _mcp_connect call for the same server.
+    """
+    with _mcp_connect_lock(sid):
+        rt = _MCP_RUNTIME.pop(sid, {})
+        proc = rt.get("proc")
+        if proc and proc.poll() is None:
             try:
-                proc.kill()
+                proc.terminate()
+                proc.wait(timeout=3)
             except Exception:
-                pass
+                try:
+                    proc.kill()
+                    proc.wait()  # LOW: reap zombie after kill
+                except Exception:
+                    pass
 
 
 def mcp_tool_schemas() -> dict:
