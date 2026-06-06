@@ -354,18 +354,51 @@ function renderChips() {
     (b.onclick = () => { state.files.splice(+b.dataset.i, 1); renderChips(); }));
 }
 
+let _pasteSeq = 0;
+function extFor(type) {
+  return ({ "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif",
+            "image/webp": "webp", "image/svg+xml": "svg" })[type] || "bin";
+}
+// Add a File/Blob to the composer attachments (base64), reused by picker, paste, drop.
+function addFile(f) {
+  if (!f) return;
+  const name = f.name || `pasted-${++_pasteSeq}.${extFor(f.type)}`;
+  const reader = new FileReader();
+  reader.onload = () => {
+    state.files.push({ name, content_b64: reader.result.split(",", 2)[1] || "" });
+    renderChips();
+  };
+  reader.readAsDataURL(f);
+}
+
 $("btn-attach").onclick = () => $("file-input").click();
 $("file-input").onchange = () => {
-  for (const f of $("file-input").files) {
-    const reader = new FileReader();
-    reader.onload = () => {
-      state.files.push({ name: f.name, content_b64: reader.result.split(",", 2)[1] || "" });
-      renderChips();
-    };
-    reader.readAsDataURL(f);
-  }
+  for (const f of $("file-input").files) addFile(f);
   $("file-input").value = "";
 };
+
+// Paste images/files straight from the clipboard into the prompt box.
+$("msg").addEventListener("paste", (e) => {
+  const items = (e.clipboardData || {}).items || [];
+  let took = 0;
+  for (const it of items) {
+    if (it.kind === "file") { addFile(it.getAsFile()); took++; }
+  }
+  // text falls through to the default paste; only images are intercepted
+  if (took) e.preventDefault();
+});
+
+// Drag-and-drop files anywhere on the composer.
+const _composer = document.getElementById("composer") || $("msg");
+["dragover", "dragenter"].forEach((ev) => _composer.addEventListener(ev, (e) => {
+  e.preventDefault(); _composer.classList.add("drop-active");
+}));
+["dragleave", "drop"].forEach((ev) => _composer.addEventListener(ev, (e) => {
+  e.preventDefault(); _composer.classList.remove("drop-active");
+}));
+_composer.addEventListener("drop", (e) => {
+  for (const f of (e.dataTransfer || {}).files || []) addFile(f);
+});
 
 async function send() {
   const text = $("msg").value.trim();
@@ -398,6 +431,28 @@ document.querySelectorAll(".mode-btn").forEach((b) => (b.onclick = () => {
   renderMode();
 }));
 renderMode();
+
+/* ---------------- settings dropdown ---------------- */
+function setSettingsOpen(open) {
+  $("settings-menu").classList.toggle("hidden", !open);
+  $("settings-caret").textContent = open ? "▾" : "▸";
+}
+$("btn-settings").onclick = (e) => {
+  e.stopPropagation();
+  setSettingsOpen($("settings-menu").classList.contains("hidden"));
+};
+// Clicking a menu item that opens a modal (or the swarm link) collapses the menu;
+// the passkey button keeps it open so its inline status message stays visible.
+$("settings-menu").addEventListener("click", (e) => {
+  const t = e.target.closest("a, button");
+  if (t && t.id !== "btn-passkey") setSettingsOpen(false);
+});
+// Click outside the settings area closes it.
+document.addEventListener("click", (e) => {
+  if ($("settings-menu").classList.contains("hidden")) return;
+  if (!e.target.closest("#btn-settings") && !e.target.closest("#settings-menu"))
+    setSettingsOpen(false);
+});
 
 $("btn-send").onclick = send;
 $("msg").addEventListener("keydown", (e) => {
