@@ -2782,12 +2782,26 @@ def swarm_state(_: str = Depends(verify_user)):
 
 # ----------------------------------------------------------------- static
 
-app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+
+class NoCacheStaticFiles(StaticFiles):
+    """Serve static files with Cache-Control: no-cache so browsers revalidate
+    (ETag/304 — cheap) instead of running stale JS after a deploy."""
+
+    def file_response(self, *args, **kwargs):
+        resp = super().file_response(*args, **kwargs)
+        resp.headers["Cache-Control"] = "no-cache"
+        return resp
+
+
+app.mount("/static", NoCacheStaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 
 @app.get("/")
 def root():
-    return FileResponse(os.path.join(BASE_DIR, "static", "forge", "index.html"))
+    return FileResponse(
+        os.path.join(BASE_DIR, "static", "forge", "index.html"),
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 if __name__ == "__main__":
