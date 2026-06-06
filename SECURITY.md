@@ -33,6 +33,13 @@ keep that radius away from everything else.
 - File tools are path-jailed to the workspace (realpath prefix check)
 - bash runs with cwd=workspace, 180 s timeout, output capped
 - Per-session USD budget halts the loop; subagent spawn cap 8; recursion depth 1
+- **Plan mode is read-only, end to end.** Its toolset is read/list/glob/grep +
+  `spawn_agent` + `save_spec`; it has no write_file/edit_file/bash. Subagents
+  spawned from plan mode are intersected to the read-only set, so `spawn_agent`
+  cannot be used to escalate to a write/bash-capable corps agent. The only thing
+  plan mode may write is planning artifacts via `save_spec`, which is jailed to
+  `<workspace>/.codemonkeys/specs/<slug>/<artifact>.md` (tighter than the general
+  workspace jail; realpath-checked + `O_NOFOLLOW`, slug sanitized & length-capped).
 
 ## MCP connectors
 
