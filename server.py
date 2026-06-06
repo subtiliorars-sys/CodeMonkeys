@@ -1238,7 +1238,18 @@ MODE_GUIDANCE = {
     "auto": (
         "\n\nMODE: AUTO. Full autonomy — every command runs without approval, "
         "including pushes and deploys. Be careful and deliberate; the user is "
-        "trusting you to ship. Still work on a branch for non-trivial changes."),
+        "trusting you to ship. Still work on a branch for non-trivial changes."
+        "\n\nSELF-HEAL PROTOCOL. After every change, verify before moving on: "
+        "if tests exist (pytest, npm test, etc.) run them; else run the best "
+        "available linter (ruff for Python, tsc --noEmit for TypeScript); else "
+        "do a smoke import/build. Read the full output. If it fails: make the "
+        "smallest targeted fix, then rerun the same verify command. Repeat until "
+        "green. Hard stops — do NOT continue iterating if: (a) the verify command "
+        "exits 0 (done); (b) the same failure signature appears twice in a row "
+        "(you are blocked — stop, report exactly what is failing and why, and "
+        "what you tried); (c) you have iterated 5 self-heal cycles without going "
+        "green (stop and report). Never exceed the session budget or max-turns "
+        "cap. When blocked, state the blocker plainly so the user can act."),
 }
 PLAN_TOOLS = ["read_file", "list_dir", "glob_files", "grep", "spawn_agent"]
 FULL_TOOLS = ["read_file", "write_file", "edit_file", "list_dir",
