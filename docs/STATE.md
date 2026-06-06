@@ -52,12 +52,19 @@ Daystrom agent corps in `corps/`. Full overview: `README.md` +
   doctrine in `MODE_GUIDANCE["auto"]` (caps: 5 iters / repeat-signature=blocked /
   budget). plan/default unchanged.
 
+- **Spec-first plan mode** (#3): plan mode persists Constitution/Spec/Plan/Tasks
+  to `.codemonkeys/specs/<slug>/` via the jailed `save_spec` tool; each task
+  carries a verify step. Plan mode is now read-only **end to end** (spawn_agent
+  can't escalate to a write-capable subagent).
+- **apply_patch** (#8): `git apply` unified-diff edits, atomic, every diff target
+  path jail-checked before apply. In FULL_TOOLS + corps `Edit`.
+
 ## Next up (from docs/IDEATION.md)
-1. **Spec-first plan mode** (#3) — Constitution/Spec/Plan/Tasks artifacts.
-2. **Blackboard cross-session memory** (#4) — `.codemonkeys/blackboard-<task>.md`.
-3. **apply_patch tool** (#8) — unified-diff edits without full rewrites.
-4. **Connector marketplace UI** (#9) — poll the MCP Registry, one-click add (now
+1. **Blackboard cross-session memory** (#4) — `.codemonkeys/blackboard-<task>.md`
+   with FACTS/DECISIONS/NEXT surviving session resets (S).
+2. **Connector marketplace UI** (#9) — poll the MCP Registry, one-click add (now
    that the MCP client exists). Plus **escalation-on-failure** (cheapest→pricier).
+3. **Debate-verify gate** (#7) on high-risk changes; **two-layer KB** (#10).
 
 ## MCP connectors (v1+v2, merged to main 2026-06-06)
 - Sync Streamable-HTTP JSON-RPC client over `requests` (no new deps, no SDK).
