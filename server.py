@@ -29,7 +29,8 @@ import uuid
 
 import pyotp
 import requests
-from fastapi import Depends, FastAPI, Header, HTTPException
+from enum import Enum
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -38,6 +39,14 @@ try:
     import anthropic as anthropic_sdk
 except ImportError:  # anthropic provider disabled until installed
     anthropic_sdk = None
+
+try:
+    from fido2.server import Fido2Server
+    from fido2.webauthn import (AttestedCredentialData,
+                                PublicKeyCredentialRpEntity,
+                                PublicKeyCredentialUserEntity)
+except ImportError:  # biometric login disabled until installed
+    Fido2Server = None
 
 # ----------------------------------------------------------------- config
 
@@ -180,8 +189,8 @@ def register(req: RegisterRequest):
     username = req.username.strip()
     if not re.fullmatch(r"[A-Za-z0-9_.-]{2,32}", username):
         raise HTTPException(400, "Bad username")
-    if len(req.pin) < 6:
-        raise HTTPException(400, "PIN must be at least 6 characters")
+    if len(req.pin) < 4:
+        raise HTTPException(400, "PIN must be at least 4 digits")
     with _USERS_LOCK:
         users = load_users()
         if username in users:
@@ -225,6 +234,117 @@ def login(req: LoginRequest):
 @app.get("/api/me")
 def me(username: str = Depends(verify_token)):
     return {"username": username, "role": load_users()[username]["role"]}
+
+
+# ------------------------------------------------- biometric / passkey (WebAuthn)
+# Same pattern as MeniscusMaximus: python-fido2, AttestedCredentialData stored
+# base64 in users.json. Passkey login replaces PIN+TOTP (the authenticator's
+# user-verification — fingerprint/face/device PIN — is the second factor).
+
+_webauthn_states = {}
+_RP_NAME = "CodeMonkeys"
+
+
+def _fido_clean(obj):
+    """bytes -> base64url, enums -> values, drop Nones — JSON-safe options."""
+    if isinstance(obj, bytes):
+        return base64.urlsafe_b64encode(obj).decode().rstrip("=")
+    if isinstance(obj, Enum):
+        return obj.value
+    if isinstance(obj, dict):
+        return {k: _fido_clean(v) for k, v in obj.items() if v is not None}
+    if isinstance(obj, (list, tuple)):
+        return [_fido_clean(x) for x in obj]
+    return obj
+
+
+def _fido_server(request: Request):
+    if Fido2Server is None:
+        raise HTTPException(501, "Biometric login unavailable (fido2 not installed)")
+    rp_id = request.url.hostname or "localhost"
+    return Fido2Server(PublicKeyCredentialRpEntity(id=rp_id, name=_RP_NAME))
+
+
+def _user_credentials(user_entry):
+    creds = []
+    for b64 in user_entry.get("webauthn_credentials", []):
+        try:
+            creds.append(AttestedCredentialData(base64.b64decode(b64)))
+        except Exception:
+            pass
+    return creds
+
+
+def _flat_options(data):
+    d = _fido_clean(dict(data))
+    return d.get("publicKey", d)  # tolerate either wrapped or flat shapes
+
+
+@app.post("/api/webauthn/register/begin")
+def webauthn_register_begin(request: Request, username: str = Depends(verify_token)):
+    server = _fido_server(request)
+    entity = PublicKeyCredentialUserEntity(
+        id=username.encode(), name=username, display_name=username)
+    options, state = server.register_begin(
+        entity, credentials=_user_credentials(load_users()[username]))
+    _webauthn_states[username] = state
+    return _flat_options(options)
+
+
+@app.post("/api/webauthn/register/complete")
+def webauthn_register_complete(req: dict, request: Request,
+                               username: str = Depends(verify_token)):
+    state = _webauthn_states.pop(username, None)
+    if state is None:
+        raise HTTPException(400, "Registration challenge expired — try again")
+    server = _fido_server(request)
+    try:
+        auth_data = server.register_complete(state, req)
+    except Exception as e:
+        raise HTTPException(400, f"Biometric registration failed: {e}")
+    with _USERS_LOCK:
+        users = load_users()
+        users[username].setdefault("webauthn_credentials", []).append(
+            base64.b64encode(bytes(auth_data.credential_data)).decode())
+        save_users(users)
+    return {"ok": True, "message": "Biometric credential bound to this account."}
+
+
+class WebauthnBegin(BaseModel):
+    username: str
+
+
+@app.post("/api/webauthn/login/begin")
+def webauthn_login_begin(req: WebauthnBegin, request: Request):
+    users = load_users()
+    user = users.get(req.username.strip())
+    if not user:
+        raise HTTPException(404, "User not found")
+    creds = _user_credentials(user)
+    if not creds:
+        raise HTTPException(400, "No passkey on this account — sign in with PIN, "
+                                 "then use 'Add passkey' in the sidebar")
+    server = _fido_server(request)
+    options, state = server.authenticate_begin(creds)
+    _webauthn_states[f"login_{req.username.strip()}"] = {
+        "state": state, "creds": creds}
+    return _flat_options(options)
+
+
+@app.post("/api/webauthn/login/complete")
+def webauthn_login_complete(req: dict, request: Request):
+    username = str(req.get("username", "")).strip()
+    pending = _webauthn_states.pop(f"login_{username}", None)
+    if pending is None:
+        raise HTTPException(400, "Login challenge expired — try again")
+    server = _fido_server(request)
+    response = {k: v for k, v in req.items() if k != "username"}
+    try:
+        server.authenticate_complete(pending["state"], pending["creds"], response)
+    except Exception as e:
+        raise HTTPException(401, f"Biometric verification failed: {e}")
+    role = load_users()[username]["role"]
+    return {"token": make_token(username), "username": username, "role": role}
 
 
 # ----------------------------------------------------------------- models / providers

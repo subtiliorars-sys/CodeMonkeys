@@ -55,7 +55,7 @@ fly open        # opens https://<app>.fly.dev
 
 ## 5. First login (do this immediately)
 
-1. Click **Register the Owner account** → choose username + PIN (6+ chars).
+1. Click **Register the Owner account** → choose username + PIN (4+ digits).
 2. A QR code appears. **Scan it into Google Authenticator / Aegis / 1Password
    NOW.** You cannot log in without it. (Locked out anyway? See Troubleshooting.)
 3. Click *I've scanned it — enter console*.
@@ -76,6 +76,14 @@ the key, *Save provider*, then ★ to make one the main model.
 Recommended: `gemini-flash` as main (★), `openrouter-free` enabled as t0,
 Claude Sonnet/Opus enabled if you have credits (subagent tiers will use them
 only where doctrine demands).
+
+## 6b. Optional: add a passkey / biometric login
+
+Once logged in, sidebar → **👆 Add passkey / biometric** → approve on your device
+(fingerprint, face, or device PIN). After that, the login screen's
+**Sign in with biometrics** button works on that device: enter username, tap,
+done — no PIN or authenticator code needed (the device's biometric check is the
+second factor). Register a passkey on each device you use.
 
 ## 7. Clone a repo and code
 

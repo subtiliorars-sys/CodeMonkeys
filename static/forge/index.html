@@ -53,9 +53,10 @@
     </div>
     <div class="space-y-3">
       <input id="lg-user" class="input w-full rounded px-3 py-2 text-sm" placeholder="username" autocomplete="username">
-      <input id="lg-pin" type="password" class="input w-full rounded px-3 py-2 text-sm" placeholder="PIN (min 6 chars)">
+      <input id="lg-pin" type="password" class="input w-full rounded px-3 py-2 text-sm" placeholder="PIN (min 4 digits)" inputmode="numeric">
       <input id="lg-mfa" class="input w-full rounded px-3 py-2 text-sm" placeholder="6-digit authenticator code" inputmode="numeric">
       <button id="lg-submit" class="gold-btn w-full rounded py-2 text-sm">Log in</button>
+      <button id="lg-bio" class="w-full rounded py-2 text-sm gold-border text-[var(--gold-bright)] hover:bg-yellow-900/20">👆 Sign in with biometrics / passkey</button>
       <button id="lg-toggle" class="w-full text-xs text-slate-400 hover:text-slate-200">First time? Register the Owner account</button>
       <p id="lg-msg" class="text-xs text-red-400 min-h-[1rem]"></p>
     </div>
@@ -90,6 +91,8 @@
     </div>
     <div class="p-3 border-t border-yellow-900/40 text-xs space-y-2">
       <button id="btn-models" class="w-full text-left text-slate-400 hover:text-[var(--gold)]">⚙ Models &amp; keys</button>
+      <button id="btn-passkey" class="w-full text-left text-slate-400 hover:text-[var(--gold)]">👆 Add passkey / biometric</button>
+      <p id="passkey-msg" class="text-[.65rem] text-slate-500"></p>
       <a href="/static/forge/swarm.html" class="block text-slate-400 hover:text-[var(--gold)]">🐵 Swarm view</a>
       <button id="btn-logout" class="w-full text-left text-slate-600 hover:text-slate-300">⏻ <span id="who"></span> · log out</button>
     </div>

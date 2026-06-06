@@ -75,6 +75,59 @@ $("lg-submit").onclick = async () => {
 $("lg-continue").onclick = () => showMain();
 $("btn-logout").onclick = logout;
 
+/* ---------------- biometrics / passkey (WebAuthn) ---------------- */
+
+const b64uToBuf = (s) => {
+  const b64 = s.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (s.length % 4)) % 4);
+  return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer;
+};
+const bufToB64u = (buf) =>
+  btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+
+$("lg-bio").onclick = async () => {
+  $("lg-msg").textContent = "";
+  const u = $("lg-user").value.trim();
+  if (!u) { $("lg-msg").textContent = "Enter your username first, then tap the biometric button."; return; }
+  if (!navigator.credentials) { $("lg-msg").textContent = "This browser doesn't support passkeys."; return; }
+  try {
+    const options = await api("/api/webauthn/login/begin", "POST", { username: u });
+    options.challenge = b64uToBuf(options.challenge);
+    (options.allowCredentials || []).forEach((c) => (c.id = b64uToBuf(c.id)));
+    const cred = await navigator.credentials.get({ publicKey: options });
+    const d = await api("/api/webauthn/login/complete", "POST", {
+      username: u, id: cred.id, rawId: bufToB64u(cred.rawId), type: cred.type,
+      response: {
+        clientDataJSON: bufToB64u(cred.response.clientDataJSON),
+        authenticatorData: bufToB64u(cred.response.authenticatorData),
+        signature: bufToB64u(cred.response.signature),
+        userHandle: cred.response.userHandle ? bufToB64u(cred.response.userHandle) : null,
+      },
+    });
+    saveAuth(d); showMain();
+  } catch (e) { $("lg-msg").textContent = "Biometric login failed: " + e.message; }
+};
+
+$("btn-passkey").onclick = async () => {
+  const msg = $("passkey-msg");
+  msg.textContent = "Waiting for your device…";
+  try {
+    const options = await api("/api/webauthn/register/begin", "POST", {});
+    options.challenge = b64uToBuf(options.challenge);
+    options.user.id = b64uToBuf(options.user.id);
+    (options.excludeCredentials || []).forEach((c) => (c.id = b64uToBuf(c.id)));
+    const cred = await navigator.credentials.create({ publicKey: options });
+    const r = await api("/api/webauthn/register/complete", "POST", {
+      id: cred.id, rawId: bufToB64u(cred.rawId), type: cred.type,
+      response: {
+        clientDataJSON: bufToB64u(cred.response.clientDataJSON),
+        attestationObject: bufToB64u(cred.response.attestationObject),
+      },
+    });
+    msg.textContent = "✓ " + (r.message || "Passkey added.");
+  } catch (e) { msg.textContent = "✗ " + e.message; }
+};
+
 /* ---------------- sessions / repos ---------------- */
 
 async function refreshSessions() {
