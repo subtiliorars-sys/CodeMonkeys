@@ -349,57 +349,97 @@ def webauthn_login_complete(req: dict, request: Request):
 
 # ----------------------------------------------------------------- models / providers
 
-DEFAULT_MODELS = {
-    "main": "gemini-flash",
-    "providers": [
-        # tier: t0 = cheapest recon … t3 = strongest. Costs are USD per 1M
-        # tokens, editable in the UI; they only affect spend estimates.
-        {"name": "gemini-flash", "kind": "openai",
-         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-         "model": "gemini-2.5-flash", "api_key": "", "tier": "t0",
-         "input_cost_per_m": 0.30, "output_cost_per_m": 2.50, "enabled": False},
-        {"name": "openrouter-free", "kind": "openai",
-         "base_url": "https://openrouter.ai/api/v1",
-         "model": "qwen/qwen3-coder:free", "api_key": "", "tier": "t0",
-         "input_cost_per_m": 0.0, "output_cost_per_m": 0.0, "enabled": False},
-        {"name": "claude-haiku", "kind": "anthropic", "base_url": "",
-         "model": "claude-haiku-4-5", "api_key": "", "tier": "t0",
-         "input_cost_per_m": 1.0, "output_cost_per_m": 5.0, "enabled": False},
-        {"name": "claude-sonnet", "kind": "anthropic", "base_url": "",
-         "model": "claude-sonnet-4-6", "api_key": "", "tier": "t1",
-         "input_cost_per_m": 3.0, "output_cost_per_m": 15.0, "enabled": False},
-        {"name": "gemini-pro", "kind": "openai",
-         "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
-         "model": "gemini-2.5-pro", "api_key": "", "tier": "t2",
-         "input_cost_per_m": 1.25, "output_cost_per_m": 10.0, "enabled": False},
-        {"name": "claude-opus", "kind": "anthropic", "base_url": "",
-         "model": "claude-opus-4-8", "api_key": "", "tier": "t3",
-         "input_cost_per_m": 5.0, "output_cost_per_m": 25.0, "enabled": False},
-    ],
+# Wayfinder/OpenClaw model: ONE key per provider, pick ANY model from it.
+# A provider = an endpoint + a key + the model you've selected + a menu of
+# known models you can switch to without re-entering the key. `auto` flags it
+# for the cheapest-first cascade. Costs are USD/1M tokens (spend estimates).
+GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
+
+DEFAULT_PROVIDERS = {
+    "gemini": {"label": "Google Gemini", "kind": "openai", "base_url": GEMINI_BASE,
+               "key": "", "model": "gemini-2.5-flash",
+               "models": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
+               "in": 0.30, "out": 2.50, "auto": True},
+    "openrouter": {"label": "OpenRouter", "kind": "openai",
+                   "base_url": "https://openrouter.ai/api/v1", "key": "",
+                   "model": "qwen/qwen3-coder:free",
+                   "models": ["qwen/qwen3-coder:free", "deepseek/deepseek-r1:free",
+                              "openai/gpt-oss-120b:free", "anthropic/claude-sonnet-4.6",
+                              "google/gemini-2.5-flash"],
+                   "in": 0.0, "out": 0.0, "auto": True},
+    "anthropic": {"label": "Anthropic Claude", "kind": "anthropic", "base_url": "",
+                  "key": "", "model": "claude-sonnet-4-6",
+                  "models": ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-8"],
+                  "in": 3.0, "out": 15.0, "auto": False},
+    "openai": {"label": "OpenAI", "kind": "openai", "base_url": "https://api.openai.com/v1",
+               "key": "", "model": "gpt-4o-mini",
+               "models": ["gpt-4o-mini", "gpt-4o", "o4-mini"],
+               "in": 0.15, "out": 0.60, "auto": False},
+    "deepseek": {"label": "DeepSeek", "kind": "openai", "base_url": "https://api.deepseek.com/v1",
+                 "key": "", "model": "deepseek-chat",
+                 "models": ["deepseek-chat", "deepseek-reasoner"],
+                 "in": 0.28, "out": 0.42, "auto": False},
+    "xai": {"label": "xAI Grok", "kind": "openai", "base_url": "https://api.x.ai/v1",
+            "key": "", "model": "grok-4-fast",
+            "models": ["grok-4-fast", "grok-4"], "in": 0.20, "out": 0.50, "auto": False},
 }
+_GEMINI_BASES = {GEMINI_BASE}
 
 
-_KNOWN_BASE_URLS = {p["name"]: p["base_url"] for p in DEFAULT_MODELS["providers"]}
+def _new_cfg():
+    return {"selected": "auto", "auto_cheapest": True,
+            "providers": json.loads(json.dumps(DEFAULT_PROVIDERS))}
+
+
+def _migrate_old(cfg):
+    """Convert the old flat providers-list shape (gemini-flash, gemini-pro, …)
+    into one-key-per-provider, preserving any keys already entered."""
+    new = _new_cfg()
+    old_main = cfg.get("main", "")
+    for p in cfg.get("providers", []):
+        base, kind = p.get("base_url", ""), p.get("kind", "openai")
+        if base in _GEMINI_BASES:
+            pid = "gemini"
+        elif "openrouter" in base:
+            pid = "openrouter"
+        elif kind == "anthropic":
+            pid = "anthropic"
+        elif "openai.com" in base:
+            pid = "openai"
+        elif "deepseek" in base:
+            pid = "deepseek"
+        elif "x.ai" in base:
+            pid = "xai"
+        else:
+            pid = p.get("name", "custom")
+            new["providers"][pid] = {"label": pid, "kind": kind, "base_url": base,
+                                     "key": "", "model": p.get("model", ""),
+                                     "models": [p.get("model", "")],
+                                     "in": p.get("input_cost_per_m", 0),
+                                     "out": p.get("output_cost_per_m", 0), "auto": False}
+        prov = new["providers"][pid]
+        if p.get("api_key"):
+            prov["key"] = p["api_key"]
+            prov["auto"] = True
+        if p.get("name") == old_main and p.get("model"):
+            prov["model"] = p["model"]
+            new["selected"] = pid
+    return new
 
 
 def load_models():
     with _MODELS_LOCK:
         cfg = _load_json(MODELS_FILE, None)
         if cfg is None:
-            cfg = json.loads(json.dumps(DEFAULT_MODELS))
+            cfg = _new_cfg()
             _save_json(MODELS_FILE, cfg)
             return cfg
-        # auto-heal: an openai provider with an empty base_url is unusable
-        # (requests would hit '/chat/completions' with no scheme). If we know
-        # the canonical URL for that provider name, fill it back in.
-        healed = False
-        for p in cfg["providers"]:
-            if (p.get("kind") == "openai" and not p.get("base_url")
-                    and _KNOWN_BASE_URLS.get(p["name"])):
-                p["base_url"] = _KNOWN_BASE_URLS[p["name"]]
-                healed = True
-        if healed:
+        if "providers" in cfg and isinstance(cfg["providers"], list):  # old shape
+            cfg = _migrate_old(cfg)
             _save_json(MODELS_FILE, cfg)
+        # ensure built-ins exist (so new presets appear without wiping keys)
+        for pid, base in DEFAULT_PROVIDERS.items():
+            cfg["providers"].setdefault(pid, json.loads(json.dumps(base)))
         return cfg
 
 
@@ -408,55 +448,79 @@ def save_models(cfg):
         _save_json(MODELS_FILE, cfg)
 
 
-def get_provider(cfg, name):
-    for p in cfg["providers"]:
-        if p["name"] == name:
-            return p
-    return None
+def _resolve(prov):
+    """Provider entry -> dict the chat layer consumes."""
+    return {"name": prov.get("label", "?"), "kind": prov["kind"],
+            "base_url": prov.get("base_url", ""), "model": prov.get("model", ""),
+            "api_key": prov.get("key", ""),
+            "input_cost_per_m": prov.get("in", 0), "output_cost_per_m": prov.get("out", 0)}
+
+
+def _usable(cfg):
+    """Providers with a key, sorted cheapest-first by selected-model output cost."""
+    items = [(pid, p) for pid, p in cfg["providers"].items() if p.get("key")]
+    return sorted(items, key=lambda kv: kv[1].get("out", 1e9))
 
 
 def main_provider(cfg):
-    p = get_provider(cfg, cfg.get("main", ""))
-    if p and p.get("enabled") and p.get("api_key"):
-        return p
-    for p in cfg["providers"]:  # fall back to any enabled provider
-        if p.get("enabled") and p.get("api_key"):
-            return p
-    return None
+    usable = _usable(cfg)
+    if not usable:
+        return None
+    sel = cfg.get("selected", "auto")
+    if sel != "auto" and not cfg.get("auto_cheapest"):
+        prov = cfg["providers"].get(sel)
+        if prov and prov.get("key"):
+            return _resolve(prov)
+    # auto / auto_cheapest: cheapest provider flagged for the cascade, else cheapest
+    auto = [p for pid, p in usable if p.get("auto")]
+    return _resolve(auto[0] if auto else usable[0][1])
 
 
 def provider_for_tier(cfg, tier):
-    """Cost-governor routing: enabled provider matching tier, else nearest."""
-    enabled = [p for p in cfg["providers"] if p.get("enabled") and p.get("api_key")]
-    if not enabled:
+    """Cost governor: order usable providers by cost, pick by tier position."""
+    usable = _usable(cfg)
+    if not usable:
         return None
-    exact = [p for p in enabled if p.get("tier") == tier]
-    if exact:
-        return exact[0]
-    order = ["t0", "t1", "t2", "t3"]
-    want = order.index(tier) if tier in order else 1
-    return sorted(enabled, key=lambda p: abs(order.index(p.get("tier", "t1")) - want))[0]
+    provs = [p for _, p in usable]
+    idx = {"t0": 0, "t1": len(provs) // 3, "t2": (2 * len(provs)) // 3,
+           "t3": len(provs) - 1}.get(tier, len(provs) // 2)
+    return _resolve(provs[min(idx, len(provs) - 1)])
 
 
 class ProviderUpsert(BaseModel):
-    name: str
+    id: str
+    label: str = ""
     kind: str = "openai"           # openai | anthropic
     base_url: str = ""
     model: str = ""
-    api_key: str = ""              # empty = keep existing key
-    tier: str = "t1"
+    models: list[str] = []
+    key: str = ""                  # empty = keep existing key
     input_cost_per_m: float = 0.0
     output_cost_per_m: float = 0.0
-    enabled: bool = True
+    auto: bool = True
+
+
+class SelectModel(BaseModel):
+    id: str                        # provider id, or "auto"
+
+
+class ModelSettings(BaseModel):
+    auto_cheapest: bool
 
 
 @app.get("/api/models")
 def models_get(_: str = Depends(verify_owner)):
     cfg = load_models()
-    return {"main": cfg.get("main"), "providers": [
-        {**{k: v for k, v in p.items() if k != "api_key"}, "has_key": bool(p.get("api_key"))}
-        for p in cfg["providers"]
-    ]}
+    return {
+        "selected": cfg.get("selected", "auto"),
+        "auto_cheapest": cfg.get("auto_cheapest", True),
+        "providers": [
+            {"id": pid, "label": p.get("label", pid), "kind": p["kind"],
+             "base_url": p.get("base_url", ""), "model": p.get("model", ""),
+             "models": p.get("models", []), "has_key": bool(p.get("key")),
+             "in": p.get("in", 0), "out": p.get("out", 0), "auto": p.get("auto", False)}
+            for pid, p in cfg["providers"].items()],
+    }
 
 
 @app.post("/api/models")
@@ -467,36 +531,47 @@ def models_upsert(req: ProviderUpsert, _: str = Depends(verify_owner)):
         raise HTTPException(400, "base_url is required for OpenAI-compatible providers "
                                  "(e.g. https://openrouter.ai/api/v1)")
     cfg = load_models()
-    existing = get_provider(cfg, req.name)
-    entry = req.model_dump()
-    if not entry["api_key"] and existing:
-        entry["api_key"] = existing.get("api_key", "")
-    if existing:
-        existing.update(entry)
-    else:
-        cfg["providers"].append(entry)
+    prov = cfg["providers"].get(req.id, {})
+    prov.update({
+        "label": req.label or prov.get("label", req.id), "kind": req.kind,
+        "base_url": req.base_url, "model": req.model or prov.get("model", ""),
+        "models": req.models or prov.get("models", []),
+        "in": req.input_cost_per_m, "out": req.output_cost_per_m, "auto": req.auto,
+    })
+    if req.key:                    # blank key = keep existing
+        prov["key"] = req.key
+    prov.setdefault("key", "")
+    if req.model and req.model not in prov["models"]:
+        prov["models"].append(req.model)
+    cfg["providers"][req.id] = prov
     save_models(cfg)
     return {"ok": True}
 
 
-@app.delete("/api/models/{name}")
-def models_delete(name: str, _: str = Depends(verify_owner)):
+@app.delete("/api/models/{pid}")
+def models_delete(pid: str, _: str = Depends(verify_owner)):
     cfg = load_models()
-    cfg["providers"] = [p for p in cfg["providers"] if p["name"] != name]
+    cfg["providers"].pop(pid, None)
+    if cfg.get("selected") == pid:
+        cfg["selected"] = "auto"
     save_models(cfg)
     return {"ok": True}
 
 
-class MainModel(BaseModel):
-    name: str
-
-
-@app.post("/api/models/main")
-def models_main(req: MainModel, _: str = Depends(verify_owner)):
+@app.post("/api/models/select")
+def models_select(req: SelectModel, _: str = Depends(verify_owner)):
     cfg = load_models()
-    if not get_provider(cfg, req.name):
+    if req.id != "auto" and req.id not in cfg["providers"]:
         raise HTTPException(404, "No such provider")
-    cfg["main"] = req.name
+    cfg["selected"] = req.id
+    save_models(cfg)
+    return {"ok": True}
+
+
+@app.post("/api/models/settings")
+def models_settings(req: ModelSettings, _: str = Depends(verify_owner)):
+    cfg = load_models()
+    cfg["auto_cheapest"] = req.auto_cheapest
     save_models(cfg)
     return {"ok": True}
 
@@ -1187,6 +1262,25 @@ def session_stop(sid: str, _: str = Depends(verify_owner)):
     for a in list(s["approvals"].values()):
         a["approve"] = False
         a["flag"].set()
+    return {"ok": True}
+
+
+@app.delete("/api/sessions/{sid}")
+def session_delete(sid: str, _: str = Depends(verify_owner)):
+    s = SESSIONS.get(sid)
+    if not s:
+        raise HTTPException(404, "No such session")
+    if s["status"] != "idle":
+        raise HTTPException(409, "Stop the session before deleting it")
+    with _SESSIONS_LOCK:
+        SESSIONS.pop(sid, None)
+        _persist_index()
+    for path in (_events_path(sid),
+                 os.path.join(SESSIONS_DIR, f"{sid}.history.json")):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
     return {"ok": True}
 
 

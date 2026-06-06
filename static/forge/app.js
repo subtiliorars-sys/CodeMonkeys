@@ -141,11 +141,22 @@ async function refreshSessions() {
   try {
     const d = await api("/api/sessions");
     $("session-list").innerHTML = d.sessions.map((s) =>
-      `<div data-sid="${s.id}" class="session-item cursor-pointer rounded px-2 py-1 hover:bg-yellow-900/20 ${s.id === state.sid ? "bg-yellow-900/30 text-[var(--gold-bright)]" : "text-slate-300"}">
-         ${esc(s.title)} <span class="text-slate-600">$${s.spent_usd}</span></div>`).join("")
+      `<div class="group flex items-center gap-1 rounded px-2 py-1 hover:bg-yellow-900/20 ${s.id === state.sid ? "bg-yellow-900/30" : ""}">
+         <span data-sid="${s.id}" class="session-item flex-1 cursor-pointer truncate ${s.id === state.sid ? "text-[var(--gold-bright)]" : "text-slate-300"}">
+           ${esc(s.title)} <span class="text-slate-600">$${s.spent_usd}</span></span>
+         <button data-del="${s.id}" class="session-del text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100" title="Delete session">✕</button>
+       </div>`).join("")
       || '<div class="text-slate-600">none yet</div>';
     document.querySelectorAll(".session-item").forEach((el) =>
       (el.onclick = () => openSession(el.dataset.sid)));
+    document.querySelectorAll(".session-del").forEach((el) => (el.onclick = async (e) => {
+      e.stopPropagation();
+      if (!confirm("Delete this session and its history?")) return;
+      try { await api(`/api/sessions/${el.dataset.del}`, "DELETE"); }
+      catch (err) { alert(err.message); return; }
+      if (state.sid === el.dataset.del) { state.sid = null; stopPolling(); $("stream").innerHTML = ""; $("hdr-title").textContent = "no session"; }
+      refreshSessions();
+    }));
   } catch (e) { /* ignore */ }
 }
 
@@ -365,46 +376,81 @@ $("modal-close").onclick = () => $("modal-models").classList.add("hidden");
 
 async function loadProviders() {
   const d = await api("/api/models");
-  $("provider-rows").innerHTML = d.providers.map((p) => `
-    <div class="flex items-center gap-2 border-b border-slate-800/60 py-1">
-      <span class="w-3">${p.name === d.main ? "★" : ""}</span>
-      <span class="${p.enabled && p.has_key ? "text-green-400" : "text-slate-600"}">●</span>
-      <span class="flex-1 ${p.name === d.main ? "text-[var(--gold-bright)]" : ""}">${esc(p.name)}
-        <span class="text-slate-600">${esc(p.model)} · ${esc(p.tier)} · ${p.has_key ? "key set" : "NO KEY"}</span></span>
-      <button data-n="${esc(p.name)}" class="pv-main text-slate-400 hover:text-[var(--gold)]" title="Set as main">★</button>
-      <button data-n="${esc(p.name)}" class="pv-edit text-slate-400 hover:text-white">edit</button>
-      <button data-n="${esc(p.name)}" class="pv-del text-red-500/70 hover:text-red-400">✕</button>
-    </div>`).join("");
-  const provs = d.providers;
+  $("auto-cheapest").checked = !!d.auto_cheapest;
+  $("provider-rows").innerHTML = d.providers.map((p) => {
+    const opts = (p.models || []).map((m) =>
+      `<option value="${esc(m)}" ${m === p.model ? "selected" : ""}>${esc(m)}</option>`).join("");
+    const isMain = p.id === d.selected && !d.auto_cheapest;
+    return `
+    <div class="border-b border-slate-800/60 py-2 ${isMain ? "bg-yellow-900/10 rounded" : ""}">
+      <div class="flex items-center gap-2">
+        <button data-id="${esc(p.id)}" class="pv-main ${isMain ? "text-[var(--gold-bright)]" : "text-slate-600"} hover:text-[var(--gold)]" title="Use as main (when Auto is off)">★</button>
+        <span class="${p.has_key ? "text-green-400" : "text-slate-600"}">●</span>
+        <b class="flex-1 ${isMain ? "text-[var(--gold-bright)]" : "text-slate-200"}">${esc(p.label)}</b>
+        <label class="flex items-center gap-1 text-slate-400" title="Include in cheapest-first cascade">
+          <input type="checkbox" class="pv-auto accent-yellow-500" data-id="${esc(p.id)}" ${p.auto ? "checked" : ""}>✓auto</label>
+        <button data-id="${esc(p.id)}" class="pv-del text-red-500/60 hover:text-red-400">remove</button>
+      </div>
+      <div class="flex items-center gap-2 mt-1 pl-6">
+        <select class="pv-model input rounded px-1 py-0.5 flex-1" data-id="${esc(p.id)}">${opts}</select>
+        <input type="password" class="pv-key input rounded px-1 py-0.5 flex-1" data-id="${esc(p.id)}"
+          placeholder="${p.has_key ? "key set ✓ (type to replace)" : "paste API key"}">
+        <button data-id="${esc(p.id)}" class="pv-savekey gold-btn rounded px-2 py-0.5">save</button>
+        <span class="text-slate-600">$${p.out}/M</span>
+      </div>
+    </div>`;
+  }).join("");
+
   document.querySelectorAll(".pv-main").forEach((b) => (b.onclick = async () => {
-    await api("/api/models/main", "POST", { name: b.dataset.n }); loadProviders();
+    await api("/api/models/select", "POST", { id: b.dataset.id });
+    await api("/api/models/settings", "POST", { auto_cheapest: false });
+    loadProviders();
   }));
   document.querySelectorAll(".pv-del").forEach((b) => (b.onclick = async () => {
-    if (confirm(`Delete provider ${b.dataset.n}?`)) {
-      await api(`/api/models/${encodeURIComponent(b.dataset.n)}`, "DELETE"); loadProviders();
+    if (confirm(`Remove provider ${b.dataset.id}?`)) {
+      await api(`/api/models/${encodeURIComponent(b.dataset.id)}`, "DELETE"); loadProviders();
     }
   }));
-  document.querySelectorAll(".pv-edit").forEach((b) => (b.onclick = () => {
-    const p = provs.find((x) => x.name === b.dataset.n); if (!p) return;
-    $("pv-name").value = p.name; $("pv-kind").value = p.kind; $("pv-base").value = p.base_url;
-    $("pv-model").value = p.model; $("pv-tier").value = p.tier;
-    $("pv-in").value = p.input_cost_per_m; $("pv-out").value = p.output_cost_per_m;
-    $("pv-key").value = "";
-    $("pv-msg").textContent = p.has_key ? "Key already set — leave key blank to keep it." : "";
+  document.querySelectorAll(".pv-savekey").forEach((b) => (b.onclick = async () => {
+    const id = b.dataset.id;
+    const prov = d.providers.find((x) => x.id === id);
+    const key = document.querySelector(`.pv-key[data-id="${id}"]`).value;
+    const model = document.querySelector(`.pv-model[data-id="${id}"]`).value;
+    const auto = document.querySelector(`.pv-auto[data-id="${id}"]`).checked;
+    try {
+      await api("/api/models", "POST", {
+        id, label: prov.label, kind: prov.kind, base_url: prov.base_url,
+        model, models: prov.models, key,
+        input_cost_per_m: prov.in, output_cost_per_m: prov.out, auto,
+      });
+      loadProviders();
+    } catch (e) { alert(e.message); }
+  }));
+  // model dropdown / auto checkbox auto-save on change
+  document.querySelectorAll(".pv-model, .pv-auto").forEach((el) => (el.onchange = () => {
+    document.querySelector(`.pv-savekey[data-id="${el.dataset.id}"]`).click();
   }));
 }
 
+$("auto-cheapest").onchange = async () => {
+  await api("/api/models/settings", "POST", { auto_cheapest: $("auto-cheapest").checked });
+  loadProviders();
+};
+
 $("pv-save").onclick = async () => {
+  const id = $("pv-id").value.trim();
+  if (!id) { $("pv-msg").textContent = "Give the provider an id."; return; }
   try {
     await api("/api/models", "POST", {
-      name: $("pv-name").value.trim(), kind: $("pv-kind").value,
+      id, label: id, kind: $("pv-kind").value,
       base_url: $("pv-base").value.trim(), model: $("pv-model").value.trim(),
-      api_key: $("pv-key").value, tier: $("pv-tier").value,
+      models: $("pv-model").value.trim() ? [$("pv-model").value.trim()] : [],
+      key: $("pv-key").value,
       input_cost_per_m: parseFloat($("pv-in").value) || 0,
-      output_cost_per_m: parseFloat($("pv-out").value) || 0,
-      enabled: true,
+      output_cost_per_m: parseFloat($("pv-out").value) || 0, auto: true,
     });
-    $("pv-msg").textContent = "Saved ✓"; $("pv-key").value = "";
+    $("pv-msg").textContent = "Added ✓";
+    ["pv-id", "pv-base", "pv-model", "pv-key", "pv-in", "pv-out"].forEach((k) => ($(k).value = ""));
     loadProviders();
   } catch (e) { $("pv-msg").textContent = e.message; }
 };

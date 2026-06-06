@@ -137,23 +137,28 @@
       <h2 class="wordmark font-bold">Models &amp; API keys</h2>
       <button id="modal-close" class="text-slate-400 hover:text-white">✕</button>
     </div>
-    <p class="text-xs text-slate-500 mb-3">Add any OpenAI-compatible endpoint (Gemini, OpenRouter, DeepSeek…) or Anthropic. Keys are stored on the server volume, never in the repo. Tier: t0 = cheap recon … t3 = strongest.</p>
+    <label class="flex items-center gap-2 mb-3 text-xs bg-yellow-900/10 gold-border rounded px-3 py-2">
+      <input id="auto-cheapest" type="checkbox" class="accent-yellow-500">
+      <span><b class="text-[var(--gold-bright)]">Auto · cheapest-first</b> — start with the cheapest provider you've keyed
+        (✓ in the cascade) and use pricier ones only when needed. Turn off to always use the ★ provider.</span>
+    </label>
+    <p class="text-xs text-slate-500 mb-2">One API key per provider — then pick any model from it. ★ = main provider (when Auto is off). ✓ = include in the cheapest-first cascade.</p>
     <div id="provider-rows" class="space-y-1 mb-4 text-xs"></div>
-    <div class="border-t border-slate-800 pt-3 grid grid-cols-2 gap-2 text-xs">
-      <input id="pv-name" class="input rounded px-2 py-1" placeholder="name (e.g. gemini-flash)">
-      <select id="pv-kind" class="input rounded px-2 py-1"><option value="openai">openai-compatible</option><option value="anthropic">anthropic</option></select>
-      <input id="pv-base" class="input rounded px-2 py-1 col-span-2" placeholder="base_url (blank for anthropic)">
-      <input id="pv-model" class="input rounded px-2 py-1" placeholder="model id">
-      <input id="pv-key" type="password" class="input rounded px-2 py-1" placeholder="API key (blank = keep)">
-      <select id="pv-tier" class="input rounded px-2 py-1">
-        <option value="t0">t0 cheap</option><option value="t1" selected>t1 standard</option>
-        <option value="t2">t2 heavy</option><option value="t3">t3 critical</option></select>
-      <div class="flex gap-2">
-        <input id="pv-in" class="input rounded px-2 py-1 w-1/2" placeholder="$/M in">
-        <input id="pv-out" class="input rounded px-2 py-1 w-1/2" placeholder="$/M out">
+    <div class="border-t border-slate-800 pt-3">
+      <p class="text-xs text-slate-500 mb-2">Add a custom provider (any OpenAI-compatible endpoint):</p>
+      <div class="grid grid-cols-2 gap-2 text-xs">
+        <input id="pv-id" class="input rounded px-2 py-1" placeholder="id (e.g. groq)">
+        <select id="pv-kind" class="input rounded px-2 py-1"><option value="openai">openai-compatible</option><option value="anthropic">anthropic</option></select>
+        <input id="pv-base" class="input rounded px-2 py-1 col-span-2" placeholder="base_url (blank for anthropic)">
+        <input id="pv-model" class="input rounded px-2 py-1" placeholder="model id">
+        <input id="pv-key" type="password" class="input rounded px-2 py-1" placeholder="API key">
+        <div class="flex gap-2">
+          <input id="pv-in" class="input rounded px-2 py-1 w-1/2" placeholder="$/M in">
+          <input id="pv-out" class="input rounded px-2 py-1 w-1/2" placeholder="$/M out">
+        </div>
+        <button id="pv-save" class="gold-btn rounded py-1">Add provider</button>
+        <p id="pv-msg" class="col-span-2 text-xs text-slate-400"></p>
       </div>
-      <button id="pv-save" class="gold-btn rounded py-1 col-span-2">Save provider</button>
-      <p id="pv-msg" class="col-span-2 text-xs text-slate-400"></p>
     </div>
   </div>
 </div>
