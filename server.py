@@ -18,6 +18,7 @@ import base64
 import fnmatch
 import hashlib
 import hmac
+import io
 import json
 import os
 import re
@@ -51,6 +52,11 @@ try:
                                 PublicKeyCredentialUserEntity)
 except ImportError:  # biometric login disabled until installed
     Fido2Server = None
+
+try:
+    import segno          # pure-python QR; renders the TOTP secret locally
+except ImportError:       # falls back to manual-entry (never to an external CDN)
+    segno = None
 
 # ----------------------------------------------------------------- config
 
@@ -224,6 +230,23 @@ def hash_pin(pin: str, salt: str) -> str:
     ).hex()
 
 
+def totp_qr_data_uri(otpauth_uri: str) -> str:
+    """Render the otpauth:// URI as a self-contained SVG data URI, generated
+    LOCALLY. Previously the frontend posted this URI (which embeds the TOTP
+    shared secret) to api.qrserver.com — leaking the second factor to a third
+    party. Returns "" if segno is unavailable; the UI then shows the secret for
+    manual entry rather than ever calling an external service."""
+    if not segno or not otpauth_uri:
+        return ""
+    try:
+        buf = io.BytesIO()
+        segno.make(otpauth_uri, error="m").save(buf, kind="svg", scale=4, border=2)
+        b64 = base64.b64encode(buf.getvalue()).decode()
+        return "data:image/svg+xml;base64," + b64
+    except Exception:
+        return ""
+
+
 def load_users():
     return _load_json(USERS_FILE, {})
 
@@ -322,6 +345,7 @@ def register(req: RegisterRequest):
         "username": username,
         "role": role,
         "mfa_otpauth_uri": uri,
+        "mfa_qr": totp_qr_data_uri(uri),     # rendered locally; secret never leaves the box
     }
 
 
@@ -629,7 +653,8 @@ def account_setup(req: FirstSetup, username: str = Depends(verify_token)):
     _login_clear(target)
     uri = pyotp.TOTP(mfa_secret).provisioning_uri(name=target, issuer_name="CodeMonkeys")
     return {"token": make_token(target), "username": target,
-            "role": load_users()[target]["role"], "mfa_otpauth_uri": uri}
+            "role": load_users()[target]["role"], "mfa_otpauth_uri": uri,
+            "mfa_qr": totp_qr_data_uri(uri)}
 
 
 # ------------------------------------------------- biometric / passkey (WebAuthn)
