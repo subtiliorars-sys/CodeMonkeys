@@ -70,6 +70,13 @@ _OAUTH_STATE_TTL = 600
 
 SESSION_TTL = 7 * 24 * 3600
 OPEN_ENROLLMENT = os.environ.get("OPEN_ENROLLMENT", "false").lower() == "true"
+# Login brute-force throttle (fail2ban-style; SECURITY.md "no login rate-limit"):
+# after LOGIN_MAX_FAILS bad attempts within LOGIN_WINDOW_SEC, lock that account
+# for LOGIN_LOCKOUT_SEC. PBKDF2+TOTP already make brute force slow; this bounds it.
+LOGIN_MAX_FAILS = int(os.environ.get("LOGIN_MAX_FAILS", "10"))
+LOGIN_WINDOW_SEC = int(os.environ.get("LOGIN_WINDOW_SEC", "300"))
+LOGIN_LOCKOUT_SEC = int(os.environ.get("LOGIN_LOCKOUT_SEC", "900"))
+LOGIN_TRACK_CAP = 4096     # max distinct keys tracked — bounds memory vs username-spam
 SESSION_BUDGET_USD = float(os.environ.get("SESSION_BUDGET_USD", "1.00"))
 MAX_TURNS = int(os.environ.get("MAX_TURNS", "60"))
 SUBAGENT_MAX_TURNS = int(os.environ.get("SUBAGENT_MAX_TURNS", "25"))
@@ -288,22 +295,94 @@ def register(req: RegisterRequest):
     }
 
 
+# ---- login brute-force throttle (in-memory, process-local) -----------------
+# Keyed by username. Lock is per-account (the documented "account lockout"),
+# which means a determined attacker who knows a username can lock that account
+# out for LOGIN_LOCKOUT_SEC — an availability trade-off accepted in SECURITY.md
+# for a single-owner tool; an IP dimension can be layered on later if enrollment
+# opens. Process-local: a restart clears counters (fail-open on restart only).
+_login_fails = {}                      # username -> {"stamps": [ts...], "until": ts}
+_LOGIN_LOCK = threading.Lock()
+
+
+def _login_locked_for(key: str) -> int:
+    """Seconds remaining on an active lock for *key*, else 0."""
+    with _LOGIN_LOCK:
+        rec = _login_fails.get(key)
+        if not rec:
+            return 0
+        remaining = int(rec.get("until", 0) - time.time())
+        return remaining if remaining > 0 else 0
+
+
+def _login_prune(now: float) -> None:
+    """Drop entries with no active lock and no in-window failures. Caller holds
+    _LOGIN_LOCK. Bounds memory against an attacker spamming distinct usernames."""
+    dead = [k for k, r in _login_fails.items()
+            if r.get("until", 0) <= now
+            and not any(now - t < LOGIN_WINDOW_SEC for t in r.get("stamps", []))]
+    for k in dead:
+        del _login_fails[k]
+
+
+def _login_note_failure(key: str) -> None:
+    """Record a failed attempt; arm a lockout once the window threshold trips."""
+    now = time.time()
+    with _LOGIN_LOCK:
+        if len(_login_fails) >= LOGIN_TRACK_CAP and key not in _login_fails:
+            _login_prune(now)          # reclaim dead entries first
+            if len(_login_fails) >= LOGIN_TRACK_CAP:
+                # Hard bound: evict the least-valuable entry. Sort key prefers to
+                # KEEP (a) actively-locked accounts (until>0 sorts last), then
+                # (b) accounts closest to the threshold (more stamps sorts last),
+                # so an attacker flooding 1-stamp junk usernames cannot evict and
+                # thereby reset a victim's near-threshold counter or armed lock.
+                victim = min(_login_fails.items(),
+                             key=lambda kv: (kv[1].get("until", 0),
+                                             len(kv[1].get("stamps") or []),
+                                             max(kv[1].get("stamps") or [0])))
+                del _login_fails[victim[0]]
+        rec = _login_fails.setdefault(key, {"stamps": [], "until": 0})
+        rec["stamps"] = [t for t in rec["stamps"] if now - t < LOGIN_WINDOW_SEC]
+        rec["stamps"].append(now)
+        if len(rec["stamps"]) >= LOGIN_MAX_FAILS:
+            rec["until"] = now + LOGIN_LOCKOUT_SEC
+            rec["stamps"] = []         # reset window; the lock is the penalty now
+
+
+def _login_clear(key: str) -> None:
+    with _LOGIN_LOCK:
+        _login_fails.pop(key, None)
+
+
 @app.post("/api/login")
 def login(req: LoginRequest):
-    users = load_users()
     uname = req.username.strip()
+    # Throttle BEFORE any credential work — denies the attacker free PBKDF2 calls
+    # and applies even to unknown usernames (no account-existence oracle).
+    locked = _login_locked_for(uname)
+    if locked > 0:
+        raise HTTPException(429, f"Too many attempts. Try again in {locked}s.",
+                            headers={"Retry-After": str(locked)})
+    users = load_users()
     user = users.get(uname)
     if not user or not hmac.compare_digest(
         user["pin_hash"], hash_pin(req.pin, user["salt"])
     ):
+        _login_note_failure(uname)
         raise HTTPException(401, "Bad credentials")
-    # invited accounts log in with the starter PIN only (no authenticator yet),
-    # then are forced through first-time setup
+    # Invited accounts log in with the starter PIN only (no authenticator yet),
+    # then are forced through first-time setup. This branch is MFA-less, so the
+    # throttle is its ONLY brute-force barrier — deliberately do NOT clear the
+    # counter here (a correct guess still gets in, but a lucky near-miss run does
+    # not get its window wiped). The counter is cleared after /api/account/setup.
     if user.get("must_reset"):
         return {"token": make_token(uname), "username": uname,
                 "role": user["role"], "must_reset": True}
     if not pyotp.TOTP(user["mfa_secret"]).verify(req.mfa_code, valid_window=1):
+        _login_note_failure(uname)
         raise HTTPException(401, "Bad MFA code")
+    _login_clear(uname)
     return {"token": make_token(uname), "username": uname, "role": user["role"]}
 
 
@@ -401,6 +480,10 @@ def account_setup(req: FirstSetup, username: str = Depends(verify_token)):
         user["must_reset"] = False
         users[target] = user
         save_users(users)
+    # setup finished — the starter-PIN window is no longer relevant; clear both
+    # the old (pre-rename) and new keys so a rename can't strand a stale counter.
+    _login_clear(username)
+    _login_clear(target)
     uri = pyotp.TOTP(mfa_secret).provisioning_uri(name=target, issuer_name="CodeMonkeys")
     return {"token": make_token(target), "username": target,
             "role": load_users()[target]["role"], "mfa_otpauth_uri": uri}
@@ -486,8 +569,13 @@ class WebauthnBegin(BaseModel):
 
 @app.post("/api/webauthn/login/begin")
 def webauthn_login_begin(req: WebauthnBegin, request: Request):
+    uname = req.username.strip()
+    locked = _login_locked_for(uname)        # same key namespace as PIN login
+    if locked > 0:
+        raise HTTPException(429, f"Too many attempts. Try again in {locked}s.",
+                            headers={"Retry-After": str(locked)})
     users = load_users()
-    user = users.get(req.username.strip())
+    user = users.get(uname)
     if not user:
         raise HTTPException(404, "User not found")
     creds = _user_credentials(user)
@@ -504,6 +592,10 @@ def webauthn_login_begin(req: WebauthnBegin, request: Request):
 @app.post("/api/webauthn/login/complete")
 def webauthn_login_complete(req: dict, request: Request):
     username = str(req.get("username", "")).strip()
+    locked = _login_locked_for(username)     # shared lock: covers PIN + passkey
+    if locked > 0:
+        raise HTTPException(429, f"Too many attempts. Try again in {locked}s.",
+                            headers={"Retry-After": str(locked)})
     pending = _webauthn_states.pop(f"login_{username}", None)
     if pending is None:
         raise HTTPException(400, "Login challenge expired — try again")
@@ -512,7 +604,9 @@ def webauthn_login_complete(req: dict, request: Request):
     try:
         server.authenticate_complete(pending["state"], pending["creds"], response)
     except Exception as e:
+        _login_note_failure(username)        # a forged-assertion attempt counts
         raise HTTPException(401, f"Biometric verification failed: {e}")
+    _login_clear(username)
     role = load_users()[username]["role"]
     return {"token": make_token(username), "username": username, "role": role}
 
