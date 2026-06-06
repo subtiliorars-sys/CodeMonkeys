@@ -85,6 +85,22 @@ Once logged in, sidebar → **👆 Add passkey / biometric** → approve on your
 done — no PIN or authenticator code needed (the device's biometric check is the
 second factor). Register a passkey on each device you use.
 
+## 6c. Optional: invite your developers
+
+Sidebar → **👥 Invite developers** (Owner only). Type a username (or leave blank
+for an auto one) → **Create invite** → you get a **username + starter PIN shown
+once**. Hand those to your dev out-of-band (Signal, in person — not email if you
+can help it).
+
+Your dev opens this site, logs in with the starter username + PIN (no
+authenticator needed the first time), and is walked through setting their own
+username, PIN, and authenticator. After that they're a **Member**: they can use
+the console, sessions, and repos, but **cannot** see/edit your API keys or invite
+others. Remove anyone anytime from the same panel.
+
+⚠️ No per-user isolation yet: every member shares this workspace and the GitHub
+token and can run commands. Invite only people you'd trust with that access.
+
 ## 7. Clone a repo and code
 
 1. Sidebar → Repos → paste `https://github.com/you/yourrepo` → **clone**

@@ -172,6 +172,16 @@ def verify_owner(username: str = Depends(verify_token)):
     return username
 
 
+def verify_user(username: str = Depends(verify_token)):
+    """Any active (non-pending) account — Owner or invited Member."""
+    user = load_users().get(username, {})
+    if user.get("must_reset"):
+        raise HTTPException(403, "Finish first-time setup (new PIN + authenticator) first")
+    if user.get("role") not in ("Owner", "Member"):
+        raise HTTPException(403, "Not authorized")
+    return username
+
+
 class RegisterRequest(BaseModel):
     username: str
     pin: str
@@ -220,20 +230,119 @@ def register(req: RegisterRequest):
 @app.post("/api/login")
 def login(req: LoginRequest):
     users = load_users()
-    user = users.get(req.username.strip())
+    uname = req.username.strip()
+    user = users.get(uname)
     if not user or not hmac.compare_digest(
         user["pin_hash"], hash_pin(req.pin, user["salt"])
     ):
         raise HTTPException(401, "Bad credentials")
+    # invited accounts log in with the starter PIN only (no authenticator yet),
+    # then are forced through first-time setup
+    if user.get("must_reset"):
+        return {"token": make_token(uname), "username": uname,
+                "role": user["role"], "must_reset": True}
     if not pyotp.TOTP(user["mfa_secret"]).verify(req.mfa_code, valid_window=1):
         raise HTTPException(401, "Bad MFA code")
-    return {"token": make_token(req.username.strip()),
-            "username": req.username.strip(), "role": user["role"]}
+    return {"token": make_token(uname), "username": uname, "role": user["role"]}
 
 
 @app.get("/api/me")
 def me(username: str = Depends(verify_token)):
-    return {"username": username, "role": load_users()[username]["role"]}
+    u = load_users()[username]
+    return {"username": username, "role": u["role"], "must_reset": bool(u.get("must_reset"))}
+
+
+# ------------------------------------------------- invitations (Owner -> dev)
+
+def _gen_starter_pin():
+    return "".join(secrets.choice("0123456789") for _ in range(6))
+
+
+class InviteRequest(BaseModel):
+    username: str = ""             # optional; auto-generated if blank
+
+
+@app.post("/api/invite")
+def invite(req: InviteRequest, _: str = Depends(verify_owner)):
+    with _USERS_LOCK:
+        users = load_users()
+        uname = req.username.strip() or ("dev-" + secrets.token_hex(3))
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{2,32}", uname):
+            raise HTTPException(400, "Bad username")
+        if uname in users:
+            raise HTTPException(409, "Username already exists")
+        pin = _gen_starter_pin()
+        salt = secrets.token_hex(16)
+        users[uname] = {
+            "pin_hash": hash_pin(pin, salt), "salt": salt, "role": "Member",
+            "mfa_secret": "", "must_reset": True, "created": int(time.time()),
+        }
+        save_users(users)
+    # the starter PIN is returned ONCE, in cleartext, for the owner to hand over
+    return {"username": uname, "starter_pin": pin}
+
+
+@app.get("/api/users")
+def users_list(_: str = Depends(verify_owner)):
+    return {"users": sorted([
+        {"username": u, "role": d.get("role"),
+         "pending": bool(d.get("must_reset")),
+         "has_mfa": bool(d.get("mfa_secret")), "created": d.get("created", 0)}
+        for u, d in load_users().items()], key=lambda x: x["created"])}
+
+
+@app.delete("/api/users/{uname}")
+def users_delete(uname: str, owner: str = Depends(verify_owner)):
+    if uname == owner:
+        raise HTTPException(400, "You can't delete your own Owner account")
+    with _USERS_LOCK:
+        users = load_users()
+        if users.get(uname, {}).get("role") == "Owner":
+            raise HTTPException(400, "Can't delete an Owner")
+        if uname not in users:
+            raise HTTPException(404, "No such user")
+        del users[uname]
+        save_users(users)
+    return {"ok": True}
+
+
+class FirstSetup(BaseModel):
+    new_username: str = ""        # optional rename
+    new_pin: str
+
+
+@app.post("/api/account/setup")
+def account_setup(req: FirstSetup, username: str = Depends(verify_token)):
+    """First-login flow for an invited account: set a new PIN (and optional new
+    username), get a fresh authenticator secret to scan."""
+    if len(req.new_pin) < 4:
+        raise HTTPException(400, "PIN must be at least 4 digits")
+    with _USERS_LOCK:
+        users = load_users()
+        user = users.get(username)
+        if not user:
+            raise HTTPException(404, "Account not found")
+        target = username
+        new_name = req.new_username.strip()
+        if new_name and new_name != username:
+            if not re.fullmatch(r"[A-Za-z0-9_.-]{2,32}", new_name):
+                raise HTTPException(400, "Bad username")
+            if new_name in users:
+                raise HTTPException(409, "Username taken")
+            users[new_name] = user
+            del users[username]
+            target = new_name
+        salt = secrets.token_hex(16)
+        mfa_secret = pyotp.random_base32()
+        user["salt"] = salt
+        user["pin_hash"] = hash_pin(req.new_pin, salt)
+        user["mfa_secret"] = mfa_secret
+        user["must_reset"] = False
+        users[target] = user
+        save_users(users)
+    uri = pyotp.TOTP(mfa_secret).provisioning_uri(name=target, issuer_name="CodeMonkeys")
+    return {"token": make_token(target), "username": target,
+            "role": load_users()[target]["role"], "mfa_otpauth_uri": uri}
 
 
 # ------------------------------------------------- biometric / passkey (WebAuthn)
@@ -1183,13 +1292,13 @@ class ApproveRequest(BaseModel):
 
 
 @app.post("/api/sessions")
-def session_create(req: SessionCreate, _: str = Depends(verify_owner)):
+def session_create(req: SessionCreate, _: str = Depends(verify_user)):
     s = new_session(req.title, req.repo)
     return {"id": s["id"]}
 
 
 @app.get("/api/sessions")
-def session_list(_: str = Depends(verify_owner)):
+def session_list(_: str = Depends(verify_user)):
     return {"sessions": sorted([
         {"id": s["id"], "title": s["title"], "repo": s["repo"],
          "created": s["created"], "status": s["status"],
@@ -1198,7 +1307,7 @@ def session_list(_: str = Depends(verify_owner)):
 
 
 @app.post("/api/sessions/{sid}/message")
-def session_message(sid: str, req: MessageRequest, _: str = Depends(verify_owner)):
+def session_message(sid: str, req: MessageRequest, _: str = Depends(verify_user)):
     s = SESSIONS.get(sid)
     if not s:
         raise HTTPException(404, "No such session")
@@ -1227,7 +1336,7 @@ def session_message(sid: str, req: MessageRequest, _: str = Depends(verify_owner
 
 
 @app.get("/api/sessions/{sid}/events")
-def session_events(sid: str, after: int = -1, _: str = Depends(verify_owner)):
+def session_events(sid: str, after: int = -1, _: str = Depends(verify_user)):
     s = SESSIONS.get(sid)
     if not s:
         raise HTTPException(404, "No such session")
@@ -1239,7 +1348,7 @@ def session_events(sid: str, after: int = -1, _: str = Depends(verify_owner)):
 
 
 @app.post("/api/sessions/{sid}/approve")
-def session_approve(sid: str, req: ApproveRequest, _: str = Depends(verify_owner)):
+def session_approve(sid: str, req: ApproveRequest, _: str = Depends(verify_user)):
     s = SESSIONS.get(sid)
     if not s:
         raise HTTPException(404, "No such session")
@@ -1253,7 +1362,7 @@ def session_approve(sid: str, req: ApproveRequest, _: str = Depends(verify_owner
 
 
 @app.post("/api/sessions/{sid}/stop")
-def session_stop(sid: str, _: str = Depends(verify_owner)):
+def session_stop(sid: str, _: str = Depends(verify_user)):
     s = SESSIONS.get(sid)
     if not s:
         raise HTTPException(404, "No such session")
@@ -1266,7 +1375,7 @@ def session_stop(sid: str, _: str = Depends(verify_owner)):
 
 
 @app.delete("/api/sessions/{sid}")
-def session_delete(sid: str, _: str = Depends(verify_owner)):
+def session_delete(sid: str, _: str = Depends(verify_user)):
     s = SESSIONS.get(sid)
     if not s:
         raise HTTPException(404, "No such session")
@@ -1298,7 +1407,7 @@ def _auth_url(url):
 
 
 @app.get("/api/repos")
-def repos_list(_: str = Depends(verify_owner)):
+def repos_list(_: str = Depends(verify_user)):
     repos = []
     try:
         entries = sorted(os.scandir(WORKSPACE_DIR), key=lambda e: e.name)
@@ -1321,7 +1430,7 @@ def repos_list(_: str = Depends(verify_owner)):
 
 
 @app.post("/api/repos")
-def repos_clone(req: RepoClone, _: str = Depends(verify_owner)):
+def repos_clone(req: RepoClone, _: str = Depends(verify_user)):
     url = req.url.strip()
     if not re.match(r"^https://[\w.-]+/[\w./-]+$", url):
         raise HTTPException(400, "Provide an https git URL")
@@ -1339,7 +1448,7 @@ def repos_clone(req: RepoClone, _: str = Depends(verify_owner)):
 # ----------------------------------------------------------------- swarm viz feed
 
 @app.get("/api/swarm/state")
-def swarm_state(_: str = Depends(verify_owner)):
+def swarm_state(_: str = Depends(verify_user)):
     agents, activity = [], []
     for s in SESSIONS.values():
         with s["lock"]:

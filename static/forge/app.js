@@ -34,10 +34,17 @@ async function api(path, method = "GET", body = null) {
 
 /* ---------------- auth ---------------- */
 
-function showLogin() { $("view-login").classList.remove("hidden"); $("view-main").classList.add("hidden"); }
+function hideAll() {
+  ["view-login", "view-setup", "view-main"].forEach((v) => $(v).classList.add("hidden"));
+}
+function showLogin() { hideAll(); $("view-login").classList.remove("hidden"); }
+function showSetup() { hideAll(); $("view-setup").classList.remove("hidden"); }
 function showMain() {
-  $("view-login").classList.add("hidden"); $("view-main").classList.remove("hidden");
+  hideAll(); $("view-main").classList.remove("hidden");
   $("who").textContent = state.username;
+  // Owner-only controls hidden for invited Members
+  document.querySelectorAll(".owner-only").forEach((el) =>
+    el.classList.toggle("hidden", state.role !== "Owner"));
   refreshSessions(); refreshRepos();
 }
 function logout() {
@@ -75,12 +82,64 @@ $("lg-submit").onclick = async () => {
       const d = await api("/api/login", "POST", {
         username: $("lg-user").value, pin: $("lg-pin").value, mfa_code: $("lg-mfa").value,
       });
-      saveAuth(d); showMain();
+      saveAuth(d);
+      if (d.must_reset) showSetup(); else showMain();
     }
   } catch (e) { $("lg-msg").textContent = e.message; }
 };
 $("lg-continue").onclick = () => showMain();
 $("btn-logout").onclick = logout;
+
+/* ---------------- first-time setup (invited dev) ---------------- */
+
+$("su-submit").onclick = async () => {
+  $("su-msg").textContent = "";
+  const pin = $("su-pin").value, pin2 = $("su-pin2").value;
+  if (pin.length < 4) { $("su-msg").textContent = "PIN must be at least 4 digits."; return; }
+  if (pin !== pin2) { $("su-msg").textContent = "PINs don't match."; return; }
+  try {
+    const d = await api("/api/account/setup", "POST",
+      { new_username: $("su-user").value.trim(), new_pin: pin });
+    saveAuth(d);
+    $("su-uri").textContent = d.mfa_otpauth_uri;
+    $("su-qr").src = "https://api.qrserver.com/v1/create-qr-code/?size=160x160&data="
+      + encodeURIComponent(d.mfa_otpauth_uri);
+    $("setup-step1").classList.add("hidden");
+    $("setup-step2").classList.remove("hidden");
+  } catch (e) { $("su-msg").textContent = e.message; }
+};
+$("su-done").onclick = () => showMain();
+
+/* ---------------- invite developers (Owner) ---------------- */
+
+$("btn-invite").onclick = () => { $("modal-invite").classList.remove("hidden"); loadUsers(); };
+$("invite-close").onclick = () => $("modal-invite").classList.add("hidden");
+
+$("inv-create").onclick = async () => {
+  try {
+    const d = await api("/api/invite", "POST", { username: $("inv-user").value.trim() });
+    $("inv-u").textContent = d.username;
+    $("inv-p").textContent = d.starter_pin;
+    $("inv-result").classList.remove("hidden");
+    $("inv-user").value = "";
+    loadUsers();
+  } catch (e) { alert(e.message); }
+};
+
+async function loadUsers() {
+  const d = await api("/api/users");
+  $("user-rows").innerHTML = d.users.map((u) => `
+    <div class="flex items-center gap-2 border-b border-slate-800/60 py-1">
+      <span class="flex-1 ${u.role === "Owner" ? "text-[var(--gold-bright)]" : "text-slate-300"}">${esc(u.username)}
+        <span class="text-slate-600">${esc(u.role)}${u.pending ? " · pending first login" : (u.has_mfa ? " · active" : "")}</span></span>
+      ${u.role === "Owner" ? "" : `<button data-u="${esc(u.username)}" class="user-del text-red-500/70 hover:text-red-400">remove</button>`}
+    </div>`).join("");
+  document.querySelectorAll(".user-del").forEach((b) => (b.onclick = async () => {
+    if (confirm(`Remove ${b.dataset.u}?`)) {
+      await api(`/api/users/${encodeURIComponent(b.dataset.u)}`, "DELETE"); loadUsers();
+    }
+  }));
+}
 
 /* ---------------- biometrics / passkey (WebAuthn) ---------------- */
 
@@ -458,5 +517,8 @@ $("pv-save").onclick = async () => {
 /* ---------------- boot ---------------- */
 
 if (state.token) {
-  api("/api/me").then(() => showMain()).catch(() => showLogin());
+  api("/api/me").then((d) => {
+    state.role = d.role;
+    if (d.must_reset) showSetup(); else showMain();
+  }).catch(() => showLogin());
 } else showLogin();
