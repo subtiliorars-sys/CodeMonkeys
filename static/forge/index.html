@@ -138,6 +138,7 @@
     </div>
     <div class="p-3 border-t border-yellow-900/40 text-xs space-y-2">
       <button id="btn-models" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">⚙ Models &amp; keys</button>
+      <button id="btn-mcp" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">⚙ MCP</button>
       <button id="btn-passkey" class="w-full text-left text-slate-400 hover:text-[var(--gold)]">👆 Add passkey / biometric</button>
       <p id="passkey-msg" class="text-[.65rem] text-slate-500"></p>
       <button id="btn-invite" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">👥 Invite developers</button>
@@ -206,6 +207,30 @@
         </div>
         <button id="pv-save" class="gold-btn rounded py-1">Add provider</button>
         <p id="pv-msg" class="col-span-2 text-xs text-slate-400"></p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MCP MODAL ============ -->
+<div id="modal-mcp" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+  <div class="panel gold-border rounded-lg p-5 w-full max-w-2xl max-h-[90vh] overflow-y-auto text-sm">
+    <div class="flex justify-between items-center mb-3">
+      <h2 class="wordmark font-bold">MCP servers</h2>
+      <button id="mcp-close" class="text-slate-400 hover:text-white">✕</button>
+    </div>
+    <div id="mcp-server-rows" class="space-y-1 mb-4 text-xs"></div>
+    <div class="border-t border-slate-800 pt-3">
+      <p class="text-xs text-slate-500 mb-2">Add an MCP server:</p>
+      <div class="grid grid-cols-2 gap-2 text-xs">
+        <input id="mcp-name" class="input rounded px-2 py-1" placeholder="name (e.g. github)">
+        <input id="mcp-url" class="input rounded px-2 py-1" placeholder="https://…/mcp/">
+        <input id="mcp-token" type="password" class="input rounded px-2 py-1 col-span-2" placeholder="Bearer token / PAT — stored server-side">
+        <div class="flex gap-2">
+          <button id="mcp-preset-github" class="gold-border rounded px-2 py-1 text-[var(--gold-bright)] hover:bg-yellow-900/20">GitHub</button>
+        </div>
+        <button id="mcp-add" class="gold-btn rounded py-1">Add server</button>
+        <p id="mcp-msg" class="col-span-2 text-xs text-slate-400"></p>
       </div>
     </div>
   </div>

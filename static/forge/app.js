@@ -514,6 +514,112 @@ $("pv-save").onclick = async () => {
   } catch (e) { $("pv-msg").textContent = e.message; }
 };
 
+/* ---------------- MCP modal ---------------- */
+
+$("btn-mcp").onclick = () => { $("modal-mcp").classList.remove("hidden"); loadMcpServers(); };
+$("mcp-close").onclick = () => $("modal-mcp").classList.add("hidden");
+
+function mcpStatusDot(s) {
+  if (s.enabled === false) return '<span class="dot" style="background:#475569" title="disabled"></span>';
+  if (s.status === "connected") return '<span class="dot" style="background:#39d353" title="connected"></span>';
+  return '<span class="dot" style="background:#ef4444" title="error"></span>';
+}
+
+function renderMcpRows(servers) {
+  const container = $("mcp-server-rows");
+  container.innerHTML = servers.length
+    ? ""
+    : '<div class="text-slate-600">no servers configured</div>';
+
+  servers.forEach((s) => {
+    const row = document.createElement("div");
+    row.className = "border-b border-slate-800/60 py-2";
+    row.dataset.mcpId = s.id;
+
+    let host = "";
+    try { host = new URL(s.url).host; } catch (_) { host = s.url; }
+
+    const toolCount = (s.tools || []).length;
+    row.innerHTML = `
+      <div class="flex items-center gap-2 cursor-pointer mcp-row-header">
+        ${mcpStatusDot(s)}
+        <b class="flex-1 text-slate-200">${esc(s.name)}</b>
+        <span class="text-slate-500">${esc(host)}</span>
+        <span class="text-slate-400">${toolCount} tool${toolCount !== 1 ? "s" : ""}</span>
+        <button class="mcp-toggle ${s.enabled ? "text-green-400" : "text-slate-600"} hover:text-green-300" title="${s.enabled ? "disable" : "enable"}">${s.enabled ? "on" : "off"}</button>
+        <button class="mcp-refresh text-slate-400 hover:text-[var(--gold)]" title="reconnect &amp; refresh tools">↻</button>
+        <button class="mcp-del text-red-500/60 hover:text-red-400" title="remove server">✕</button>
+      </div>
+      ${s.status === "error" && s.error ? `<div class="text-red-400 text-[.7rem] pl-4 mt-0.5">${esc(s.error)}</div>` : ""}
+      <div class="mcp-tool-list hidden pl-4 pt-1 space-y-0.5">
+        ${(s.tools || []).map((t) =>
+          `<div class="text-slate-400"><span class="text-slate-200">${esc(t.name)}</span>
+           ${t.read_only ? '<span class="gold-border rounded px-1 text-[.6rem] text-[var(--gold)] ml-1">ro</span>' : ""}
+           <span class="text-slate-600 ml-1">${esc((t.description || "").slice(0, 80))}${(t.description || "").length > 80 ? "…" : ""}</span></div>`
+        ).join("") || '<div class="text-slate-600">no tools</div>'}
+      </div>`;
+
+    row.querySelector(".mcp-row-header").onclick = (e) => {
+      if (e.target.closest("button")) return;
+      row.querySelector(".mcp-tool-list").classList.toggle("hidden");
+    };
+
+    row.querySelector(".mcp-toggle").onclick = async () => {
+      try {
+        await api(`/api/mcp/${encodeURIComponent(s.id)}/toggle`, "POST", {});
+        loadMcpServers();
+      } catch (err) { $("mcp-msg").textContent = err.message; }
+    };
+
+    row.querySelector(".mcp-refresh").onclick = async () => {
+      $("mcp-msg").textContent = "refreshing…";
+      try {
+        await api(`/api/mcp/${encodeURIComponent(s.id)}/refresh`, "POST", {});
+        $("mcp-msg").textContent = "";
+        loadMcpServers();
+      } catch (err) { $("mcp-msg").textContent = err.message; }
+    };
+
+    row.querySelector(".mcp-del").onclick = async () => {
+      if (!confirm(`Remove MCP server "${s.name}"?`)) return;
+      try {
+        await api(`/api/mcp/${encodeURIComponent(s.id)}`, "DELETE");
+        loadMcpServers();
+      } catch (err) { $("mcp-msg").textContent = err.message; }
+    };
+
+    container.appendChild(row);
+  });
+}
+
+async function loadMcpServers() {
+  try {
+    const d = await api("/api/mcp");
+    renderMcpRows(d.servers || []);
+  } catch (e) { $("mcp-msg").textContent = e.message; }
+}
+
+$("mcp-preset-github").onclick = () => {
+  $("mcp-name").value = "github";
+  $("mcp-url").value = "https://api.githubcopilot.com/mcp/";
+  $("mcp-token").placeholder = "Bearer token / PAT — stored server-side";
+  $("mcp-token").focus();
+};
+
+$("mcp-add").onclick = async () => {
+  $("mcp-msg").textContent = "";
+  const name = $("mcp-name").value.trim();
+  const url  = $("mcp-url").value.trim();
+  const token = $("mcp-token").value;
+  if (!name || !url) { $("mcp-msg").textContent = "Name and URL are required."; return; }
+  try {
+    await api("/api/mcp", "POST", { name, url, token });
+    ["mcp-name", "mcp-url", "mcp-token"].forEach((k) => ($(k).value = ""));
+    $("mcp-msg").textContent = "Added ✓";
+    loadMcpServers();
+  } catch (e) { $("mcp-msg").textContent = e.message; }
+};
+
 /* ---------------- boot ---------------- */
 
 if (state.token) {

@@ -34,6 +34,25 @@ keep that radius away from everything else.
 - bash runs with cwd=workspace, 180 s timeout, output capped
 - Per-session USD budget halts the loop; subagent spawn cap 8; recursion depth 1
 
+## MCP connectors
+
+- MCP server config (`/api/mcp` CRUD, `mcp_config.json`) is **Owner-only**, same
+  fail-closed guard as `/api/models`. Bearer tokens are write-only — stored on
+  `/data`, never returned by any GET nor emitted in events.
+- **`readOnlyHint` is NOT trusted for gating.** It is a remote-controlled hint
+  used only as a UI badge. Plan mode exposes **no** MCP tools; in default mode
+  **every** MCP tool call passes through the human approval gate; auto skips (as
+  with bash). A malicious server cannot mark itself read-only to bypass approval.
+- MCP server URLs must be `https://` (or `http://` only for localhost/127.0.0.1/::1).
+- Hostile-server blast radius is capped: per-request wall-clock deadline + 256 KB
+  read cap on the JSON-RPC/SSE stream (no slowloris session hang); ≤128 merged
+  tools/session and per-description cap (no context/cost amplification);
+  namespaced `mcp_<slug>_<tool>` is first-writer-wins (no cross-server shadowing).
+- **Accepted residual risk:** an Owner who adds a trusted server still grants that
+  third party a prompt-injection channel into a model holding `bash`; the approval
+  gate limits mutating MCP calls but not read-only data flow. The agent could also
+  write `mcp_config.json` via unsandboxed `bash` (same kernel-sandbox gap below).
+
 ## Known limitations (v0.1)
 
 - bash is jailed by cwd, **not** by kernel sandboxing — a hostile prompt could

@@ -25,6 +25,7 @@ import secrets
 import subprocess
 import threading
 import time
+import urllib.parse
 import uuid
 
 import pyotp
@@ -54,6 +55,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(BASE_DIR, "data"))
 USERS_FILE = os.environ.get("USERS_FILE", os.path.join(DATA_DIR, "users.json"))
 MODELS_FILE = os.path.join(DATA_DIR, "model_config.json")
+MCP_CONFIG_FILE = os.path.join(DATA_DIR, "mcp_config.json")
 SESSIONS_DIR = os.path.join(DATA_DIR, "sessions")
 WORKSPACE_DIR = os.environ.get("WORKSPACE_DIR", os.path.join(DATA_DIR, "workspace"))
 SECRET_FILE = os.path.join(DATA_DIR, "session_secret.key")
@@ -69,6 +71,8 @@ BASH_TIMEOUT = 180
 OUTPUT_CAP = 16000         # chars of tool output fed back to the model
 READ_CAP = 24000
 APPROVAL_TIMEOUT = 3600
+MCP_MAX_TOOLS = 128        # cap merged MCP tools/session — hostile server can't blow context/cost
+MCP_DESC_CAP = 1024        # cap each MCP tool description fed to the model
 
 # Commands that pause the loop for human approval (CodeMonkeys design rule:
 # no silent pushes/deploys/destruction; git reset --hard has bitten us before)
@@ -91,6 +95,7 @@ app = FastAPI(title="CodeMonkeys")
 
 _USERS_LOCK = threading.Lock()
 _MODELS_LOCK = threading.Lock()
+_MCP_LOCK = threading.Lock()
 _SESSIONS_LOCK = threading.Lock()
 
 
@@ -685,6 +690,348 @@ def models_settings(req: ModelSettings, _: str = Depends(verify_owner)):
     return {"ok": True}
 
 
+# ----------- mcp
+
+# Runtime state: {server_id: {session_id_header, tools, status, error}}
+# NOT persisted — rebuilt on connect.
+_MCP_RUNTIME: dict[str, dict] = {}
+
+
+def _mcp_slug(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+
+
+def _load_mcp_config() -> list:
+    with _MCP_LOCK:
+        return _load_json(MCP_CONFIG_FILE, [])
+
+
+def _save_mcp_config(servers: list):
+    with _MCP_LOCK:
+        _save_json(MCP_CONFIG_FILE, servers)
+
+
+def _mcp_rpc(server: dict, method: str, params: dict, timeout: int = 30):
+    """POST a JSON-RPC 2.0 request; handle both application/json and SSE responses."""
+    rid = uuid.uuid4().hex
+    payload = {"jsonrpc": "2.0", "id": rid, "method": method, "params": params}
+    headers = {"Content-Type": "application/json",
+               "Accept": "application/json, text/event-stream"}
+    if server.get("token"):
+        headers["Authorization"] = f"Bearer {server['token']}"
+    rt = _MCP_RUNTIME.get(server["id"], {})
+    if rt.get("session_id_header"):
+        headers["Mcp-Session-Id"] = rt["session_id_header"]
+    if rt.get("protocol_version"):
+        headers["MCP-Protocol-Version"] = rt["protocol_version"]
+    _sse_byte_cap = 256 * 1024  # 256 KB hard stop on SSE body
+    _deadline = time.time() + timeout
+    resp = requests.post(server["url"], json=payload, headers=headers,
+                         timeout=timeout, stream=True)
+    resp.raise_for_status()
+    ct = resp.headers.get("Content-Type", "")
+    if "text/event-stream" in ct:
+        _bytes_read = 0
+        for line in resp.iter_lines():
+            if time.time() > _deadline:
+                raise RuntimeError("MCP SSE stream deadline exceeded")
+            if isinstance(line, bytes):
+                _bytes_read += len(line)
+                line = line.decode()
+            else:
+                _bytes_read += len(line.encode())
+            if _bytes_read > _sse_byte_cap:
+                raise RuntimeError("MCP SSE stream exceeded byte cap")
+            if not line.startswith("data:"):
+                continue
+            chunk = line[5:].strip()
+            if not chunk or chunk == "[DONE]":
+                continue
+            try:
+                obj = json.loads(chunk)
+            except json.JSONDecodeError:
+                continue
+            if obj.get("id") == rid:
+                if "error" in obj:
+                    raise RuntimeError(f"MCP error {obj['error'].get('code')}: "
+                                       f"{obj['error'].get('message')}")
+                return obj.get("result", {})
+        raise RuntimeError("MCP SSE stream ended without matching response")
+    else:
+        obj = resp.json()
+        if "error" in obj:
+            raise RuntimeError(f"MCP error {obj['error'].get('code')}: "
+                               f"{obj['error'].get('message')}")
+        return obj.get("result", {})
+
+
+def _mcp_notify(server: dict, method: str, params: dict):
+    """POST a JSON-RPC notification (no id, no response expected)."""
+    payload = {"jsonrpc": "2.0", "method": method, "params": params}
+    headers = {"Content-Type": "application/json",
+               "Accept": "application/json, text/event-stream"}
+    if server.get("token"):
+        headers["Authorization"] = f"Bearer {server['token']}"
+    rt = _MCP_RUNTIME.get(server["id"], {})
+    if rt.get("session_id_header"):
+        headers["Mcp-Session-Id"] = rt["session_id_header"]
+    if rt.get("protocol_version"):
+        headers["MCP-Protocol-Version"] = rt["protocol_version"]
+    try:
+        requests.post(server["url"], json=payload, headers=headers, timeout=10)
+    except Exception:
+        pass  # notifications are fire-and-forget
+
+
+def _mcp_connect(server: dict):
+    """initialize → notifications/initialized → tools/list; update _MCP_RUNTIME."""
+    sid = server["id"]
+    _MCP_RUNTIME[sid] = {"session_id_header": None, "protocol_version": None,
+                         "tools": [], "status": "connecting", "error": None}
+    try:
+        # Step 1: initialize
+        headers_pre = {"Content-Type": "application/json",
+                       "Accept": "application/json, text/event-stream"}
+        if server.get("token"):
+            headers_pre["Authorization"] = f"Bearer {server['token']}"
+        init_payload = {
+            "jsonrpc": "2.0", "id": uuid.uuid4().hex, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "codemonkeys", "version": "0.1"},
+            },
+        }
+        _connect_timeout = 30
+        _connect_deadline = time.time() + _connect_timeout
+        _connect_byte_cap = 256 * 1024  # 256 KB hard stop on SSE body
+        resp = requests.post(server["url"], json=init_payload,
+                             headers=headers_pre, timeout=_connect_timeout, stream=True)
+        resp.raise_for_status()
+        session_hdr = resp.headers.get("Mcp-Session-Id")
+        ct = resp.headers.get("Content-Type", "")
+        if "text/event-stream" in ct:
+            init_result = None
+            _bytes_read = 0
+            for line in resp.iter_lines():
+                if time.time() > _connect_deadline:
+                    raise RuntimeError("MCP connect SSE stream deadline exceeded")
+                if isinstance(line, bytes):
+                    _bytes_read += len(line)
+                    line = line.decode()
+                else:
+                    _bytes_read += len(line.encode())
+                if _bytes_read > _connect_byte_cap:
+                    raise RuntimeError("MCP connect SSE stream exceeded byte cap")
+                if not line.startswith("data:"):
+                    continue
+                chunk = line[5:].strip()
+                if not chunk or chunk == "[DONE]":
+                    continue
+                try:
+                    obj = json.loads(chunk)
+                except json.JSONDecodeError:
+                    continue
+                if "result" in obj or "error" in obj:
+                    if "error" in obj:
+                        raise RuntimeError(f"initialize error: {obj['error']}")
+                    init_result = obj["result"]
+                    break
+            if init_result is None:
+                raise RuntimeError("No initialize result in SSE stream")
+        else:
+            obj = resp.json()
+            if "error" in obj:
+                raise RuntimeError(f"initialize error: {obj['error']}")
+            init_result = obj.get("result", {})
+
+        proto = init_result.get("protocolVersion", "2025-03-26")
+        _MCP_RUNTIME[sid]["session_id_header"] = session_hdr
+        _MCP_RUNTIME[sid]["protocol_version"] = proto
+
+        # Step 2: notifications/initialized (no response expected)
+        _mcp_notify(server, "notifications/initialized", {})
+
+        # Step 3: tools/list
+        tl_result = _mcp_rpc(server, "tools/list", {}, timeout=30)
+        raw_tools = tl_result.get("tools", [])
+        _MCP_RUNTIME[sid]["tools"] = raw_tools
+        _MCP_RUNTIME[sid]["status"] = "connected"
+        _MCP_RUNTIME[sid]["error"] = None
+    except Exception as exc:
+        _MCP_RUNTIME[sid]["status"] = "error"
+        _MCP_RUNTIME[sid]["error"] = str(exc)
+        _MCP_RUNTIME[sid]["tools"] = []
+
+
+def _mcp_disconnect(sid: str):
+    _MCP_RUNTIME.pop(sid, None)
+
+
+def mcp_tool_schemas() -> dict:
+    """Return {namespaced_name: neutral_schema} for all enabled+connected MCP servers."""
+    result = {}
+    for srv in _load_mcp_config():
+        if not srv.get("enabled"):
+            continue
+        rt = _MCP_RUNTIME.get(srv["id"])
+        if not rt or rt.get("status") != "connected":
+            continue
+        slug = _mcp_slug(srv["name"])
+        if not slug:
+            continue  # skip servers whose slug is empty (same guard as registry)
+        for t in rt.get("tools", []):
+            tname = t.get("name", "")
+            if not tname:
+                continue
+            ns = f"mcp_{slug}_{tname}"
+            if ns in result:
+                # first-writer-wins: a later server cannot shadow an earlier one's tool
+                continue
+            if len(result) >= MCP_MAX_TOOLS:
+                return result  # hostile/huge server can't blow context/cost
+            read_only = bool((t.get("annotations") or {}).get("readOnlyHint"))
+            result[ns] = {
+                "name": ns,
+                "description": f"[{srv['name']}] {t.get('description', '')}"[:MCP_DESC_CAP],
+                "parameters": t.get("inputSchema") or {"type": "object", "properties": {}},
+                "_mcp_read_only": read_only,
+            }
+    return result
+
+
+# Registry: namespaced_name -> (server_id, original_tool_name, read_only)
+def _mcp_registry() -> dict:
+    reg = {}
+    for srv in _load_mcp_config():
+        if not srv.get("enabled"):
+            continue
+        rt = _MCP_RUNTIME.get(srv["id"])
+        if not rt or rt.get("status") != "connected":
+            continue
+        slug = _mcp_slug(srv["name"])
+        if not slug:
+            continue  # skip servers with empty slug to avoid mcp__tool ambiguity
+        for t in rt.get("tools", []):
+            tname = t.get("name", "")
+            if not tname:
+                continue
+            ns = f"mcp_{slug}_{tname}"
+            if ns in reg:
+                # first-writer-wins: drop the collider to prevent tool shadowing
+                continue
+            if len(reg) >= MCP_MAX_TOOLS:
+                return reg  # stay in lockstep with mcp_tool_schemas' cap
+            read_only = bool((t.get("annotations") or {}).get("readOnlyHint"))
+            reg[ns] = (srv["id"], tname, read_only)
+    return reg
+
+
+def _mcp_call_tool(srv_id: str, tool_name: str, arguments: dict) -> str:
+    servers = {s["id"]: s for s in _load_mcp_config()}
+    srv = servers.get(srv_id)
+    if not srv:
+        return "ERROR: MCP server not found"
+    if _MCP_RUNTIME.get(srv_id, {}).get("status") != "connected":
+        return "ERROR: MCP server not connected"
+    try:
+        result = _mcp_rpc(srv, "tools/call",
+                          {"name": tool_name, "arguments": arguments},
+                          timeout=120)
+        parts = [c["text"] for c in result.get("content", []) if c.get("type") == "text"]
+        text = "\n".join(parts)
+        if result.get("isError"):
+            text = "ERROR: " + text
+        return text[:OUTPUT_CAP]
+    except Exception as exc:
+        return f"ERROR: {exc}"
+
+
+def _mcp_entry_shape(srv: dict) -> dict:
+    rt = _MCP_RUNTIME.get(srv["id"], {})
+    tools_list = [
+        {"name": t.get("name", ""),
+         "description": t.get("description", ""),
+         "read_only": bool((t.get("annotations") or {}).get("readOnlyHint"))}
+        for t in rt.get("tools", [])
+    ]
+    return {
+        "id": srv["id"],
+        "name": srv["name"],
+        "url": srv["url"],
+        "enabled": srv.get("enabled", True),
+        "has_token": bool(srv.get("token")),
+        "status": rt.get("status", "disconnected"),
+        "error": rt.get("error"),
+        "tools": tools_list,
+    }
+
+
+class McpCreate(BaseModel):
+    name: str
+    url: str
+    token: str = ""
+
+
+@app.get("/api/mcp")
+def mcp_list(_: str = Depends(verify_owner)):
+    servers = _load_mcp_config()
+    return {"servers": [_mcp_entry_shape(s) for s in servers]}
+
+
+@app.post("/api/mcp")
+def mcp_add(req: McpCreate, _: str = Depends(verify_owner)):
+    if not req.name.strip():
+        raise HTTPException(400, "name is required")
+    url = req.url.strip()
+    _parsed = urllib.parse.urlparse(url)
+    _loopback = {"localhost", "127.0.0.1", "::1"}
+    if not (_parsed.scheme == "https" or
+            (_parsed.scheme == "http" and _parsed.hostname in _loopback)):
+        raise HTTPException(400, "url must use https:// (or http://localhost|127.0.0.1|::1 for dev)")
+    servers = _load_mcp_config()
+    sid = uuid.uuid4().hex[:8]
+    srv = {"id": sid, "name": req.name.strip(), "url": url,
+           "token": req.token, "enabled": True}
+    servers.append(srv)
+    _save_mcp_config(servers)
+    _mcp_connect(srv)
+    return _mcp_entry_shape(srv)
+
+
+@app.delete("/api/mcp/{sid}")
+def mcp_delete(sid: str, _: str = Depends(verify_owner)):
+    servers = _load_mcp_config()
+    servers = [s for s in servers if s["id"] != sid]
+    _save_mcp_config(servers)
+    _mcp_disconnect(sid)
+    return {"ok": True}
+
+
+@app.post("/api/mcp/{sid}/toggle")
+def mcp_toggle(sid: str, _: str = Depends(verify_owner)):
+    servers = _load_mcp_config()
+    srv = next((s for s in servers if s["id"] == sid), None)
+    if not srv:
+        raise HTTPException(404, "No such MCP server")
+    srv["enabled"] = not srv.get("enabled", True)
+    _save_mcp_config(servers)
+    if not srv["enabled"]:
+        _mcp_disconnect(sid)
+    return _mcp_entry_shape(srv)
+
+
+@app.post("/api/mcp/{sid}/refresh")
+def mcp_refresh(sid: str, _: str = Depends(verify_owner)):
+    servers = _load_mcp_config()
+    srv = next((s for s in servers if s["id"] == sid), None)
+    if not srv:
+        raise HTTPException(404, "No such MCP server")
+    _mcp_disconnect(sid)
+    _mcp_connect(srv)
+    return _mcp_entry_shape(srv)
+
+
 # ----------------------------------------------------------------- unified chat
 # History items (provider-agnostic):
 #   {"role": "user", "text": str}
@@ -1123,11 +1470,37 @@ def _commander_system(session):
 
 def make_executor(session, allowed, agent_label=None, depth=0):
     """Returns fn(tool_call) -> (result_str, ok)."""
+    _registry = _mcp_registry() if depth == 0 else {}
+
     def execute(tc):
         name, args = tc["name"], tc["args"]
         if name not in allowed:
             return f"ERROR: tool '{name}' not permitted for this agent", False
         try:
+            if name.startswith("mcp_") and depth == 0:
+                entry = _registry.get(name)
+                if not entry:
+                    # lazy connect: server enabled but not yet initialized
+                    servers = {s["id"]: s for s in _load_mcp_config()}
+                    for srv in servers.values():
+                        if srv.get("enabled") and _mcp_slug(srv["name"]):
+                            slug = _mcp_slug(srv["name"])
+                            if name.startswith(f"mcp_{slug}_"):
+                                _mcp_connect(srv)
+                    _registry.update(_mcp_registry())
+                    entry = _registry.get(name)
+                if not entry:
+                    return f"ERROR: MCP tool '{name}' not found", False
+                srv_id, tool_name, read_only = entry
+                # readOnlyHint is remote-controlled and not trusted for gating.
+                if session.get("mode") != "auto":
+                    approved = request_approval(
+                        session,
+                        f"MCP {name} {json.dumps(args)[:200]}"
+                    )
+                    if not approved:
+                        return "DENIED", False
+                return _mcp_call_tool(srv_id, tool_name, args), True
             if name == "bash":
                 return t_bash(args, session=session), True
             if name == "read_file":
@@ -1155,7 +1528,9 @@ def make_executor(session, allowed, agent_label=None, depth=0):
 
 def agent_loop(session, provider, system, history, tool_names, max_turns,
                agent_label=None, depth=0):
-    tools = [TOOL_SCHEMAS[t] for t in tool_names]
+    _mcp_schemas = mcp_tool_schemas() if depth == 0 else {}
+    _combined = {**TOOL_SCHEMAS, **_mcp_schemas}
+    tools = [_combined[t] for t in tool_names if t in _combined]
     executor = make_executor(session, tool_names, agent_label, depth)
     final_text = ""
     for _ in range(max_turns):
@@ -1257,7 +1632,14 @@ def run_session_message(session, text):
     session["stop_flag"].clear()
     session["history"].append({"role": "user", "text": text})
     mode = session.get("mode", "default")
-    tool_names = PLAN_TOOLS if mode == "plan" else FULL_TOOLS
+    _mcp = mcp_tool_schemas()
+    _mcp_all = list(_mcp.keys())
+    if mode == "plan":
+        # plan is read-only-local; remote MCP tools are excluded entirely —
+        # a malicious server could lie about readOnlyHint.
+        tool_names = PLAN_TOOLS
+    else:
+        tool_names = FULL_TOOLS + _mcp_all
     system = _commander_system(session) + MODE_GUIDANCE.get(mode, "")
     try:
         agent_loop(session, provider, system,
