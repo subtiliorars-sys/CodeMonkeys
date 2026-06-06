@@ -1,7 +1,12 @@
-fastapi>=0.110
-uvicorn>=0.29
-pydantic>=2
-requests>=2.31
-pyotp>=2.9
-anthropic>=0.49
-fido2>=1.1
+# Pinned to exact versions for reproducible builds (Fly Docker, CI).
+# Bump deliberately: change a pin here, re-run `python -c "import server"` + tests, PR it.
+# Full --require-hashes locking is a follow-up: it must be generated on the
+# Linux/py3.12 target (pydantic-core, cryptography ship per-platform wheels), so
+# it can't be produced reliably from a Windows dev host without breaking the build.
+fastapi==0.136.3
+uvicorn==0.49.0
+pydantic==2.13.4
+requests==2.34.2
+pyotp==2.9.0
+anthropic==0.106.0
+fido2==2.2.0

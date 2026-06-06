@@ -1,0 +1,48 @@
+name: CI
+
+# Smoke + tests on every push and PR. Python 3.12 mirrors the Fly Dockerfile
+# (python:3.12-slim) so a pinned dep without a 3.12 wheel fails here, not in deploy.
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      DATA_DIR: ${{ github.workspace }}/data
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Import smoke test
+        run: |
+          mkdir -p "$DATA_DIR"
+          python -c "import server" && echo "import server OK"
+
+      - name: Run tests
+        run: |
+          mkdir -p "$DATA_DIR"
+          set +e
+          python -m pytest tests/ -q
+          code=$?
+          set -e
+          # pytest exit 5 = "no tests collected". The first test lands in PR #12;
+          # until it merges, an empty tests/ should not fail CI. Real failures
+          # (exit 1) still fail the job.
+          if [ "$code" -eq 5 ]; then
+            echo "::warning::No tests collected yet (tests/ empty) — passing. Enforced once tests land."
+            exit 0
+          fi
+          exit $code
