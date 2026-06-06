@@ -1856,6 +1856,19 @@ def _jail(path: str) -> str:
     return full
 
 
+def _jail_specs(slug: str, artifact: str) -> str:
+    """Resolve .codemonkeys/specs/<slug>/<artifact>.md, confined strictly to
+    <WORKSPACE>/.codemonkeys/specs/ — tighter than _jail so plan mode can never
+    reach code even via traversal or symlink."""
+    specs_root = os.path.realpath(
+        os.path.join(WORKSPACE_DIR, ".codemonkeys", "specs"))
+    candidate = os.path.realpath(
+        os.path.join(specs_root, slug, artifact + ".md"))
+    if not candidate.startswith(specs_root + os.sep):
+        raise ValueError(f"Path escapes specs dir: {slug}/{artifact}")
+    return candidate
+
+
 def t_read_file(args):
     full = _jail(args["path"])
     with open(full, "r", errors="replace") as f:
@@ -1951,6 +1964,52 @@ def t_bash(args, session=None):
     return out[:OUTPUT_CAP]
 
 
+_SPEC_ARTIFACTS = ("constitution", "spec", "plan", "tasks")
+# _SLUG_RE removed (was compiled but never referenced)
+
+_PLAN_READONLY_TOOLS = frozenset({"read_file", "list_dir", "glob_files", "grep"})
+
+
+def t_save_spec(args):
+    """Plan-mode write affordance: persist a PRD artifact under
+    .codemonkeys/specs/<slug>/<artifact>.md.  Confined to that subtree only."""
+    slug_raw = args.get("slug", "")
+    artifact = args.get("artifact", "")
+    content = args.get("content", "")
+
+    # --- slug sanitization + length cap (NAME_MAX guard) ---
+    slug = re.sub(r"[^a-z0-9]+", "-", slug_raw.lower()).strip("-")
+    slug = slug[:64].rstrip("-")
+    if not slug:
+        return "ERROR: slug is empty or produced no valid characters after sanitization"
+
+    # --- artifact enum guard ---
+    if artifact not in _SPEC_ARTIFACTS:
+        return f"ERROR: artifact must be one of {_SPEC_ARTIFACTS}, got {artifact!r}"
+
+    # --- content cap ---
+    if len(content) > READ_CAP:
+        content = content[:READ_CAP]
+
+    # --- jail: confine to .codemonkeys/specs/ only ---
+    try:
+        full = _jail_specs(slug, artifact)
+    except ValueError as e:
+        return f"ERROR: {e}"
+
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    # O_NOFOLLOW: refuse to open if the final path component is a symlink
+    # (closes a TOCTOU window between _jail_specs realpath check and open).
+    try:
+        fd = os.open(full, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+    except OSError as e:
+        return f"ERROR: could not open spec file for writing: {e}"
+    with os.fdopen(fd, "w") as f:
+        f.write(content)
+    rel = os.path.join(".codemonkeys", "specs", slug, artifact + ".md")
+    return f"Saved {len(content)} chars → {rel}"
+
+
 TOOL_SCHEMAS = {
     "read_file": {"name": "read_file", "description": "Read a file in the workspace.",
                   "parameters": {"type": "object", "properties": {
@@ -1990,6 +2049,27 @@ TOOL_SCHEMAS = {
                         "agent": {"type": "string", "description": "Agent name, e.g. recon-scout"},
                         "task": {"type": "string", "description": "Objective with context — intent and end-state, not micromanagement"}},
                         "required": ["agent", "task"]}},
+    "save_spec": {"name": "save_spec",
+                  "description":
+                      "Persist a PRD artifact for a project plan. Writes "
+                      ".codemonkeys/specs/<slug>/<artifact>.md inside the workspace. "
+                      "PLAN MODE ONLY write affordance — cannot reach any code path. "
+                      "Call once per artifact; re-calling overwrites that artifact. "
+                      "artifact must be one of: constitution, spec, plan, tasks. "
+                      "constitution = durable principles/constraints/non-negotiables. "
+                      "spec = WHAT: problem, goals, non-goals, acceptance criteria. "
+                      "plan = HOW: approach, architecture, files touched, risks, sequence. "
+                      "tasks = decomposed checklist; each item must include a verification step.",
+                  "parameters": {"type": "object", "properties": {
+                      "slug": {"type": "string",
+                               "description": "Short project identifier, e.g. 'auth-refactor'. "
+                                              "Lowercased; non-alphanumeric chars become hyphens."},
+                      "artifact": {"type": "string",
+                                   "enum": ["constitution", "spec", "plan", "tasks"],
+                                   "description": "Which artifact to write."},
+                      "content": {"type": "string",
+                                  "description": "Full markdown content for this artifact."}},
+                      "required": ["slug", "artifact", "content"]}},
 }
 
 # Daystrom frontmatter tools -> our runtime tools
@@ -2227,6 +2307,9 @@ def make_executor(session, allowed, agent_label=None, depth=0):
                 if depth > 0:
                     return "ERROR: subagents cannot spawn subagents", False
                 return run_subagent(session, args.get("agent", ""), args.get("task", "")), True
+            if name == "save_spec":
+                r = t_save_spec(args)
+                return r, not r.startswith("ERROR")
             return f"ERROR: unknown tool {name}", False
         except Exception as e:  # tool errors go back to the model, not the user
             return f"ERROR: {type(e).__name__}: {e}", False
@@ -2291,6 +2374,12 @@ def run_subagent(session, agent_name, task):
     if not provider:
         return "ERROR: no enabled model provider"
     tool_names = corps_tools(agent_def)
+    # Plan mode must stay read-only even through subagents: a subagent spawned
+    # from a plan-mode session must not gain write_file/edit_file/bash/save_spec.
+    # save_spec is reserved for the top-level planner, not arbitrary subagents.
+    if session.get("mode") == "plan":
+        filtered = [t for t in tool_names if t in _PLAN_READONLY_TOOLS]
+        tool_names = filtered if filtered else list(_PLAN_READONLY_TOOLS)
     emit(session, "agent_start", agent=agent_name, tier=tier,
          model=provider["model"], task=task[:300])
     system = (
@@ -2310,10 +2399,36 @@ def run_subagent(session, agent_name, task):
 
 MODE_GUIDANCE = {
     "plan": (
-        "\n\nMODE: PLAN. You have READ-ONLY tools. Do NOT write, edit, or run "
-        "mutating commands. Investigate the workspace, then present a clear, "
-        "numbered implementation plan and STOP. The user will switch you to "
-        "default or auto mode to execute it."),
+        "\n\nMODE: PLAN — SPEC-FIRST WORKFLOW.\n"
+        "You have read-only workspace tools (read_file, list_dir, glob_files, grep, "
+        "spawn_agent) plus ONE write affordance: save_spec. You MUST NOT use "
+        "write_file, edit_file, or bash. save_spec writes exclusively to "
+        ".codemonkeys/specs/<slug>/ and cannot reach code.\n\n"
+        "REQUIRED WORKFLOW — execute in order:\n"
+        "1. INVESTIGATE. Read the workspace: entry points, existing tests, "
+        "CLAUDE.md / CONSTITUTION.md / docs/STATE.md, any existing "
+        ".codemonkeys/specs/<slug>/ artifacts. Use grep/glob as needed.\n"
+        "2. CHOOSE A SLUG. Short, lowercase, hyphenated identifier for this "
+        "initiative, e.g. 'auth-refactor'.\n"
+        "3. PRODUCE FOUR ARTIFACTS via save_spec (one call per artifact):\n"
+        "   a. constitution — durable project principles: security invariants, "
+        "style rules, scope guardrails, non-negotiables. If a CONSTITUTION.md or "
+        "prior .codemonkeys/specs/<slug>/constitution.md exists, read it first "
+        "and refine rather than overwrite blindly.\n"
+        "   b. spec — WHAT to build: problem statement, goals, explicit non-goals, "
+        "user-visible behavior, acceptance criteria.\n"
+        "   c. plan — HOW: approach, architecture, which files are touched, "
+        "risks and mitigations, sequencing rationale.\n"
+        "   d. tasks — decomposed checklist. Every item MUST carry its own "
+        "verification step, e.g.:\n"
+        "      - [ ] T1 Add foo() to bar.py — verify: "
+        "`./.venv/bin/python -c 'from bar import foo'`\n"
+        "4. SUMMARIZE. After all four saves, print a short summary: "
+        "list the artifact paths, call out any open questions or risks, "
+        "and tell the user to switch to default or auto mode to execute tasks.\n\n"
+        "HARD RULES: save_spec is the ONLY thing you may write in plan mode. "
+        "Do not modify source code, configs, tests, or anything outside "
+        ".codemonkeys/specs/. Present the plan; do not execute it."),
     "default": (
         "\n\nMODE: DEFAULT. Implement the work. Pushes, deploys, and destructive "
         "commands will pause for the user's approval — that is expected."),
@@ -2333,7 +2448,8 @@ MODE_GUIDANCE = {
         "green (stop and report). Never exceed the session budget or max-turns "
         "cap. When blocked, state the blocker plainly so the user can act."),
 }
-PLAN_TOOLS = ["read_file", "list_dir", "glob_files", "grep", "spawn_agent"]
+PLAN_TOOLS = ["read_file", "list_dir", "glob_files", "grep", "spawn_agent",
+              "save_spec"]
 FULL_TOOLS = ["read_file", "write_file", "edit_file", "list_dir",
               "glob_files", "grep", "bash", "spawn_agent"]
 
