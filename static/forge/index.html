@@ -39,6 +39,7 @@
     background: repeating-linear-gradient(0deg, rgba(0,0,0,.16) 0 1px, transparent 1px 3px); opacity:.5; }
   .monkey { image-rendering: pixelated; filter: drop-shadow(0 0 8px rgba(212,175,55,.5)); }
   ::-webkit-scrollbar { width: 8px; } ::-webkit-scrollbar-thumb { background: #2b2415; border-radius: 4px; }
+  #composer.drop-active { outline: 2px dashed var(--gold); outline-offset: -4px; background: rgba(212,175,55,.06); }
 </style>
 </head>
 <body class="scanlines h-screen overflow-hidden">
@@ -137,12 +138,18 @@
       </div>
     </div>
     <div class="p-3 border-t border-yellow-900/40 text-xs space-y-2">
-      <button id="btn-models" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">⚙ Models &amp; keys</button>
-      <button id="btn-mcp" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">⚙ MCP</button>
-      <button id="btn-passkey" class="w-full text-left text-slate-400 hover:text-[var(--gold)]">👆 Add passkey / biometric</button>
-      <p id="passkey-msg" class="text-[.65rem] text-slate-500"></p>
-      <button id="btn-invite" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">👥 Invite developers</button>
-      <a href="/static/forge/swarm.html" class="block text-slate-400 hover:text-[var(--gold)]">🐵 Swarm view</a>
+      <div class="relative">
+        <button id="btn-settings" class="w-full text-left text-slate-400 hover:text-[var(--gold)] flex justify-between items-center">
+          <span>⚙ Settings</span><span id="settings-caret" class="text-slate-600">▸</span></button>
+        <div id="settings-menu" class="hidden mt-2 space-y-2 rounded border border-yellow-900/40 bg-black/40 p-2">
+          <button id="btn-models" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">⚙ Models &amp; keys</button>
+          <button id="btn-mcp" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">🔌 MCP connectors</button>
+          <button id="btn-passkey" class="w-full text-left text-slate-400 hover:text-[var(--gold)]">👆 Add passkey / biometric</button>
+          <p id="passkey-msg" class="text-[.65rem] text-slate-500"></p>
+          <button id="btn-invite" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">👥 Invite developers</button>
+          <a href="/static/forge/swarm.html" class="block text-slate-400 hover:text-[var(--gold)]">🐵 Swarm view</a>
+        </div>
+      </div>
       <button id="btn-logout" class="w-full text-left text-slate-600 hover:text-slate-300">⏻ <span id="who"></span> · log out</button>
     </div>
   </aside>
@@ -157,7 +164,7 @@
       <span id="hdr-spend" class="text-[var(--gold)]"></span>
     </header>
     <div id="stream" class="flex-1 overflow-y-auto px-4 py-3 space-y-2 text-sm"></div>
-    <div class="border-t border-yellow-900/40 p-3">
+    <div id="composer" class="border-t border-yellow-900/40 p-3">
       <div class="flex items-center gap-2 mb-1 text-xs">
         <span class="text-slate-500">mode:</span>
         <button data-mode="plan" class="mode-btn rounded px-2 py-0.5 gold-border text-slate-400">📋 plan</button>
@@ -171,7 +178,7 @@
         <input id="file-input" type="file" multiple class="hidden">
         <button id="btn-mic" title="Voice input" class="gold-border rounded px-2 py-2 text-sm hover:bg-yellow-900/20">🎤</button>
         <textarea id="msg" rows="2" class="input flex-1 rounded px-3 py-2 text-sm resize-none"
-          placeholder="Tell the monkeys what to build… (Enter to send, Shift+Enter for newline)"></textarea>
+          placeholder="Tell the monkeys what to build… (Enter to send, Shift+Enter for newline. Paste or drag-drop images/files here.)"></textarea>
         <button id="btn-stop" class="hidden rounded px-3 py-2 text-sm bg-red-900/60 hover:bg-red-800">■</button>
         <button id="btn-send" class="gold-btn rounded px-4 py-2 text-sm">Send</button>
       </div>
