@@ -1,5 +1,8 @@
 # CodeMonkeys — working agreement for AI agents
 
+**Resuming? Read `docs/STATE.md` first** — current live state, what's shipped,
+and the next steps. Backlog in `docs/IDEATION.md`.
+
 ## Layout contract
 - `server.py` is the single backend file. Don't split it without the owner's say-so.
 - `static/forge/` is the only frontend dir. Vanilla JS + Tailwind CDN, no build step.
