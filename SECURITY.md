@@ -21,7 +21,8 @@ keep that radius away from everything else.
 
 - PIN hashed with PBKDF2-HMAC-SHA256, 200k iterations, per-user salt
 - Mandatory per-user TOTP (RFC 6238); registration closes after first (Owner)
-  account unless `OPEN_ENROLLMENT=true`
+  account unless `OPEN_ENROLLMENT=true`. The enrollment QR is rendered locally
+  (segno → SVG data URI) so the shared secret never leaves the machine.
 - Session tokens: HMAC-SHA256-signed payloads, 7-day TTL, secret generated on
   first boot (`/data/session_secret.key`, mode 600)
 - Every coding endpoint requires the Owner role; unauthenticated → 401, wrong
@@ -166,5 +167,9 @@ keep that radius away from everything else.
   bounded by CPU-bound PBKDF2, never an unbounded bypass; (c) there is no
   per-IP/global ceiling, so distributed guessing across many usernames is bounded
   only per-account. Add an IP/global dimension before opening enrollment widely.
-- External CDN (Tailwind) and QR service used by the frontend — acceptable for
-  a single-owner tool; vendor them before any multi-user use
+- The TOTP enrollment QR is now generated **locally** server-side (segno, SVG
+  data URI) — the otpauth secret is never sent to an external QR service. If
+  segno is not installed the UI shows the secret for manual entry (it never
+  falls back to an external CDN). **Still external:** Tailwind is loaded from a
+  CDN (`cdn.tailwindcss.com`) — cosmetic, no secret, but vendor it before any
+  multi-user/offline use.
