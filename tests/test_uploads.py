@@ -78,3 +78,12 @@ def test_file_count_is_capped():
 def test_no_files_returns_empty():
     assert server._save_uploads(SID, None) == []
     assert server._save_uploads(SID, []) == []
+
+
+def test_nul_byte_filename_is_skipped_not_500():
+    # A NUL in the name makes os.open raise ValueError (not OSError); it must be
+    # skipped, never propagate as a 500 that aborts the whole message.
+    bad = _f("evil\x00.txt", b"x")
+    good = _f("ok.txt", b"y")
+    names = server._save_uploads(SID, [bad, good])
+    assert names == [f"uploads/{SID}/ok.txt"]   # bad skipped, good still written

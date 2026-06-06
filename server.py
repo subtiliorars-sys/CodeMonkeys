@@ -2634,7 +2634,9 @@ def _save_uploads(sid: str, files) -> list:
         if not b64 or len(b64) > MAX_UPLOAD_B64:   # reject oversized pre-decode
             continue
         safe = os.path.basename(f.name or "") or "file"
-        if safe in (".", ".."):
+        if safe in (".", "..") or "\x00" in safe:
+            # NUL (or '.'/'..') makes os.open raise ValueError, not OSError —
+            # reject up front so one crafted name can't 500 the whole message.
             continue
         try:
             dest = _jail(os.path.join("uploads", sid, safe))
@@ -2648,7 +2650,7 @@ def _save_uploads(sid: str, files) -> list:
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             with open(dest, "wb") as fh:
                 fh.write(blob[:MAX_UPLOAD_BYTES])
-        except OSError:
+        except (OSError, ValueError):   # ValueError = embedded-NUL belt-and-suspenders
             continue
         names.append(f"uploads/{sid}/{safe}")
     return names
