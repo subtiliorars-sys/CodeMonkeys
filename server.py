@@ -2035,7 +2035,8 @@ def t_apply_patch(args):
 _SPEC_ARTIFACTS = ("constitution", "spec", "plan", "tasks")
 # _SLUG_RE removed (was compiled but never referenced)
 
-_PLAN_READONLY_TOOLS = frozenset({"read_file", "list_dir", "glob_files", "grep"})
+_PLAN_READONLY_TOOLS = frozenset({"read_file", "list_dir", "glob_files", "grep",
+                                  "blackboard_read"})
 
 
 def t_save_spec(args):
@@ -2076,6 +2077,141 @@ def t_save_spec(args):
         f.write(content)
     rel = os.path.join(".codemonkeys", "specs", slug, artifact + ".md")
     return f"Saved {len(content)} chars → {rel}"
+
+
+# ---- cross-session blackboard memory (IDEATION #4) -------------------------
+# A persistent FACTS/DECISIONS/NEXT note per task, confined to
+# <WORKSPACE>/.codemonkeys/blackboard-<slug>.md, that survives session resets:
+# existing blackboards are injected into the commander prompt at session start.
+# Same jail discipline as save_spec. blackboard_read is read-only (all modes);
+# blackboard_write is a default/auto-only write (NOT in plan mode — plan's only
+# write affordance stays save_spec, preserving the read-only-end-to-end invariant).
+_BB_SECTIONS = ("FACTS", "DECISIONS", "NEXT")
+_BB_MAX = READ_CAP                 # per-file content cap
+
+
+def _bb_slug(raw: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", (raw or "").lower()).strip("-")[:64].rstrip("-")
+
+
+def _jail_blackboard(slug: str) -> str:
+    """Resolve .codemonkeys/blackboard-<slug>.md, confined strictly to
+    <WORKSPACE>/.codemonkeys/ (no subdir, no traversal)."""
+    root = os.path.realpath(os.path.join(WORKSPACE_DIR, ".codemonkeys"))
+    candidate = os.path.realpath(os.path.join(root, f"blackboard-{slug}.md"))
+    if os.path.dirname(candidate) != root:
+        raise ValueError(f"Path escapes .codemonkeys dir: {slug}")
+    return candidate
+
+
+def _bb_parse(text: str) -> dict:
+    """Split a blackboard markdown body into its canonical sections."""
+    sections = {s: "" for s in _BB_SECTIONS}
+    current = None
+    for line in text.splitlines():
+        m = re.match(r"^##\s+(\w+)", line)
+        if m and m.group(1).upper() in sections:
+            current = m.group(1).upper()
+            continue
+        if current:
+            sections[current] += line + "\n"
+    return {k: v.strip() for k, v in sections.items()}
+
+
+def _bb_render(slug: str, sections: dict) -> str:
+    out = [f"# Blackboard — {slug}", ""]
+    for s in _BB_SECTIONS:
+        out.append(f"## {s}")
+        out.append(sections.get(s, "").strip() or "_(none yet)_")
+        out.append("")
+    return "\n".join(out).strip() + "\n"
+
+
+def t_blackboard_read(args):
+    slug = _bb_slug(args.get("slug", ""))
+    if not slug:
+        return "ERROR: slug is empty after sanitization"
+    try:
+        full = _jail_blackboard(slug)
+    except ValueError as e:
+        return f"ERROR: {e}"
+    if not os.path.exists(full):
+        return f"(no blackboard yet for '{slug}' — create one with blackboard_write)"
+    with open(full, "r", errors="replace") as f:
+        return f.read(_BB_MAX + 1)[:_BB_MAX]
+
+
+def t_blackboard_write(args):
+    slug = _bb_slug(args.get("slug", ""))
+    section = str(args.get("section", "")).upper()
+    content = (args.get("content", "") or "").strip()
+    mode = args.get("mode", "append")
+    if not slug:
+        return "ERROR: slug is empty after sanitization"
+    if section not in _BB_SECTIONS:
+        return f"ERROR: section must be one of {_BB_SECTIONS}, got {section!r}"
+    if mode not in ("append", "replace"):
+        return "ERROR: mode must be 'append' or 'replace'"
+    try:
+        full = _jail_blackboard(slug)
+    except ValueError as e:
+        return f"ERROR: {e}"
+    existing = ""
+    if os.path.exists(full):
+        with open(full, "r", errors="replace") as f:
+            existing = f.read()
+    sections = _bb_parse(existing)
+    if mode == "replace":
+        sections[section] = content
+    else:
+        bullet = content if content.startswith(("-", "*")) else f"- {content}"
+        sections[section] = (sections[section] + "\n" + bullet).strip()
+    rendered = _bb_render(slug, sections)
+    if len(rendered) > _BB_MAX:
+        return (f"ERROR: blackboard would exceed {_BB_MAX} chars — "
+                "replace/trim a section instead of appending")
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    # O_NOFOLLOW (when the platform has it) closes the realpath→open symlink
+    # TOCTOU; falls back to 0 on Windows dev hosts where the flag is absent.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(full, flags, 0o644)
+    except OSError as e:
+        return f"ERROR: could not open blackboard for writing: {e}"
+    with os.fdopen(fd, "w") as f:
+        f.write(rendered)
+    return f"Updated {section} ({mode}) → .codemonkeys/blackboard-{slug}.md"
+
+
+def _blackboard_context() -> str:
+    """Inject existing blackboards into the commander prompt — this is what makes
+    the memory survive session resets. Bounded so a large board can't blow context."""
+    root = os.path.realpath(os.path.join(WORKSPACE_DIR, ".codemonkeys"))
+    try:
+        files = sorted(f for f in os.listdir(root)
+                       if f.startswith("blackboard-") and f.endswith(".md"))
+    except OSError:
+        return ""
+    if not files:
+        return ""
+    chunks, total = [], 0
+    for fn in files:
+        try:
+            with open(os.path.join(root, fn), "r", errors="replace") as f:
+                body = f.read(4000)
+        except OSError:
+            continue
+        chunk = f"\n--- {fn} ---\n{body}\n"
+        if total + len(chunk) > 8000:
+            chunks.append("\n…[more blackboards truncated]")
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    return (
+        "\n\nPERSISTENT BLACKBOARD (cross-session memory — survives session "
+        "resets). Read with blackboard_read(slug); in default/auto mode record "
+        "durable FACTS, DECISIONS, and NEXT steps with blackboard_write(slug, "
+        "section, content, mode). Current state:\n" + "".join(chunks))
 
 
 TOOL_SCHEMAS = {
@@ -2138,6 +2274,32 @@ TOOL_SCHEMAS = {
                       "content": {"type": "string",
                                   "description": "Full markdown content for this artifact."}},
                       "required": ["slug", "artifact", "content"]}},
+    "blackboard_read": {"name": "blackboard_read",
+                        "description":
+                            "Read the persistent cross-session blackboard for a task "
+                            "(.codemonkeys/blackboard-<slug>.md): durable FACTS, DECISIONS, "
+                            "and NEXT steps that survive session resets. Read-only; "
+                            "available in every mode.",
+                        "parameters": {"type": "object", "properties": {
+                            "slug": {"type": "string",
+                                     "description": "Task identifier, e.g. 'auth-refactor'. "
+                                                    "Lowercased; non-alphanumerics become hyphens."}},
+                            "required": ["slug"]}},
+    "blackboard_write": {"name": "blackboard_write",
+                         "description":
+                             "Update the persistent cross-session blackboard for a task. "
+                             "Confined to .codemonkeys/blackboard-<slug>.md (cannot reach code). "
+                             "Use it to record durable knowledge so a future session can resume: "
+                             "FACTS (established truths), DECISIONS (choices + rationale), NEXT "
+                             "(remaining steps). mode 'append' adds a bullet; 'replace' rewrites "
+                             "the whole section (use for NEXT as it changes).",
+                         "parameters": {"type": "object", "properties": {
+                             "slug": {"type": "string", "description": "Task identifier."},
+                             "section": {"type": "string", "enum": ["FACTS", "DECISIONS", "NEXT"]},
+                             "content": {"type": "string", "description": "Text to add or set."},
+                             "mode": {"type": "string", "enum": ["append", "replace"],
+                                      "description": "Default 'append'."}},
+                             "required": ["slug", "section", "content"]}},
     "apply_patch": {"name": "apply_patch",
                     "description":
                         "Apply a standard unified diff (git-style) to one or more files in the "
@@ -2333,6 +2495,7 @@ def _commander_system(session):
         "Pushes/deploys/destructive commands pause for human approval — that is expected, "
         "proceed when you genuinely need them. Be token-efficient: act, don't narrate. "
         "When done, give a short report of what changed and how it was verified."
+        + _blackboard_context()
     )
 
 
@@ -2393,6 +2556,11 @@ def make_executor(session, allowed, agent_label=None, depth=0):
                 return run_subagent(session, args.get("agent", ""), args.get("task", "")), True
             if name == "save_spec":
                 r = t_save_spec(args)
+                return r, not r.startswith("ERROR")
+            if name == "blackboard_read":
+                return t_blackboard_read(args), True
+            if name == "blackboard_write":
+                r = t_blackboard_write(args)
                 return r, not r.startswith("ERROR")
             return f"ERROR: unknown tool {name}", False
         except Exception as e:  # tool errors go back to the model, not the user
@@ -2533,9 +2701,10 @@ MODE_GUIDANCE = {
         "cap. When blocked, state the blocker plainly so the user can act."),
 }
 PLAN_TOOLS = ["read_file", "list_dir", "glob_files", "grep", "spawn_agent",
-              "save_spec"]
+              "save_spec", "blackboard_read"]
 FULL_TOOLS = ["read_file", "write_file", "edit_file", "apply_patch", "list_dir",
-              "glob_files", "grep", "bash", "spawn_agent"]
+              "glob_files", "grep", "bash", "spawn_agent",
+              "blackboard_read", "blackboard_write"]
 
 
 def run_session_message(session, text):
