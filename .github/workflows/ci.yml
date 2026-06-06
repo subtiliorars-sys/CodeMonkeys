@@ -34,13 +34,18 @@ jobs:
       - name: Run tests
         run: |
           mkdir -p "$DATA_DIR"
+          # tests/ doesn't exist on main yet (first test lands in PR #12, and git
+          # doesn't track empty dirs). Until then, skip rather than fail.
+          if [ ! -d tests ]; then
+            echo "::warning::No tests/ directory yet — skipping. Enforced once the first test (PR #12) lands."
+            exit 0
+          fi
           set +e
           python -m pytest tests/ -q
           code=$?
           set -e
-          # pytest exit 5 = "no tests collected". The first test lands in PR #12;
-          # until it merges, an empty tests/ should not fail CI. Real failures
-          # (exit 1) still fail the job.
+          # pytest exit 5 = "no tests collected" (empty tests/); pass until tests
+          # land. Real failures (exit 1) still fail the job.
           if [ "$code" -eq 5 ]; then
             echo "::warning::No tests collected yet (tests/ empty) — passing. Enforced once tests land."
             exit 0
