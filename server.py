@@ -23,6 +23,7 @@ import os
 import re
 import secrets
 import select
+import shlex
 import subprocess
 import tempfile
 import threading
@@ -69,6 +70,13 @@ _OAUTH_STATE_TTL = 600
 
 SESSION_TTL = 7 * 24 * 3600
 OPEN_ENROLLMENT = os.environ.get("OPEN_ENROLLMENT", "false").lower() == "true"
+# Login brute-force throttle (fail2ban-style; SECURITY.md "no login rate-limit"):
+# after LOGIN_MAX_FAILS bad attempts within LOGIN_WINDOW_SEC, lock that account
+# for LOGIN_LOCKOUT_SEC. PBKDF2+TOTP already make brute force slow; this bounds it.
+LOGIN_MAX_FAILS = int(os.environ.get("LOGIN_MAX_FAILS", "10"))
+LOGIN_WINDOW_SEC = int(os.environ.get("LOGIN_WINDOW_SEC", "300"))
+LOGIN_LOCKOUT_SEC = int(os.environ.get("LOGIN_LOCKOUT_SEC", "900"))
+LOGIN_TRACK_CAP = 4096     # max distinct keys tracked — bounds memory vs username-spam
 SESSION_BUDGET_USD = float(os.environ.get("SESSION_BUDGET_USD", "1.00"))
 MAX_TURNS = int(os.environ.get("MAX_TURNS", "60"))
 SUBAGENT_MAX_TURNS = int(os.environ.get("SUBAGENT_MAX_TURNS", "25"))
@@ -79,18 +87,51 @@ READ_CAP = 24000
 APPROVAL_TIMEOUT = 3600
 MCP_MAX_TOOLS = 128        # cap merged MCP tools/session — hostile server can't blow context/cost
 MCP_DESC_CAP = 1024        # cap each MCP tool description fed to the model
+MAX_MSG_CHARS = int(os.environ.get("MAX_MSG_CHARS", "200000"))   # cap a single message
+MAX_UPLOAD_FILES = 20
+MAX_UPLOAD_BYTES = 10_000_000                                    # 10 MB written per file
+# base64 expands ~4/3; cap the ENCODED input so we never decode a huge blob into memory
+MAX_UPLOAD_B64 = MAX_UPLOAD_BYTES * 4 // 3 + 1024
 
 # Commands that pause the loop for human approval (CodeMonkeys design rule:
 # no silent pushes/deploys/destruction; git reset --hard has bitten us before)
 RISKY_PATTERNS = [
     r"\bgit\s+push\b",
-    r"\bfly\s+\w+",
+    r"\bfly(?:ctl)?\s+\w+",          # `fly` and the real binary name `flyctl`
     r"\brm\s+-rf\b",
     r"\bgit\s+reset\s+--hard\b",
     r"\bgit\s+clean\b",
     r"\bgh\s+repo\s+delete\b",
     r"\bsudo\b",
 ]
+
+
+def _is_risky(cmd: str) -> bool:
+    """True if *cmd* (or any quoted/escaped form of it) matches a RISKY pattern.
+
+    Matching the raw string alone is bypassable by shell quoting and escaping:
+    bash collapses `git "push"`, `g''it push`, and `git\\ push` all to `git push`,
+    but those forms never match `\\bgit\\s+push\\b` because the intervening quote
+    or backslash breaks the regex. We additionally normalize the command with
+    shlex (which strips quotes/escapes exactly as the shell would) and match the
+    rejoined token stream, so a quoted risky verb can no longer hide from the gate.
+
+    Fail closed: a command we cannot tokenize (e.g. unbalanced quotes) is treated
+    as risky and gated rather than waved through.
+
+    Residual (documented in SECURITY.md): runtime-only constructs such as
+    variable expansion (`g=git; $g push`), command substitution (`$(echo git) push`),
+    and `eval` are resolved by bash at execution time and are not visible to static
+    matching. Those are an accepted residual risk of gating a raw shell string.
+    """
+    candidates = [cmd]
+    try:
+        # posix shlex collapses quotes/escapes: 'git "push"' -> ['git', 'push']
+        candidates.append(" ".join(shlex.split(cmd, comments=False, posix=True)))
+    except ValueError:
+        return True  # unparseable → fail closed
+    return any(re.search(pat, text)
+               for text in candidates for pat in RISKY_PATTERNS)
 
 for _d in (DATA_DIR, SESSIONS_DIR, WORKSPACE_DIR):
     os.makedirs(_d, exist_ok=True)
@@ -271,22 +312,94 @@ def register(req: RegisterRequest):
     }
 
 
+# ---- login brute-force throttle (in-memory, process-local) -----------------
+# Keyed by username. Lock is per-account (the documented "account lockout"),
+# which means a determined attacker who knows a username can lock that account
+# out for LOGIN_LOCKOUT_SEC — an availability trade-off accepted in SECURITY.md
+# for a single-owner tool; an IP dimension can be layered on later if enrollment
+# opens. Process-local: a restart clears counters (fail-open on restart only).
+_login_fails = {}                      # username -> {"stamps": [ts...], "until": ts}
+_LOGIN_LOCK = threading.Lock()
+
+
+def _login_locked_for(key: str) -> int:
+    """Seconds remaining on an active lock for *key*, else 0."""
+    with _LOGIN_LOCK:
+        rec = _login_fails.get(key)
+        if not rec:
+            return 0
+        remaining = int(rec.get("until", 0) - time.time())
+        return remaining if remaining > 0 else 0
+
+
+def _login_prune(now: float) -> None:
+    """Drop entries with no active lock and no in-window failures. Caller holds
+    _LOGIN_LOCK. Bounds memory against an attacker spamming distinct usernames."""
+    dead = [k for k, r in _login_fails.items()
+            if r.get("until", 0) <= now
+            and not any(now - t < LOGIN_WINDOW_SEC for t in r.get("stamps", []))]
+    for k in dead:
+        del _login_fails[k]
+
+
+def _login_note_failure(key: str) -> None:
+    """Record a failed attempt; arm a lockout once the window threshold trips."""
+    now = time.time()
+    with _LOGIN_LOCK:
+        if len(_login_fails) >= LOGIN_TRACK_CAP and key not in _login_fails:
+            _login_prune(now)          # reclaim dead entries first
+            if len(_login_fails) >= LOGIN_TRACK_CAP:
+                # Hard bound: evict the least-valuable entry. Sort key prefers to
+                # KEEP (a) actively-locked accounts (until>0 sorts last), then
+                # (b) accounts closest to the threshold (more stamps sorts last),
+                # so an attacker flooding 1-stamp junk usernames cannot evict and
+                # thereby reset a victim's near-threshold counter or armed lock.
+                victim = min(_login_fails.items(),
+                             key=lambda kv: (kv[1].get("until", 0),
+                                             len(kv[1].get("stamps") or []),
+                                             max(kv[1].get("stamps") or [0])))
+                del _login_fails[victim[0]]
+        rec = _login_fails.setdefault(key, {"stamps": [], "until": 0})
+        rec["stamps"] = [t for t in rec["stamps"] if now - t < LOGIN_WINDOW_SEC]
+        rec["stamps"].append(now)
+        if len(rec["stamps"]) >= LOGIN_MAX_FAILS:
+            rec["until"] = now + LOGIN_LOCKOUT_SEC
+            rec["stamps"] = []         # reset window; the lock is the penalty now
+
+
+def _login_clear(key: str) -> None:
+    with _LOGIN_LOCK:
+        _login_fails.pop(key, None)
+
+
 @app.post("/api/login")
 def login(req: LoginRequest):
-    users = load_users()
     uname = req.username.strip()
+    # Throttle BEFORE any credential work — denies the attacker free PBKDF2 calls
+    # and applies even to unknown usernames (no account-existence oracle).
+    locked = _login_locked_for(uname)
+    if locked > 0:
+        raise HTTPException(429, f"Too many attempts. Try again in {locked}s.",
+                            headers={"Retry-After": str(locked)})
+    users = load_users()
     user = users.get(uname)
     if not user or not hmac.compare_digest(
         user["pin_hash"], hash_pin(req.pin, user["salt"])
     ):
+        _login_note_failure(uname)
         raise HTTPException(401, "Bad credentials")
-    # invited accounts log in with the starter PIN only (no authenticator yet),
-    # then are forced through first-time setup
+    # Invited accounts log in with the starter PIN only (no authenticator yet),
+    # then are forced through first-time setup. This branch is MFA-less, so the
+    # throttle is its ONLY brute-force barrier — deliberately do NOT clear the
+    # counter here (a correct guess still gets in, but a lucky near-miss run does
+    # not get its window wiped). The counter is cleared after /api/account/setup.
     if user.get("must_reset"):
         return {"token": make_token(uname), "username": uname,
                 "role": user["role"], "must_reset": True}
     if not pyotp.TOTP(user["mfa_secret"]).verify(req.mfa_code, valid_window=1):
+        _login_note_failure(uname)
         raise HTTPException(401, "Bad MFA code")
+    _login_clear(uname)
     return {"token": make_token(uname), "username": uname, "role": user["role"]}
 
 
@@ -384,6 +497,10 @@ def account_setup(req: FirstSetup, username: str = Depends(verify_token)):
         user["must_reset"] = False
         users[target] = user
         save_users(users)
+    # setup finished — the starter-PIN window is no longer relevant; clear both
+    # the old (pre-rename) and new keys so a rename can't strand a stale counter.
+    _login_clear(username)
+    _login_clear(target)
     uri = pyotp.TOTP(mfa_secret).provisioning_uri(name=target, issuer_name="CodeMonkeys")
     return {"token": make_token(target), "username": target,
             "role": load_users()[target]["role"], "mfa_otpauth_uri": uri}
@@ -469,8 +586,13 @@ class WebauthnBegin(BaseModel):
 
 @app.post("/api/webauthn/login/begin")
 def webauthn_login_begin(req: WebauthnBegin, request: Request):
+    uname = req.username.strip()
+    locked = _login_locked_for(uname)        # same key namespace as PIN login
+    if locked > 0:
+        raise HTTPException(429, f"Too many attempts. Try again in {locked}s.",
+                            headers={"Retry-After": str(locked)})
     users = load_users()
-    user = users.get(req.username.strip())
+    user = users.get(uname)
     if not user:
         raise HTTPException(404, "User not found")
     creds = _user_credentials(user)
@@ -487,6 +609,10 @@ def webauthn_login_begin(req: WebauthnBegin, request: Request):
 @app.post("/api/webauthn/login/complete")
 def webauthn_login_complete(req: dict, request: Request):
     username = str(req.get("username", "")).strip()
+    locked = _login_locked_for(username)     # shared lock: covers PIN + passkey
+    if locked > 0:
+        raise HTTPException(429, f"Too many attempts. Try again in {locked}s.",
+                            headers={"Retry-After": str(locked)})
     pending = _webauthn_states.pop(f"login_{username}", None)
     if pending is None:
         raise HTTPException(400, "Login challenge expired — try again")
@@ -495,7 +621,9 @@ def webauthn_login_complete(req: dict, request: Request):
     try:
         server.authenticate_complete(pending["state"], pending["creds"], response)
     except Exception as e:
+        _login_note_failure(username)        # a forged-assertion attempt counts
         raise HTTPException(401, f"Biometric verification failed: {e}")
+    _login_clear(username)
     role = load_users()[username]["role"]
     return {"token": make_token(username), "username": username, "role": role}
 
@@ -599,6 +727,7 @@ def load_models():
 def save_models(cfg):
     with _MODELS_LOCK:
         _save_json(MODELS_FILE, cfg)
+    _bust_secret_cache()      # newly-added API keys must be redactable immediately
 
 
 def _resolve(prov):
@@ -1959,11 +2088,9 @@ def t_bash(args, session=None):
     cmd = args["command"]
     # auto mode skips the approval gate; default/plan still gate risky commands
     if session is not None and session.get("mode") != "auto":
-        for pat in RISKY_PATTERNS:
-            if re.search(pat, cmd):
-                if not request_approval(session, cmd):
-                    return "DENIED: user rejected this command"
-                break
+        if _is_risky(cmd):
+            if not request_approval(session, cmd):
+                return "DENIED: user rejected this command"
     env = dict(os.environ)
     try:
         r = subprocess.run(["bash", "-c", cmd], cwd=WORKSPACE_DIR, env=env,
@@ -2052,7 +2179,8 @@ def t_apply_patch(args):
 _SPEC_ARTIFACTS = ("constitution", "spec", "plan", "tasks")
 # _SLUG_RE removed (was compiled but never referenced)
 
-_PLAN_READONLY_TOOLS = frozenset({"read_file", "list_dir", "glob_files", "grep"})
+_PLAN_READONLY_TOOLS = frozenset({"read_file", "list_dir", "glob_files", "grep",
+                                  "blackboard_read"})
 
 
 def t_save_spec(args):
@@ -2093,6 +2221,141 @@ def t_save_spec(args):
         f.write(content)
     rel = os.path.join(".codemonkeys", "specs", slug, artifact + ".md")
     return f"Saved {len(content)} chars → {rel}"
+
+
+# ---- cross-session blackboard memory (IDEATION #4) -------------------------
+# A persistent FACTS/DECISIONS/NEXT note per task, confined to
+# <WORKSPACE>/.codemonkeys/blackboard-<slug>.md, that survives session resets:
+# existing blackboards are injected into the commander prompt at session start.
+# Same jail discipline as save_spec. blackboard_read is read-only (all modes);
+# blackboard_write is a default/auto-only write (NOT in plan mode — plan's only
+# write affordance stays save_spec, preserving the read-only-end-to-end invariant).
+_BB_SECTIONS = ("FACTS", "DECISIONS", "NEXT")
+_BB_MAX = READ_CAP                 # per-file content cap
+
+
+def _bb_slug(raw: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", (raw or "").lower()).strip("-")[:64].rstrip("-")
+
+
+def _jail_blackboard(slug: str) -> str:
+    """Resolve .codemonkeys/blackboard-<slug>.md, confined strictly to
+    <WORKSPACE>/.codemonkeys/ (no subdir, no traversal)."""
+    root = os.path.realpath(os.path.join(WORKSPACE_DIR, ".codemonkeys"))
+    candidate = os.path.realpath(os.path.join(root, f"blackboard-{slug}.md"))
+    if os.path.dirname(candidate) != root:
+        raise ValueError(f"Path escapes .codemonkeys dir: {slug}")
+    return candidate
+
+
+def _bb_parse(text: str) -> dict:
+    """Split a blackboard markdown body into its canonical sections."""
+    sections = {s: "" for s in _BB_SECTIONS}
+    current = None
+    for line in text.splitlines():
+        m = re.match(r"^##\s+(\w+)", line)
+        if m and m.group(1).upper() in sections:
+            current = m.group(1).upper()
+            continue
+        if current:
+            sections[current] += line + "\n"
+    return {k: v.strip() for k, v in sections.items()}
+
+
+def _bb_render(slug: str, sections: dict) -> str:
+    out = [f"# Blackboard — {slug}", ""]
+    for s in _BB_SECTIONS:
+        out.append(f"## {s}")
+        out.append(sections.get(s, "").strip() or "_(none yet)_")
+        out.append("")
+    return "\n".join(out).strip() + "\n"
+
+
+def t_blackboard_read(args):
+    slug = _bb_slug(args.get("slug", ""))
+    if not slug:
+        return "ERROR: slug is empty after sanitization"
+    try:
+        full = _jail_blackboard(slug)
+    except ValueError as e:
+        return f"ERROR: {e}"
+    if not os.path.exists(full):
+        return f"(no blackboard yet for '{slug}' — create one with blackboard_write)"
+    with open(full, "r", errors="replace") as f:
+        return f.read(_BB_MAX + 1)[:_BB_MAX]
+
+
+def t_blackboard_write(args):
+    slug = _bb_slug(args.get("slug", ""))
+    section = str(args.get("section", "")).upper()
+    content = (args.get("content", "") or "").strip()
+    mode = args.get("mode", "append")
+    if not slug:
+        return "ERROR: slug is empty after sanitization"
+    if section not in _BB_SECTIONS:
+        return f"ERROR: section must be one of {_BB_SECTIONS}, got {section!r}"
+    if mode not in ("append", "replace"):
+        return "ERROR: mode must be 'append' or 'replace'"
+    try:
+        full = _jail_blackboard(slug)
+    except ValueError as e:
+        return f"ERROR: {e}"
+    existing = ""
+    if os.path.exists(full):
+        with open(full, "r", errors="replace") as f:
+            existing = f.read()
+    sections = _bb_parse(existing)
+    if mode == "replace":
+        sections[section] = content
+    else:
+        bullet = content if content.startswith(("-", "*")) else f"- {content}"
+        sections[section] = (sections[section] + "\n" + bullet).strip()
+    rendered = _bb_render(slug, sections)
+    if len(rendered) > _BB_MAX:
+        return (f"ERROR: blackboard would exceed {_BB_MAX} chars — "
+                "replace/trim a section instead of appending")
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    # O_NOFOLLOW (when the platform has it) closes the realpath→open symlink
+    # TOCTOU; falls back to 0 on Windows dev hosts where the flag is absent.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(full, flags, 0o644)
+    except OSError as e:
+        return f"ERROR: could not open blackboard for writing: {e}"
+    with os.fdopen(fd, "w") as f:
+        f.write(rendered)
+    return f"Updated {section} ({mode}) → .codemonkeys/blackboard-{slug}.md"
+
+
+def _blackboard_context() -> str:
+    """Inject existing blackboards into the commander prompt — this is what makes
+    the memory survive session resets. Bounded so a large board can't blow context."""
+    root = os.path.realpath(os.path.join(WORKSPACE_DIR, ".codemonkeys"))
+    try:
+        files = sorted(f for f in os.listdir(root)
+                       if f.startswith("blackboard-") and f.endswith(".md"))
+    except OSError:
+        return ""
+    if not files:
+        return ""
+    chunks, total = [], 0
+    for fn in files:
+        try:
+            with open(os.path.join(root, fn), "r", errors="replace") as f:
+                body = f.read(4000)
+        except OSError:
+            continue
+        chunk = f"\n--- {fn} ---\n{body}\n"
+        if total + len(chunk) > 8000:
+            chunks.append("\n…[more blackboards truncated]")
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    return (
+        "\n\nPERSISTENT BLACKBOARD (cross-session memory — survives session "
+        "resets). Read with blackboard_read(slug); in default/auto mode record "
+        "durable FACTS, DECISIONS, and NEXT steps with blackboard_write(slug, "
+        "section, content, mode). Current state:\n" + "".join(chunks))
 
 
 TOOL_SCHEMAS = {
@@ -2155,6 +2418,32 @@ TOOL_SCHEMAS = {
                       "content": {"type": "string",
                                   "description": "Full markdown content for this artifact."}},
                       "required": ["slug", "artifact", "content"]}},
+    "blackboard_read": {"name": "blackboard_read",
+                        "description":
+                            "Read the persistent cross-session blackboard for a task "
+                            "(.codemonkeys/blackboard-<slug>.md): durable FACTS, DECISIONS, "
+                            "and NEXT steps that survive session resets. Read-only; "
+                            "available in every mode.",
+                        "parameters": {"type": "object", "properties": {
+                            "slug": {"type": "string",
+                                     "description": "Task identifier, e.g. 'auth-refactor'. "
+                                                    "Lowercased; non-alphanumerics become hyphens."}},
+                            "required": ["slug"]}},
+    "blackboard_write": {"name": "blackboard_write",
+                         "description":
+                             "Update the persistent cross-session blackboard for a task. "
+                             "Confined to .codemonkeys/blackboard-<slug>.md (cannot reach code). "
+                             "Use it to record durable knowledge so a future session can resume: "
+                             "FACTS (established truths), DECISIONS (choices + rationale), NEXT "
+                             "(remaining steps). mode 'append' adds a bullet; 'replace' rewrites "
+                             "the whole section (use for NEXT as it changes).",
+                         "parameters": {"type": "object", "properties": {
+                             "slug": {"type": "string", "description": "Task identifier."},
+                             "section": {"type": "string", "enum": ["FACTS", "DECISIONS", "NEXT"]},
+                             "content": {"type": "string", "description": "Text to add or set."},
+                             "mode": {"type": "string", "enum": ["append", "replace"],
+                                      "description": "Default 'append'."}},
+                             "required": ["slug", "section", "content"]}},
     "apply_patch": {"name": "apply_patch",
                     "description":
                         "Apply a standard unified diff (git-style) to one or more files in the "
@@ -2293,9 +2582,58 @@ def restore_sessions():
 restore_sessions()
 
 
+# ---- secret redaction --------------------------------------------------------
+# bash can read env/app files (the conceded kernel-sandbox gap); GITHUB_TOKEN is
+# the most sensitive item on the box. Scrub known secret VALUES out of anything
+# that flows back to the model, to the UI, or into the immutable JSONL event log
+# / history.json on /data. This does NOT affect execution (git still uses the
+# real env var) — only what gets echoed, displayed, and persisted.
+_SECRET_CACHE = None
+_SECRET_NAME_RE = re.compile(r"TOKEN|SECRET|KEY|PASSWORD|PASSWD|PAT|CREDENTIAL", re.I)
+
+
+def _sensitive_values():
+    global _SECRET_CACHE
+    if _SECRET_CACHE is not None:
+        return _SECRET_CACHE
+    vals = set()
+    for k, v in os.environ.items():           # GITHUB_TOKEN, SESSION_*, etc.
+        if v and len(v) >= 8 and _SECRET_NAME_RE.search(k):
+            vals.add(v)
+    try:
+        vals.add(_session_secret().hex())     # HMAC signing secret
+    except Exception:
+        pass
+    try:
+        for prov in (load_models().get("providers") or {}).values():   # model API keys
+            key = prov.get("key")
+            if key and len(key) >= 8:
+                vals.add(key)
+    except Exception:
+        pass
+    _SECRET_CACHE = vals
+    return vals
+
+
+def _bust_secret_cache():
+    """Call after model keys change so newly-added keys are redacted too."""
+    global _SECRET_CACHE
+    _SECRET_CACHE = None
+
+
+def _redact(text):
+    if not isinstance(text, str) or not text:
+        return text
+    for v in _sensitive_values():
+        if v in text:
+            text = text.replace(v, "[REDACTED]")
+    return text
+
+
 def emit(session, etype, **fields):
     with session["lock"]:
         evt = {"i": len(session["events"]), "ts": int(time.time()), "type": etype, **fields}
+        evt = {k: (_redact(v) if isinstance(v, str) else v) for k, v in evt.items()}
         session["events"].append(evt)
     try:
         with open(_events_path(session["id"]), "a") as f:
@@ -2350,6 +2688,7 @@ def _commander_system(session):
         "Pushes/deploys/destructive commands pause for human approval — that is expected, "
         "proceed when you genuinely need them. Be token-efficient: act, don't narrate. "
         "When done, give a short report of what changed and how it was verified."
+        + _blackboard_context()
     )
 
 
@@ -2411,6 +2750,11 @@ def make_executor(session, allowed, agent_label=None, depth=0):
             if name == "save_spec":
                 r = t_save_spec(args)
                 return r, not r.startswith("ERROR")
+            if name == "blackboard_read":
+                return t_blackboard_read(args), True
+            if name == "blackboard_write":
+                r = t_blackboard_write(args)
+                return r, not r.startswith("ERROR")
             return f"ERROR: unknown tool {name}", False
         except Exception as e:  # tool errors go back to the model, not the user
             return f"ERROR: {type(e).__name__}: {e}", False
@@ -2442,17 +2786,19 @@ def agent_loop(session, provider, system, history, tool_names, max_turns,
         session["spent_usd"] += usd
         emit(session, "cost", usd=round(usd, 6), in_tokens=resp["in_tokens"],
              out_tokens=resp["out_tokens"], model=provider["model"], agent=agent_label)
-        history.append({"role": "assistant", "text": resp["text"],
+        text_out = _redact(resp["text"])      # scrub before model-context reuse + persist
+        history.append({"role": "assistant", "text": text_out,
                         "tool_calls": resp["tool_calls"]})
-        if resp["text"]:
-            emit(session, "text", text=resp["text"], agent=agent_label)
-            final_text = resp["text"]
+        if text_out:
+            emit(session, "text", text=text_out, agent=agent_label)
+            final_text = text_out
         if not resp["tool_calls"]:
             return final_text
         for tc in resp["tool_calls"]:
             detail = json.dumps(tc["args"])[:300]
             emit(session, "tool", name=tc["name"], detail=detail, agent=agent_label)
             result, ok = executor(tc)
+            result = _redact(result)          # scrub tool output (e.g. `cat config`, `env`)
             emit(session, "tool_result", name=tc["name"], ok=ok,
                  detail=result[:600], agent=agent_label)
             history.append({"role": "tool", "tool_call_id": tc["id"],
@@ -2550,9 +2896,10 @@ MODE_GUIDANCE = {
         "cap. When blocked, state the blocker plainly so the user can act."),
 }
 PLAN_TOOLS = ["read_file", "list_dir", "glob_files", "grep", "spawn_agent",
-              "save_spec"]
+              "save_spec", "blackboard_read"]
 FULL_TOOLS = ["read_file", "write_file", "edit_file", "apply_patch", "list_dir",
-              "glob_files", "grep", "bash", "spawn_agent"]
+              "glob_files", "grep", "bash", "spawn_agent",
+              "blackboard_read", "blackboard_write"]
 
 
 def run_session_message(session, text):
@@ -2623,6 +2970,51 @@ def session_list(_: str = Depends(verify_user)):
         for s in SESSIONS.values()], key=lambda x: -x["created"])}
 
 
+def _cap_message(text: str) -> str:
+    """Bound a single user message so one request can't blow memory/context."""
+    text = text or ""
+    if len(text) > MAX_MSG_CHARS:
+        text = text[:MAX_MSG_CHARS] + "\n…[message truncated]"
+    return text
+
+
+def _save_uploads(sid: str, files) -> list:
+    """Persist attached files into <workspace>/uploads/<sid>/, defensively.
+
+    - count-capped (MAX_UPLOAD_FILES) and the encoded payload is size-checked
+      BEFORE decoding (no unbounded base64→bytes memory spike);
+    - filename reduced to a basename, '.'/'..' rejected, and the destination is
+      _jail-checked (defense in depth vs the parent-dir basename case);
+    - one bad file is skipped, never 500s the whole message.
+    """
+    names = []
+    for f in (files or [])[:MAX_UPLOAD_FILES]:
+        b64 = f.content_b64 or ""
+        if not b64 or len(b64) > MAX_UPLOAD_B64:   # reject oversized pre-decode
+            continue
+        safe = os.path.basename(f.name or "") or "file"
+        if safe in (".", "..") or "\x00" in safe:
+            # NUL (or '.'/'..') makes os.open raise ValueError, not OSError —
+            # reject up front so one crafted name can't 500 the whole message.
+            continue
+        try:
+            dest = _jail(os.path.join("uploads", sid, safe))
+        except ValueError:
+            continue
+        try:
+            blob = base64.b64decode(b64)
+        except Exception:
+            continue
+        try:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "wb") as fh:
+                fh.write(blob[:MAX_UPLOAD_BYTES])
+        except (OSError, ValueError):   # ValueError = embedded-NUL belt-and-suspenders
+            continue
+        names.append(f"uploads/{sid}/{safe}")
+    return names
+
+
 @app.post("/api/sessions/{sid}/message")
 def session_message(sid: str, req: MessageRequest, _: str = Depends(verify_user)):
     s = SESSIONS.get(sid)
@@ -2631,22 +3023,10 @@ def session_message(sid: str, req: MessageRequest, _: str = Depends(verify_user)
     if s["status"] != "idle":
         raise HTTPException(409, "Session is busy")
     s["mode"] = req.mode if req.mode in ("plan", "default", "auto") else "default"
-    text = req.text
-    if req.files:
-        updir = os.path.join(WORKSPACE_DIR, "uploads", sid)
-        os.makedirs(updir, exist_ok=True)
-        names = []
-        for f in req.files[:20]:
-            safe = os.path.basename(f.name) or "file"
-            try:
-                blob = base64.b64decode(f.content_b64)
-            except Exception:
-                continue
-            with open(os.path.join(updir, safe), "wb") as fh:
-                fh.write(blob[:10_000_000])
-            names.append(f"uploads/{sid}/{safe}")
-        if names:
-            text += "\n\n[Attached files saved in workspace: " + ", ".join(names) + "]"
+    text = _cap_message(req.text)
+    names = _save_uploads(sid, req.files)
+    if names:
+        text += "\n\n[Attached files saved in workspace: " + ", ".join(names) + "]"
     emit(s, "user", text=text)
     threading.Thread(target=run_session_message, args=(s, text), daemon=True).start()
     return {"ok": True}

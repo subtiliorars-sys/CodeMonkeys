@@ -26,6 +26,13 @@ keep that radius away from everything else.
   first boot (`/data/session_secret.key`, mode 600)
 - Every coding endpoint requires the Owner role; unauthenticated → 401, wrong
   role → 403 (fail closed)
+- Login is brute-force throttled on **both** factors: the PIN/TOTP path
+  (`/api/login`) and the passkey path (`/api/webauthn/login/*`) share one
+  per-account counter, so a lock covers both. Invited (`must_reset`) accounts
+  log in PIN-only (MFA not yet enrolled) — the throttle is their sole barrier
+  and is deliberately not cleared until `/api/account/setup` completes. After
+  repeated failures: HTTP 429 + `Retry-After`. See "Known limitations" for
+  tunables and residuals.
 - Lockout recovery only via `fly ssh console` (`scripts/reset_access.py`)
 
 ## Sandboxing & limits
@@ -38,6 +45,19 @@ keep that radius away from everything else.
   nosniff`, `Referrer-Policy: no-referrer`. CSP is kept minimal (no `script-src`)
   so it doesn't break the Tailwind CDN; a stricter `script-src` pairs with
   vendoring Tailwind (see Known limitations).
+- **Approval-gate matching is quote/escape-resistant.** Risky commands
+  (`git push`, `fly`/`flyctl`, `rm -rf`, `git reset --hard`, `git clean`,
+  `gh repo delete`, `sudo`) are detected by `_is_risky`, which matches
+  `RISKY_PATTERNS` against **both** the raw command and a shlex-normalized form.
+  Normalizing first means shell quoting/escaping (`git "push"`, `g''it push`,
+  `git\ push`, `"git" push`) can no longer hide a risky verb from the gate; a
+  command that fails to tokenize (unbalanced quotes) fails **closed** (gated).
+  Normalization errs toward gating: a risky phrase inside a string literal
+  (`echo "...rm -rf..."`) also prompts — an extra click, never a missed action.
+  **Residual:** runtime-only constructs resolved by bash at execution time —
+  variable expansion (`g=git; $g push`), command substitution (`$(echo git) push`),
+  and `eval` — are not visible to static matching and remain an accepted residual
+  risk of gating a raw shell string (the kernel-sandbox gap below is the backstop).
 - Per-session USD budget halts the loop; subagent spawn cap 8; recursion depth 1
 - **Plan mode is read-only, end to end.** Its toolset is read/list/glob/grep +
   `spawn_agent` + `save_spec`; it has no write_file/edit_file/bash. Subagents
@@ -132,7 +152,19 @@ keep that radius away from everything else.
   read app files or env vars on the machine. Mitigation: the machine holds
   nothing but CodeMonkeys itself; GITHUB_TOKEN is the most sensitive item.
 - Single-machine trust boundary; no per-agent isolation yet (worktrees planned)
-- No rate limiting on login (TOTP + PBKDF2 make brute force impractical, but
-  add fail2ban-style lockout before opening enrollment)
+- Login brute-force throttle is in place (fail2ban-style): after
+  `LOGIN_MAX_FAILS` (default 10) failed attempts within `LOGIN_WINDOW_SEC`
+  (default 300 s) an account is locked for `LOGIN_LOCKOUT_SEC` (default 900 s),
+  returning HTTP 429 + `Retry-After`. The throttle runs **before** any PBKDF2
+  work and applies to unknown usernames too (no account-existence oracle).
+  **Residuals:** (a) the lock is keyed per-username and held in process memory —
+  a restart clears it (fail-open on restart only), and an attacker who knows a
+  username can deliberately lock that account out for the cooldown (an
+  availability trade accepted for a single-owner tool); (b) the lock check and
+  the failure-record are separate critical sections, so up to ~(server
+  concurrency) extra in-flight guesses can land before the lock arms each cycle —
+  bounded by CPU-bound PBKDF2, never an unbounded bypass; (c) there is no
+  per-IP/global ceiling, so distributed guessing across many usernames is bounded
+  only per-account. Add an IP/global dimension before opening enrollment widely.
 - External CDN (Tailwind) and QR service used by the frontend — acceptable for
   a single-owner tool; vendor them before any multi-user use
