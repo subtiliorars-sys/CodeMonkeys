@@ -536,15 +536,23 @@ function renderMcpRows(servers) {
     row.className = "border-b border-slate-800/60 py-2";
     row.dataset.mcpId = s.id;
 
-    let host = "";
-    try { host = new URL(s.url).host; } catch (_) { host = s.url; }
+    // Show host for http, command basename for stdio
+    let hint = "";
+    if (s.transport === "stdio") {
+      hint = esc((s.command || "").split("/").pop());
+    } else {
+      try { hint = esc(new URL(s.url || "").host); } catch (_) { hint = esc(s.url || ""); }
+    }
+    const transportBadge = s.transport === "stdio"
+      ? '<span class="gold-border rounded px-1 text-[.6rem] text-[var(--gold)] ml-1">stdio</span>'
+      : "";
 
     const toolCount = (s.tools || []).length;
     row.innerHTML = `
       <div class="flex items-center gap-2 cursor-pointer mcp-row-header">
         ${mcpStatusDot(s)}
-        <b class="flex-1 text-slate-200">${esc(s.name)}</b>
-        <span class="text-slate-500">${esc(host)}</span>
+        <b class="flex-1 text-slate-200">${esc(s.name)}</b>${transportBadge}
+        <span class="text-slate-500">${hint}</span>
         <span class="text-slate-400">${toolCount} tool${toolCount !== 1 ? "s" : ""}</span>
         <button class="mcp-toggle ${s.enabled ? "text-green-400" : "text-slate-600"} hover:text-green-300" title="${s.enabled ? "disable" : "enable"}">${s.enabled ? "on" : "off"}</button>
         <button class="mcp-refresh text-slate-400 hover:text-[var(--gold)]" title="reconnect &amp; refresh tools">↻</button>
@@ -599,7 +607,16 @@ async function loadMcpServers() {
   } catch (e) { $("mcp-msg").textContent = e.message; }
 }
 
+// Transport select: toggle http vs stdio field groups
+$("mcp-transport").onchange = () => {
+  const isStdio = $("mcp-transport").value === "stdio";
+  $("mcp-http-fields").classList.toggle("hidden", isStdio);
+  $("mcp-stdio-fields").classList.toggle("hidden", !isStdio);
+};
+
 $("mcp-preset-github").onclick = () => {
+  $("mcp-transport").value = "http";
+  $("mcp-transport").dispatchEvent(new Event("change"));
   $("mcp-name").value = "github";
   $("mcp-url").value = "https://api.githubcopilot.com/mcp/";
   $("mcp-token").placeholder = "Bearer token / PAT — stored server-side";
@@ -609,12 +626,36 @@ $("mcp-preset-github").onclick = () => {
 $("mcp-add").onclick = async () => {
   $("mcp-msg").textContent = "";
   const name = $("mcp-name").value.trim();
-  const url  = $("mcp-url").value.trim();
-  const token = $("mcp-token").value;
-  if (!name || !url) { $("mcp-msg").textContent = "Name and URL are required."; return; }
+  const transport = $("mcp-transport").value;
+  if (!name) { $("mcp-msg").textContent = "Name is required."; return; }
+
+  let body;
+  if (transport === "stdio") {
+    const command = $("mcp-command").value.trim();
+    if (!command) { $("mcp-msg").textContent = "Command is required for stdio."; return; }
+    // args: space-separated string → array
+    const argsRaw = $("mcp-args").value.trim();
+    const args = argsRaw ? argsRaw.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [] : [];
+    // env: KEY=VALUE pairs, space-separated → object
+    const envRaw = $("mcp-env").value.trim();
+    const env = {};
+    if (envRaw) {
+      envRaw.split(/\s+/).forEach((pair) => {
+        const idx = pair.indexOf("=");
+        if (idx > 0) env[pair.slice(0, idx)] = pair.slice(idx + 1);
+      });
+    }
+    body = { name, transport: "stdio", command, args, env };
+  } else {
+    const url  = $("mcp-url").value.trim();
+    const token = $("mcp-token").value;
+    if (!url) { $("mcp-msg").textContent = "URL is required for HTTP."; return; }
+    body = { name, transport: "http", url, token };
+  }
+
   try {
-    await api("/api/mcp", "POST", { name, url, token });
-    ["mcp-name", "mcp-url", "mcp-token"].forEach((k) => ($(k).value = ""));
+    await api("/api/mcp", "POST", body);
+    ["mcp-name", "mcp-url", "mcp-token", "mcp-command", "mcp-args", "mcp-env"].forEach((k) => ($(k).value = ""));
     $("mcp-msg").textContent = "Added ✓";
     loadMcpServers();
   } catch (e) { $("mcp-msg").textContent = e.message; }

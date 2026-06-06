@@ -708,8 +708,9 @@ def models_settings(req: ModelSettings, _: str = Depends(verify_owner)):
 
 # ----------- mcp
 
-# Runtime state: {server_id: {session_id_header, tools, status, error}}
+# Runtime state: {server_id: {session_id_header, tools, status, error[, proc]}}
 # NOT persisted — rebuilt on connect.
+# stdio entries additionally carry "proc": Popen handle (kept alive per session).
 _MCP_RUNTIME: dict[str, dict] = {}
 
 
@@ -727,10 +728,65 @@ def _save_mcp_config(servers: list):
         _save_json(MCP_CONFIG_FILE, servers)
 
 
+def _mcp_stdio_rpc(proc: "subprocess.Popen[str]", payload: dict, timeout: int) -> dict:
+    """Send one JSON-RPC request over newline-delimited stdio; return the parsed response.
+
+    Applies the same wall-clock deadline + byte-cap discipline as the HTTP/SSE path.
+    On timeout, the caller is responsible for killing/cleaning the child.
+    """
+    _STDIO_BYTE_CAP = 256 * 1024  # 256 KB hard stop on stdout body
+    line_out = json.dumps(payload) + "\n"
+    proc.stdin.write(line_out)
+    proc.stdin.flush()
+    rid = payload.get("id")
+    _deadline = time.time() + timeout
+    _bytes_read = 0
+    while True:
+        if time.time() > _deadline:
+            raise RuntimeError("MCP stdio stream deadline exceeded")
+        raw = proc.stdout.readline()
+        if not raw:
+            # EOF before we got our response — child died
+            raise RuntimeError("MCP stdio child closed stdout unexpectedly")
+        _bytes_read += len(raw.encode() if isinstance(raw, str) else raw)
+        if _bytes_read > _STDIO_BYTE_CAP:
+            raise RuntimeError("MCP stdio stream exceeded byte cap")
+        try:
+            obj = json.loads(raw)
+        except json.JSONDecodeError:
+            continue  # skip non-JSON lines (e.g. child startup noise)
+        # Notifications and log messages have no "id" — skip them
+        if obj.get("id") != rid:
+            continue
+        if "error" in obj:
+            raise RuntimeError(f"MCP error {obj['error'].get('code')}: "
+                               f"{obj['error'].get('message')}")
+        return obj.get("result", {})
+
+
+def _mcp_stdio_notify(proc: "subprocess.Popen[str]", payload: dict):
+    """Send a JSON-RPC notification (no id) over stdio; fire-and-forget."""
+    try:
+        proc.stdin.write(json.dumps(payload) + "\n")
+        proc.stdin.flush()
+    except Exception:
+        pass
+
+
 def _mcp_rpc(server: dict, method: str, params: dict, timeout: int = 30):
-    """POST a JSON-RPC 2.0 request; handle both application/json and SSE responses."""
+    """Route a JSON-RPC request to the right transport (http or stdio)."""
+    transport = server.get("transport", "http")
     rid = uuid.uuid4().hex
     payload = {"jsonrpc": "2.0", "id": rid, "method": method, "params": params}
+
+    if transport == "stdio":
+        rt = _MCP_RUNTIME.get(server["id"], {})
+        proc = rt.get("proc")
+        if not proc or proc.poll() is not None:
+            raise RuntimeError("MCP stdio child is not running")
+        return _mcp_stdio_rpc(proc, payload, timeout)
+
+    # ---- http path (unchanged) ----
     headers = {"Content-Type": "application/json",
                "Accept": "application/json, text/event-stream"}
     if server.get("token"):
@@ -782,8 +838,18 @@ def _mcp_rpc(server: dict, method: str, params: dict, timeout: int = 30):
 
 
 def _mcp_notify(server: dict, method: str, params: dict):
-    """POST a JSON-RPC notification (no id, no response expected)."""
+    """Send a JSON-RPC notification (no response expected) via the right transport."""
+    transport = server.get("transport", "http")
     payload = {"jsonrpc": "2.0", "method": method, "params": params}
+
+    if transport == "stdio":
+        rt = _MCP_RUNTIME.get(server["id"], {})
+        proc = rt.get("proc")
+        if proc and proc.poll() is None:
+            _mcp_stdio_notify(proc, payload)
+        return
+
+    # ---- http path (unchanged) ----
     headers = {"Content-Type": "application/json",
                "Accept": "application/json, text/event-stream"}
     if server.get("token"):
@@ -800,12 +866,66 @@ def _mcp_notify(server: dict, method: str, params: dict):
 
 
 def _mcp_connect(server: dict):
-    """initialize → notifications/initialized → tools/list; update _MCP_RUNTIME."""
+    """initialize → notifications/initialized → tools/list; update _MCP_RUNTIME.
+
+    Dispatches on server.get("transport","http"):
+      "http"  — exactly the existing HTTP/SSE path (unchanged).
+      "stdio" — spawns the child process ONCE, keeps it alive in _MCP_RUNTIME[sid]["proc"].
+    """
     sid = server["id"]
+    transport = server.get("transport", "http")
     _MCP_RUNTIME[sid] = {"session_id_header": None, "protocol_version": None,
-                         "tools": [], "status": "connecting", "error": None}
+                         "tools": [], "status": "connecting", "error": None,
+                         "proc": None}
     try:
-        # Step 1: initialize
+        if transport == "stdio":
+            # ---- stdio path ----
+            cmd = server.get("command", "")
+            if not cmd:
+                raise ValueError("stdio MCP server missing 'command'")
+            args_list = server.get("args", [])
+            env_extra = server.get("env", {})
+            child_env = {**os.environ, **env_extra}
+            proc = subprocess.Popen(
+                [cmd, *args_list],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=child_env,
+                cwd=WORKSPACE_DIR,
+                # Never shell=True; args is always a list
+            )
+            _MCP_RUNTIME[sid]["proc"] = proc
+
+            _connect_timeout = 30
+            init_payload = {
+                "jsonrpc": "2.0", "id": uuid.uuid4().hex, "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": {"name": "codemonkeys", "version": "0.1"},
+                },
+            }
+            init_result = _mcp_stdio_rpc(proc, init_payload, _connect_timeout)
+            proto = init_result.get("protocolVersion", "2025-03-26")
+            _MCP_RUNTIME[sid]["protocol_version"] = proto
+
+            _mcp_stdio_notify(proc, {"jsonrpc": "2.0",
+                                     "method": "notifications/initialized",
+                                     "params": {}})
+
+            tl_result = _mcp_stdio_rpc(proc,
+                                       {"jsonrpc": "2.0", "id": uuid.uuid4().hex,
+                                        "method": "tools/list", "params": {}},
+                                       30)
+            raw_tools = tl_result.get("tools", [])
+            _MCP_RUNTIME[sid]["tools"] = raw_tools
+            _MCP_RUNTIME[sid]["status"] = "connected"
+            _MCP_RUNTIME[sid]["error"] = None
+            return
+
+        # ---- http path (unchanged) ----
         headers_pre = {"Content-Type": "application/json",
                        "Accept": "application/json, text/event-stream"}
         if server.get("token"):
@@ -878,10 +998,32 @@ def _mcp_connect(server: dict):
         _MCP_RUNTIME[sid]["status"] = "error"
         _MCP_RUNTIME[sid]["error"] = str(exc)
         _MCP_RUNTIME[sid]["tools"] = []
+        # If a stdio child was spawned but init failed, kill it now
+        _proc = _MCP_RUNTIME[sid].get("proc")
+        if _proc and _proc.poll() is None:
+            try:
+                _proc.terminate()
+                _proc.wait(timeout=3)
+            except Exception:
+                try:
+                    _proc.kill()
+                except Exception:
+                    pass
 
 
 def _mcp_disconnect(sid: str):
-    _MCP_RUNTIME.pop(sid, None)
+    """Remove runtime state; for stdio servers, terminate the child process."""
+    rt = _MCP_RUNTIME.pop(sid, {})
+    proc = rt.get("proc")
+    if proc and proc.poll() is None:
+        try:
+            proc.terminate()
+            proc.wait(timeout=3)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
 
 
 def mcp_tool_schemas() -> dict:
@@ -971,22 +1113,35 @@ def _mcp_entry_shape(srv: dict) -> dict:
          "read_only": bool((t.get("annotations") or {}).get("readOnlyHint"))}
         for t in rt.get("tools", [])
     ]
-    return {
+    transport = srv.get("transport", "http")
+    out = {
         "id": srv["id"],
         "name": srv["name"],
-        "url": srv["url"],
+        "transport": transport,
         "enabled": srv.get("enabled", True),
-        "has_token": bool(srv.get("token")),
         "status": rt.get("status", "disconnected"),
         "error": rt.get("error"),
         "tools": tools_list,
     }
+    if transport == "http":
+        out["url"] = srv.get("url", "")
+        out["has_token"] = bool(srv.get("token"))
+    else:
+        # stdio: surface command but NEVER env/token values
+        out["command"] = srv.get("command", "")
+    return out
 
 
 class McpCreate(BaseModel):
     name: str
-    url: str
+    transport: str = "http"   # "http" | "stdio"; absent = http (migration-safe)
+    # http fields
+    url: str = ""
     token: str = ""
+    # stdio fields
+    command: str = ""
+    args: list = []
+    env: dict = {}
 
 
 @app.get("/api/mcp")
@@ -999,16 +1154,25 @@ def mcp_list(_: str = Depends(verify_owner)):
 def mcp_add(req: McpCreate, _: str = Depends(verify_owner)):
     if not req.name.strip():
         raise HTTPException(400, "name is required")
-    url = req.url.strip()
-    _parsed = urllib.parse.urlparse(url)
-    _loopback = {"localhost", "127.0.0.1", "::1"}
-    if not (_parsed.scheme == "https" or
-            (_parsed.scheme == "http" and _parsed.hostname in _loopback)):
-        raise HTTPException(400, "url must use https:// (or http://localhost|127.0.0.1|::1 for dev)")
-    servers = _load_mcp_config()
+    transport = req.transport if req.transport in ("http", "stdio") else "http"
     sid = uuid.uuid4().hex[:8]
-    srv = {"id": sid, "name": req.name.strip(), "url": url,
-           "token": req.token, "enabled": True}
+    if transport == "http":
+        url = req.url.strip()
+        _parsed = urllib.parse.urlparse(url)
+        _loopback = {"localhost", "127.0.0.1", "::1"}
+        if not (_parsed.scheme == "https" or
+                (_parsed.scheme == "http" and _parsed.hostname in _loopback)):
+            raise HTTPException(400, "url must use https:// (or http://localhost|127.0.0.1|::1 for dev)")
+        srv = {"id": sid, "name": req.name.strip(), "transport": "http",
+               "url": url, "token": req.token, "enabled": True}
+    else:
+        cmd = req.command.strip()
+        if not cmd:
+            raise HTTPException(400, "command is required for stdio transport")
+        srv = {"id": sid, "name": req.name.strip(), "transport": "stdio",
+               "command": cmd, "args": list(req.args),
+               "env": dict(req.env), "enabled": True}
+    servers = _load_mcp_config()
     servers.append(srv)
     _save_mcp_config(servers)
     _mcp_connect(srv)
