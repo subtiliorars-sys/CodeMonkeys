@@ -91,6 +91,22 @@ for _d in (DATA_DIR, SESSIONS_DIR, WORKSPACE_DIR):
 
 app = FastAPI(title="CodeMonkeys")
 
+
+@app.on_event("startup")
+def _startup_warm_mcp():
+    """Background-warm every enabled MCP server so tools are ready before first use."""
+    def _warm(server: dict):
+        try:
+            _mcp_connect(server)
+        except Exception:
+            pass  # _mcp_connect already records the error in _MCP_RUNTIME; never propagate
+
+    for _srv in _load_mcp_config():
+        if _srv.get("enabled"):
+            _t = threading.Thread(target=_warm, args=(_srv,), daemon=True)
+            _t.start()
+
+
 # ----------------------------------------------------------------- storage
 
 _USERS_LOCK = threading.Lock()
