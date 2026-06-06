@@ -224,8 +224,21 @@
       <p class="text-xs text-slate-500 mb-2">Add an MCP server:</p>
       <div class="grid grid-cols-2 gap-2 text-xs">
         <input id="mcp-name" class="input rounded px-2 py-1" placeholder="name (e.g. github)">
-        <input id="mcp-url" class="input rounded px-2 py-1" placeholder="https://…/mcp/">
-        <input id="mcp-token" type="password" class="input rounded px-2 py-1 col-span-2" placeholder="Bearer token / PAT — stored server-side">
+        <select id="mcp-transport" class="input rounded px-2 py-1 bg-slate-900 text-slate-200">
+          <option value="http">HTTP</option>
+          <option value="stdio">stdio</option>
+        </select>
+        <!-- http fields -->
+        <div id="mcp-http-fields" class="contents">
+          <input id="mcp-url" class="input rounded px-2 py-1" placeholder="https://…/mcp/">
+          <input id="mcp-token" type="password" class="input rounded px-2 py-1" placeholder="Bearer token / PAT — stored server-side">
+        </div>
+        <!-- stdio fields (hidden until transport=stdio) -->
+        <div id="mcp-stdio-fields" class="contents hidden">
+          <input id="mcp-command" class="input rounded px-2 py-1 col-span-2" placeholder="command  e.g. npx  or  /usr/bin/python3">
+          <input id="mcp-args" class="input rounded px-2 py-1 col-span-2" placeholder="args (space-separated)  e.g. @modelcontextprotocol/server-filesystem /data/workspace">
+          <input id="mcp-env" class="input rounded px-2 py-1 col-span-2" placeholder="env (KEY=VALUE pairs, space-separated)  optional">
+        </div>
         <div class="flex gap-2">
           <button id="mcp-preset-github" class="gold-border rounded px-2 py-1 text-[var(--gold-bright)] hover:bg-yellow-900/20">GitHub</button>
         </div>
