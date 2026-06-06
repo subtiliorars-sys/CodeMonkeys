@@ -26,6 +26,8 @@ keep that radius away from everything else.
   first boot (`/data/session_secret.key`, mode 600)
 - Every coding endpoint requires the Owner role; unauthenticated → 401, wrong
   role → 403 (fail closed)
+- Login is brute-force throttled: per-account lockout after repeated failures
+  (HTTP 429 + `Retry-After`); see "Known limitations" for tunables and residual
 - Lockout recovery only via `fly ssh console` (`scripts/reset_access.py`)
 
 ## Sandboxing & limits
@@ -126,7 +128,15 @@ keep that radius away from everything else.
   read app files or env vars on the machine. Mitigation: the machine holds
   nothing but CodeMonkeys itself; GITHUB_TOKEN is the most sensitive item.
 - Single-machine trust boundary; no per-agent isolation yet (worktrees planned)
-- No rate limiting on login (TOTP + PBKDF2 make brute force impractical, but
-  add fail2ban-style lockout before opening enrollment)
+- Login brute-force throttle is in place (fail2ban-style): after
+  `LOGIN_MAX_FAILS` (default 10) failed attempts within `LOGIN_WINDOW_SEC`
+  (default 300 s) an account is locked for `LOGIN_LOCKOUT_SEC` (default 900 s),
+  returning HTTP 429 + `Retry-After`. The throttle runs **before** any PBKDF2
+  work and applies to unknown usernames too (no account-existence oracle).
+  **Residual:** the lock is keyed per-username and held in process memory — a
+  restart clears it (fail-open on restart only), and an attacker who knows a
+  username can deliberately lock that account out for the cooldown (an
+  availability trade accepted for a single-owner tool). Add an IP/global
+  dimension before opening enrollment widely.
 - External CDN (Tailwind) and QR service used by the frontend — acceptable for
   a single-owner tool; vendor them before any multi-user use
