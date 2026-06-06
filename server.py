@@ -379,11 +379,26 @@ DEFAULT_MODELS = {
 }
 
 
+_KNOWN_BASE_URLS = {p["name"]: p["base_url"] for p in DEFAULT_MODELS["providers"]}
+
+
 def load_models():
     with _MODELS_LOCK:
         cfg = _load_json(MODELS_FILE, None)
         if cfg is None:
             cfg = json.loads(json.dumps(DEFAULT_MODELS))
+            _save_json(MODELS_FILE, cfg)
+            return cfg
+        # auto-heal: an openai provider with an empty base_url is unusable
+        # (requests would hit '/chat/completions' with no scheme). If we know
+        # the canonical URL for that provider name, fill it back in.
+        healed = False
+        for p in cfg["providers"]:
+            if (p.get("kind") == "openai" and not p.get("base_url")
+                    and _KNOWN_BASE_URLS.get(p["name"])):
+                p["base_url"] = _KNOWN_BASE_URLS[p["name"]]
+                healed = True
+        if healed:
             _save_json(MODELS_FILE, cfg)
         return cfg
 
@@ -448,6 +463,9 @@ def models_get(_: str = Depends(verify_owner)):
 def models_upsert(req: ProviderUpsert, _: str = Depends(verify_owner)):
     if req.kind not in ("openai", "anthropic"):
         raise HTTPException(400, "kind must be openai or anthropic")
+    if req.kind == "openai" and not req.base_url.strip():
+        raise HTTPException(400, "base_url is required for OpenAI-compatible providers "
+                                 "(e.g. https://openrouter.ai/api/v1)")
     cfg = load_models()
     existing = get_provider(cfg, req.name)
     entry = req.model_dump()
@@ -671,7 +689,8 @@ def t_grep(args):
 
 def t_bash(args, session=None):
     cmd = args["command"]
-    if session is not None:
+    # auto mode skips the approval gate; default/plan still gate risky commands
+    if session is not None and session.get("mode") != "auto":
         for pat in RISKY_PATTERNS:
             if re.search(pat, cmd):
                 if not request_approval(session, cmd):
@@ -822,7 +841,7 @@ def new_session(title="", repo=""):
     with _SESSIONS_LOCK:
         SESSIONS[sid] = {
             "id": sid, "title": title or f"session-{sid[:6]}", "repo": repo,
-            "created": int(time.time()), "status": "idle",
+            "created": int(time.time()), "status": "idle", "mode": "default",
             "events": [], "history": [], "spent_usd": 0.0,
             "agents_spawned": 0, "stop_flag": threading.Event(),
             "approvals": {}, "lock": threading.Lock(),
@@ -836,7 +855,7 @@ def restore_sessions():
     for sid, meta in idx.items():
         s = {
             "id": sid, "title": meta.get("title", sid), "repo": meta.get("repo", ""),
-            "created": meta.get("created", 0), "status": "idle",
+            "created": meta.get("created", 0), "status": "idle", "mode": "default",
             "events": [], "history": [], "spent_usd": 0.0,
             "agents_spawned": 0, "stop_flag": threading.Event(),
             "approvals": {}, "lock": threading.Lock(),
@@ -1023,6 +1042,25 @@ def run_subagent(session, agent_name, task):
     return text or "(subagent returned no report)"
 
 
+MODE_GUIDANCE = {
+    "plan": (
+        "\n\nMODE: PLAN. You have READ-ONLY tools. Do NOT write, edit, or run "
+        "mutating commands. Investigate the workspace, then present a clear, "
+        "numbered implementation plan and STOP. The user will switch you to "
+        "default or auto mode to execute it."),
+    "default": (
+        "\n\nMODE: DEFAULT. Implement the work. Pushes, deploys, and destructive "
+        "commands will pause for the user's approval — that is expected."),
+    "auto": (
+        "\n\nMODE: AUTO. Full autonomy — every command runs without approval, "
+        "including pushes and deploys. Be careful and deliberate; the user is "
+        "trusting you to ship. Still work on a branch for non-trivial changes."),
+}
+PLAN_TOOLS = ["read_file", "list_dir", "glob_files", "grep", "spawn_agent"]
+FULL_TOOLS = ["read_file", "write_file", "edit_file", "list_dir",
+              "glob_files", "grep", "bash", "spawn_agent"]
+
+
 def run_session_message(session, text):
     cfg = load_models()
     provider = main_provider(cfg)
@@ -1034,10 +1072,11 @@ def run_session_message(session, text):
     session["status"] = "running"
     session["stop_flag"].clear()
     session["history"].append({"role": "user", "text": text})
-    tool_names = ["read_file", "write_file", "edit_file", "list_dir",
-                  "glob_files", "grep", "bash", "spawn_agent"]
+    mode = session.get("mode", "default")
+    tool_names = PLAN_TOOLS if mode == "plan" else FULL_TOOLS
+    system = _commander_system(session) + MODE_GUIDANCE.get(mode, "")
     try:
-        agent_loop(session, provider, _commander_system(session),
+        agent_loop(session, provider, system,
                    session["history"], tool_names, MAX_TURNS)
     finally:
         session["status"] = "idle"
@@ -1060,6 +1099,7 @@ class FileUpload(BaseModel):
 class MessageRequest(BaseModel):
     text: str
     files: list[FileUpload] = []
+    mode: str = "default"          # plan | default | auto
 
 
 class ApproveRequest(BaseModel):
@@ -1089,6 +1129,7 @@ def session_message(sid: str, req: MessageRequest, _: str = Depends(verify_owner
         raise HTTPException(404, "No such session")
     if s["status"] != "idle":
         raise HTTPException(409, "Session is busy")
+    s["mode"] = req.mode if req.mode in ("plan", "default", "auto") else "default"
     text = req.text
     if req.files:
         updir = os.path.join(WORKSPACE_DIR, "uploads", sid)

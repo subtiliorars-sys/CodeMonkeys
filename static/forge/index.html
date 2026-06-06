@@ -109,6 +109,13 @@
     </header>
     <div id="stream" class="flex-1 overflow-y-auto px-4 py-3 space-y-2 text-sm"></div>
     <div class="border-t border-yellow-900/40 p-3">
+      <div class="flex items-center gap-2 mb-1 text-xs">
+        <span class="text-slate-500">mode:</span>
+        <button data-mode="plan" class="mode-btn rounded px-2 py-0.5 gold-border text-slate-400">📋 plan</button>
+        <button data-mode="default" class="mode-btn rounded px-2 py-0.5 gold-border text-slate-400">⚙ default</button>
+        <button data-mode="auto" class="mode-btn rounded px-2 py-0.5 gold-border text-slate-400">⚡ auto</button>
+        <span id="mode-hint" class="text-slate-600 flex-1"></span>
+      </div>
       <div id="file-chips" class="flex flex-wrap gap-1 mb-1"></div>
       <div class="flex gap-2 items-end">
         <button id="btn-attach" title="Attach files" class="gold-border rounded px-2 py-2 text-sm hover:bg-yellow-900/20">📎</button>

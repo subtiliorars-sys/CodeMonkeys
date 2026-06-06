@@ -10,6 +10,13 @@ const state = {
   username: localStorage.getItem("cm_username") || "",
   role: localStorage.getItem("cm_role") || "",
   sid: null, after: -1, status: "idle", timer: null, files: [], registering: false,
+  mode: localStorage.getItem("cm_mode") || "default",
+};
+
+const MODE_HINTS = {
+  plan: "read-only — investigates & proposes a plan, changes nothing",
+  default: "implements; pushes/deploys/destructive commands ask first",
+  auto: "full autonomy — runs everything, no approval prompts",
 };
 
 async function api(path, method = "GET", body = null) {
@@ -298,11 +305,29 @@ async function send() {
     state.sid = d.id; state.after = -1; $("stream").innerHTML = ""; refreshSessions();
   }
   try {
-    await api(`/api/sessions/${state.sid}/message`, "POST", { text, files: state.files });
+    await api(`/api/sessions/${state.sid}/message`, "POST",
+      { text, files: state.files, mode: state.mode });
     $("msg").value = ""; state.files = []; renderChips();
     startPolling(true);
   } catch (e) { alert(e.message); }
 }
+
+/* ---------------- mode selector ---------------- */
+
+function renderMode() {
+  document.querySelectorAll(".mode-btn").forEach((b) => {
+    const on = b.dataset.mode === state.mode;
+    b.classList.toggle("gold-btn", on);
+    b.classList.toggle("text-slate-400", !on);
+  });
+  $("mode-hint").textContent = MODE_HINTS[state.mode] || "";
+}
+document.querySelectorAll(".mode-btn").forEach((b) => (b.onclick = () => {
+  state.mode = b.dataset.mode;
+  localStorage.setItem("cm_mode", state.mode);
+  renderMode();
+}));
+renderMode();
 
 $("btn-send").onclick = send;
 $("msg").addEventListener("keydown", (e) => {
