@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CodeMonkeys</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  :root {
+    --gold: #d4af37; --gold-bright: #f0c75e; --gold-dark: #a67c12;
+    --bg: #050507; --bg2: #17130a; --cyan: #22d3ee; --cyan-soft: #a5f3fc;
+  }
+  body { background: var(--bg); color: #e2e8f0;
+         font-family: ui-monospace, "Cascadia Code", "Source Code Pro", monospace; }
+  .wordmark { color: var(--gold); text-shadow: 0 0 12px rgba(212,175,55,.45);
+              letter-spacing: .08em; image-rendering: pixelated; }
+  .gold-btn { background: linear-gradient(180deg, var(--gold-bright), var(--gold-dark));
+              color: #17130a; font-weight: 700; }
+  .gold-btn:hover { filter: brightness(1.1); }
+  .gold-border { border: 1px solid rgba(212,175,55,.45); }
+  .panel { background: linear-gradient(180deg, #0a0a0f, #17130a); }
+  .input { background: #0a0a0f; border: 1px solid rgba(212,175,55,.3); color: #e2e8f0; }
+  .input:focus { outline: none; border-color: var(--gold); }
+  .ev-user { background: rgba(212,175,55,.12); border-left: 3px solid var(--gold); }
+  .ev-text { background: rgba(34,211,238,.06); border-left: 3px solid var(--cyan); white-space: pre-wrap; }
+  .ev-tool { color: #94a3b8; font-size: .78rem; cursor: pointer; }
+  .ev-tool .detail { display: none; white-space: pre-wrap; color: #64748b; }
+  .ev-tool.open .detail { display: block; }
+  .ev-err { background: rgba(239,68,68,.12); border-left: 3px solid #ef4444; }
+  .ev-cost { color: #475569; font-size: .68rem; text-align: right; }
+  .ev-agent { color: var(--gold-bright); font-size: .8rem; }
+  .ev-approval { border: 2px solid var(--gold); background: rgba(212,175,55,.08);
+                 box-shadow: 0 0 16px rgba(212,175,55,.25); }
+  .dot { width: 9px; height: 9px; border-radius: 9999px; display: inline-block; }
+  .dot.idle { background: #475569; } .dot.running { background: #39d353; animation: pulse 1.2s infinite; }
+  .dot.waiting_approval { background: var(--gold); animation: pulse .6s infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .scanlines::after { content: ""; pointer-events: none; position: fixed; inset: 0;
+    background: repeating-linear-gradient(0deg, rgba(0,0,0,.16) 0 1px, transparent 1px 3px); opacity:.5; }
+  .monkey { image-rendering: pixelated; filter: drop-shadow(0 0 8px rgba(212,175,55,.5)); }
+  ::-webkit-scrollbar { width: 8px; } ::-webkit-scrollbar-thumb { background: #2b2415; border-radius: 4px; }
+</style>
+</head>
+<body class="scanlines h-screen overflow-hidden">
+
+<!-- ============ LOGIN ============ -->
+<div id="view-login" class="h-full flex items-center justify-center">
+  <div class="panel gold-border rounded-lg p-8 w-full max-w-sm">
+    <div class="text-center mb-6">
+      <div class="text-4xl monkey mb-2">🐒</div>
+      <h1 class="wordmark text-2xl font-bold">CodeMonkeys</h1>
+      <p class="text-xs text-slate-500 mt-1">your agents. any model. any browser.</p>
+    </div>
+    <div class="space-y-3">
+      <input id="lg-user" class="input w-full rounded px-3 py-2 text-sm" placeholder="username" autocomplete="username">
+      <input id="lg-pin" type="password" class="input w-full rounded px-3 py-2 text-sm" placeholder="PIN (min 6 chars)">
+      <input id="lg-mfa" class="input w-full rounded px-3 py-2 text-sm" placeholder="6-digit authenticator code" inputmode="numeric">
+      <button id="lg-submit" class="gold-btn w-full rounded py-2 text-sm">Log in</button>
+      <button id="lg-toggle" class="w-full text-xs text-slate-400 hover:text-slate-200">First time? Register the Owner account</button>
+      <p id="lg-msg" class="text-xs text-red-400 min-h-[1rem]"></p>
+    </div>
+    <div id="lg-mfa-setup" class="hidden mt-4 border-t border-slate-800 pt-4 text-xs text-slate-300">
+      <p class="text-yellow-300 font-bold mb-2">⚠ Scan this into your authenticator app NOW — you cannot log in without it.</p>
+      <img id="lg-qr" class="mx-auto my-2 bg-white p-1 rounded" width="160" height="160" alt="">
+      <p class="break-all text-slate-500" id="lg-uri"></p>
+      <button id="lg-continue" class="gold-btn w-full rounded py-2 mt-3">I've scanned it — enter console</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MAIN ============ -->
+<div id="view-main" class="hidden h-full flex">
+  <!-- sidebar -->
+  <aside class="w-60 shrink-0 panel border-r border-yellow-900/40 flex flex-col">
+    <div class="p-3 border-b border-yellow-900/40 flex items-center gap-2">
+      <span class="monkey">🐒</span><span class="wordmark font-bold">CodeMonkeys</span>
+    </div>
+    <div class="p-3 text-xs flex-1 overflow-y-auto">
+      <div class="flex justify-between items-center mb-1">
+        <span class="text-slate-500 uppercase tracking-wider">Sessions</span>
+        <button id="btn-new-session" class="text-[var(--gold)] hover:text-[var(--gold-bright)]">+ new</button>
+      </div>
+      <div id="session-list" class="space-y-1 mb-4"></div>
+      <div class="text-slate-500 uppercase tracking-wider mb-1">Repos</div>
+      <div id="repo-list" class="space-y-1 mb-2"></div>
+      <div class="flex gap-1">
+        <input id="repo-url" class="input flex-1 rounded px-2 py-1 text-[.7rem]" placeholder="https://github.com/…">
+        <button id="btn-clone" class="gold-btn rounded px-2 text-[.7rem]">clone</button>
+      </div>
+    </div>
+    <div class="p-3 border-t border-yellow-900/40 text-xs space-y-2">
+      <button id="btn-models" class="w-full text-left text-slate-400 hover:text-[var(--gold)]">⚙ Models &amp; keys</button>
+      <a href="/static/forge/swarm.html" class="block text-slate-400 hover:text-[var(--gold)]">🐵 Swarm view</a>
+      <button id="btn-logout" class="w-full text-left text-slate-600 hover:text-slate-300">⏻ <span id="who"></span> · log out</button>
+    </div>
+  </aside>
+
+  <!-- main pane -->
+  <main class="flex-1 flex flex-col min-w-0">
+    <header class="px-4 py-2 border-b border-yellow-900/40 flex items-center gap-3 text-xs">
+      <span id="hdr-dot" class="dot idle"></span>
+      <span id="hdr-title" class="text-slate-300 font-bold">no session</span>
+      <span id="hdr-status" class="text-slate-500"></span>
+      <span class="flex-1"></span>
+      <span id="hdr-spend" class="text-[var(--gold)]"></span>
+    </header>
+    <div id="stream" class="flex-1 overflow-y-auto px-4 py-3 space-y-2 text-sm"></div>
+    <div class="border-t border-yellow-900/40 p-3">
+      <div id="file-chips" class="flex flex-wrap gap-1 mb-1"></div>
+      <div class="flex gap-2 items-end">
+        <button id="btn-attach" title="Attach files" class="gold-border rounded px-2 py-2 text-sm hover:bg-yellow-900/20">📎</button>
+        <input id="file-input" type="file" multiple class="hidden">
+        <button id="btn-mic" title="Voice input" class="gold-border rounded px-2 py-2 text-sm hover:bg-yellow-900/20">🎤</button>
+        <textarea id="msg" rows="2" class="input flex-1 rounded px-3 py-2 text-sm resize-none"
+          placeholder="Tell the monkeys what to build… (Enter to send, Shift+Enter for newline)"></textarea>
+        <button id="btn-stop" class="hidden rounded px-3 py-2 text-sm bg-red-900/60 hover:bg-red-800">■</button>
+        <button id="btn-send" class="gold-btn rounded px-4 py-2 text-sm">Send</button>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- ============ MODELS MODAL ============ -->
+<div id="modal-models" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+  <div class="panel gold-border rounded-lg p-5 w-full max-w-2xl max-h-[90vh] overflow-y-auto text-sm">
+    <div class="flex justify-between items-center mb-3">
+      <h2 class="wordmark font-bold">Models &amp; API keys</h2>
+      <button id="modal-close" class="text-slate-400 hover:text-white">✕</button>
+    </div>
+    <p class="text-xs text-slate-500 mb-3">Add any OpenAI-compatible endpoint (Gemini, OpenRouter, DeepSeek…) or Anthropic. Keys are stored on the server volume, never in the repo. Tier: t0 = cheap recon … t3 = strongest.</p>
+    <div id="provider-rows" class="space-y-1 mb-4 text-xs"></div>
+    <div class="border-t border-slate-800 pt-3 grid grid-cols-2 gap-2 text-xs">
+      <input id="pv-name" class="input rounded px-2 py-1" placeholder="name (e.g. gemini-flash)">
+      <select id="pv-kind" class="input rounded px-2 py-1"><option value="openai">openai-compatible</option><option value="anthropic">anthropic</option></select>
+      <input id="pv-base" class="input rounded px-2 py-1 col-span-2" placeholder="base_url (blank for anthropic)">
+      <input id="pv-model" class="input rounded px-2 py-1" placeholder="model id">
+      <input id="pv-key" type="password" class="input rounded px-2 py-1" placeholder="API key (blank = keep)">
+      <select id="pv-tier" class="input rounded px-2 py-1">
+        <option value="t0">t0 cheap</option><option value="t1" selected>t1 standard</option>
+        <option value="t2">t2 heavy</option><option value="t3">t3 critical</option></select>
+      <div class="flex gap-2">
+        <input id="pv-in" class="input rounded px-2 py-1 w-1/2" placeholder="$/M in">
+        <input id="pv-out" class="input rounded px-2 py-1 w-1/2" placeholder="$/M out">
+      </div>
+      <button id="pv-save" class="gold-btn rounded py-1 col-span-2">Save provider</button>
+      <p id="pv-msg" class="col-span-2 text-xs text-slate-400"></p>
+    </div>
+  </div>
+</div>
+
+<script src="/static/forge/app.js"></script>
+</body>
+</html>
