@@ -75,8 +75,9 @@ $("lg-submit").onclick = async () => {
         { username: $("lg-user").value, pin: $("lg-pin").value });
       saveAuth(d);
       $("lg-uri").textContent = d.mfa_otpauth_uri;
-      $("lg-qr").src = "https://api.qrserver.com/v1/create-qr-code/?size=160x160&data="
-        + encodeURIComponent(d.mfa_otpauth_uri);
+      // QR rendered locally by the server (data URI); never sent to a CDN.
+      if (d.mfa_qr) { $("lg-qr").src = d.mfa_qr; $("lg-qr").classList.remove("hidden"); }
+      else { $("lg-qr").classList.add("hidden"); }   // fall back to manual-entry of the URI above
       $("lg-mfa-setup").classList.remove("hidden");
     } else {
       const d = await api("/api/login", "POST", {
@@ -102,8 +103,9 @@ $("su-submit").onclick = async () => {
       { new_username: $("su-user").value.trim(), new_pin: pin });
     saveAuth(d);
     $("su-uri").textContent = d.mfa_otpauth_uri;
-    $("su-qr").src = "https://api.qrserver.com/v1/create-qr-code/?size=160x160&data="
-      + encodeURIComponent(d.mfa_otpauth_uri);
+    // QR rendered locally by the server (data URI); never sent to a CDN.
+    if (d.mfa_qr) { $("su-qr").src = d.mfa_qr; $("su-qr").classList.remove("hidden"); }
+    else { $("su-qr").classList.add("hidden"); }
     $("setup-step1").classList.add("hidden");
     $("setup-step2").classList.remove("hidden");
   } catch (e) { $("su-msg").textContent = e.message; }
