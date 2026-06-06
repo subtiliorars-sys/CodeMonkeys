@@ -24,6 +24,7 @@ import re
 import secrets
 import select
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -33,7 +34,7 @@ import pyotp
 import requests
 from enum import Enum
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -61,6 +62,10 @@ SESSIONS_DIR = os.path.join(DATA_DIR, "sessions")
 WORKSPACE_DIR = os.environ.get("WORKSPACE_DIR", os.path.join(DATA_DIR, "workspace"))
 SECRET_FILE = os.path.join(DATA_DIR, "session_secret.key")
 CORPS_DIR = os.path.join(BASE_DIR, "corps", "agents")
+
+MCP_TOKENS_FILE = os.path.join(DATA_DIR, "mcp_tokens.json")
+# OAuth state entries expire after this many seconds (short window reduces CSRF exposure)
+_OAUTH_STATE_TTL = 600
 
 SESSION_TTL = 7 * 24 * 3600
 OPEN_ENROLLMENT = os.environ.get("OPEN_ENROLLMENT", "false").lower() == "true"
@@ -742,6 +747,126 @@ def _save_mcp_config(servers: list):
         _save_json(MCP_CONFIG_FILE, servers)
 
 
+# ---- OAuth token store (separate from mcp_config; never returned/logged) ----
+
+_MCP_TOKENS_LOCK = threading.Lock()
+
+
+def _load_mcp_tokens() -> dict:
+    """Load {server_id: {access_token, refresh_token, expires_at, scope, token_type}}."""
+    with _MCP_TOKENS_LOCK:
+        return _load_json(MCP_TOKENS_FILE, {})
+
+
+def _save_mcp_tokens(tokens: dict):
+    """Write token store at mode 0600 — never accessible via any API endpoint.
+
+    Uses os.open(O_CREAT|O_TRUNC, 0o600) + unique tmp name so the file is
+    0600 from the instant of creation (no 0644 window) and concurrent savers
+    don't clobber each other's tmp file.
+    """
+    with _MCP_TOKENS_LOCK:
+        dir_ = os.path.dirname(MCP_TOKENS_FILE) or "."
+        # mkstemp creates the file 0600 (no umask window)
+        fd, tmp = tempfile.mkstemp(dir=dir_, prefix=".mcp_tokens_")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(tokens, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+        except Exception:
+            os.unlink(tmp)
+            raise
+        os.replace(tmp, MCP_TOKENS_FILE)
+
+
+# Per-server-id refresh lock: serialises the check→refresh→save critical section so
+# concurrent callers on the same sid never each POST with the same (rotated) refresh
+# token.  Mirrors the connect-lock-per-server pattern used in _MCP_RUNTIME.
+_MCP_REFRESH_LOCKS: dict[str, threading.Lock] = {}
+_MCP_REFRESH_LOCKS_LOCK = threading.Lock()
+
+
+def _mcp_refresh_lock(sid: str) -> threading.Lock:
+    """Return (creating if needed) the per-sid refresh lock."""
+    with _MCP_REFRESH_LOCKS_LOCK:
+        if sid not in _MCP_REFRESH_LOCKS:
+            _MCP_REFRESH_LOCKS[sid] = threading.Lock()
+        return _MCP_REFRESH_LOCKS[sid]
+
+
+# In-memory PKCE/state dict: state_key -> {server_id, code_verifier, created_at, username}
+# Keyed by the opaque `state` value sent to the provider.
+# TTL enforced on read; never persisted to disk (a restart clears all pending flows).
+_MCP_OAUTH_STATES: dict[str, dict] = {}
+_MCP_OAUTH_STATES_LOCK = threading.Lock()
+
+
+def _oauth_state_put(state_key: str, server_id: str, code_verifier: str, username: str,
+                     redirect_uri: str = ""):
+    with _MCP_OAUTH_STATES_LOCK:
+        _oauth_state_expire()  # prune stale entries opportunistically
+        _MCP_OAUTH_STATES[state_key] = {
+            "server_id": server_id,
+            "code_verifier": code_verifier,
+            "created_at": time.time(),
+            "username": username,
+            # MED-2: redirect_uri pinned at flow start; reused byte-for-byte at exchange
+            # (RFC 6749 §4.1.3 requires identity match).
+            "redirect_uri": redirect_uri,
+        }
+
+
+def _oauth_state_pop(state_key: str) -> dict | None:
+    """Return and remove the state entry if it exists and has not expired."""
+    with _MCP_OAUTH_STATES_LOCK:
+        entry = _MCP_OAUTH_STATES.pop(state_key, None)
+    if entry is None:
+        return None
+    if time.time() - entry["created_at"] > _OAUTH_STATE_TTL:
+        return None  # expired — treat as if it never existed
+    return entry
+
+
+def _oauth_state_expire():
+    """Prune all entries older than _OAUTH_STATE_TTL (called under lock)."""
+    now = time.time()
+    expired = [k for k, v in _MCP_OAUTH_STATES.items()
+               if now - v["created_at"] > _OAUTH_STATE_TTL]
+    for k in expired:
+        del _MCP_OAUTH_STATES[k]
+
+
+# ---- PKCE S256 helpers (RFC 7636) ----
+
+def _pkce_verifier() -> str:
+    """Generate a cryptographically random code_verifier (64 urlsafe chars)."""
+    return secrets.token_urlsafe(48)   # 48 bytes -> 64-char base64url, within [43,128]
+
+
+def _pkce_challenge(verifier: str) -> str:
+    """Return BASE64URL(SHA256(ASCII(verifier))) — S256 method per RFC 7636 §4.2."""
+    digest = hashlib.sha256(verifier.encode("ascii")).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def _mcp_auth_header(server: dict) -> str | None:
+    """Return the value for the Authorization header, or None if no auth needed.
+
+    For auth=='oauth': load (and refresh if needed) the stored access token.
+    For auth=='bearer' (default): use the static token field.
+    Raises RuntimeError if oauth is configured but no token is available (fail-closed).
+    """
+    auth = server.get("auth", "bearer")
+    if auth == "oauth":
+        token = _mcp_oauth_access_token(server)   # raises on failure
+        return f"Bearer {token}"
+    # bearer / legacy (no auth field) — use static token if present
+    if server.get("token"):
+        return f"Bearer {server['token']}"
+    return None
+
+
 _STDIO_BYTE_CAP = 256 * 1024  # 256 KB hard stop on stdout bytes consumed before newline
 
 
@@ -825,11 +950,12 @@ def _mcp_rpc(server: dict, method: str, params: dict, timeout: int = 30):
             raise RuntimeError("MCP stdio child is not running")
         return _mcp_stdio_rpc(proc, payload, timeout)
 
-    # ---- http path (unchanged) ----
+    # ---- http path ----
     headers = {"Content-Type": "application/json",
                "Accept": "application/json, text/event-stream"}
-    if server.get("token"):
-        headers["Authorization"] = f"Bearer {server['token']}"
+    auth_hdr = _mcp_auth_header(server)
+    if auth_hdr:
+        headers["Authorization"] = auth_hdr
     rt = _MCP_RUNTIME.get(server["id"], {})
     if rt.get("session_id_header"):
         headers["Mcp-Session-Id"] = rt["session_id_header"]
@@ -888,11 +1014,15 @@ def _mcp_notify(server: dict, method: str, params: dict):
             _mcp_stdio_notify(proc, payload)
         return
 
-    # ---- http path (unchanged) ----
+    # ---- http path ----
     headers = {"Content-Type": "application/json",
                "Accept": "application/json, text/event-stream"}
-    if server.get("token"):
-        headers["Authorization"] = f"Bearer {server['token']}"
+    try:
+        auth_hdr = _mcp_auth_header(server)
+    except RuntimeError:
+        auth_hdr = None  # notifications are fire-and-forget; don't raise
+    if auth_hdr:
+        headers["Authorization"] = auth_hdr
     rt = _MCP_RUNTIME.get(server["id"], {})
     if rt.get("session_id_header"):
         headers["Mcp-Session-Id"] = rt["session_id_header"]
@@ -984,11 +1114,12 @@ def _mcp_connect(server: dict):
                 _MCP_RUNTIME[sid]["error"] = None
                 return
 
-            # ---- http path (unchanged) ----
+            # ---- http path (auth via _mcp_auth_header: bearer or oauth) ----
             headers_pre = {"Content-Type": "application/json",
                            "Accept": "application/json, text/event-stream"}
-            if server.get("token"):
-                headers_pre["Authorization"] = f"Bearer {server['token']}"
+            auth_hdr = _mcp_auth_header(server)   # raises if oauth configured but not connected
+            if auth_hdr:
+                headers_pre["Authorization"] = auth_hdr
             init_payload = {
                 "jsonrpc": "2.0", "id": uuid.uuid4().hex, "method": "initialize",
                 "params": {
@@ -1180,10 +1311,12 @@ def _mcp_entry_shape(srv: dict) -> dict:
         for t in rt.get("tools", [])
     ]
     transport = srv.get("transport", "http")
+    auth = srv.get("auth", "bearer")
     out = {
         "id": srv["id"],
         "name": srv["name"],
         "transport": transport,
+        "auth": auth,
         "enabled": srv.get("enabled", True),
         "status": rt.get("status", "disconnected"),
         "error": rt.get("error"),
@@ -1191,11 +1324,32 @@ def _mcp_entry_shape(srv: dict) -> dict:
     }
     if transport == "http":
         out["url"] = srv.get("url", "")
-        out["has_token"] = bool(srv.get("token"))
+        if auth == "oauth":
+            # Surface connected status — NEVER tokens, client_secret, or refresh_token
+            tokens = _load_mcp_tokens()
+            out["oauth_connected"] = bool(tokens.get(srv["id"], {}).get("access_token"))
+            # Surface OAuth config (public fields only — client_secret excluded)
+            oa = srv.get("oauth") or {}
+            out["oauth_config"] = {
+                "authorize_url": oa.get("authorize_url", ""),
+                "token_url": oa.get("token_url", ""),
+                "client_id": oa.get("client_id", ""),
+                "scope": oa.get("scope", ""),
+            }
+        else:
+            out["has_token"] = bool(srv.get("token"))
     else:
         # stdio: surface command but NEVER env/token values
         out["command"] = srv.get("command", "")
     return out
+
+
+class OAuthConfig(BaseModel):
+    authorize_url: str = ""
+    token_url: str = ""
+    client_id: str = ""
+    client_secret: str = ""   # optional — public clients omit this
+    scope: str = ""
 
 
 class McpCreate(BaseModel):
@@ -1204,10 +1358,22 @@ class McpCreate(BaseModel):
     # http fields
     url: str = ""
     token: str = ""
+    # auth type: "bearer" (default) | "oauth"
+    auth: str = "bearer"
+    oauth: OAuthConfig = OAuthConfig()
     # stdio fields
     command: str = ""
     args: list = []
     env: dict = {}
+
+
+def _validate_https_url(url: str, label: str):
+    """Raise HTTPException if url is not https (or http loopback)."""
+    _parsed = urllib.parse.urlparse(url)
+    _loopback = {"localhost", "127.0.0.1", "::1"}
+    if not (_parsed.scheme == "https" or
+            (_parsed.scheme == "http" and _parsed.hostname in _loopback)):
+        raise HTTPException(400, f"{label} must use https://")
 
 
 @app.get("/api/mcp")
@@ -1221,16 +1387,36 @@ def mcp_add(req: McpCreate, _: str = Depends(verify_owner)):
     if not req.name.strip():
         raise HTTPException(400, "name is required")
     transport = req.transport if req.transport in ("http", "stdio") else "http"
+    auth = req.auth if req.auth in ("bearer", "oauth") else "bearer"
     sid = uuid.uuid4().hex[:8]
     if transport == "http":
         url = req.url.strip()
-        _parsed = urllib.parse.urlparse(url)
-        _loopback = {"localhost", "127.0.0.1", "::1"}
-        if not (_parsed.scheme == "https" or
-                (_parsed.scheme == "http" and _parsed.hostname in _loopback)):
-            raise HTTPException(400, "url must use https:// (or http://localhost|127.0.0.1|::1 for dev)")
-        srv = {"id": sid, "name": req.name.strip(), "transport": "http",
-               "url": url, "token": req.token, "enabled": True}
+        _validate_https_url(url, "url")
+        if auth == "oauth":
+            # Validate OAuth config
+            az = req.oauth.authorize_url.strip()
+            tz = req.oauth.token_url.strip()
+            cid = req.oauth.client_id.strip()
+            if not cid:
+                raise HTTPException(400, "oauth.client_id is required for auth=oauth")
+            _validate_https_url(az, "oauth.authorize_url")
+            _validate_https_url(tz, "oauth.token_url")
+            srv = {
+                "id": sid, "name": req.name.strip(), "transport": "http",
+                "url": url, "auth": "oauth", "enabled": True,
+                "oauth": {
+                    "authorize_url": az,
+                    "token_url": tz,
+                    "client_id": cid,
+                    # client_secret stored in config (plaintext on /data — consistent
+                    # with existing bearer token policy; see SECURITY.md)
+                    "client_secret": req.oauth.client_secret,
+                    "scope": req.oauth.scope.strip(),
+                },
+            }
+        else:
+            srv = {"id": sid, "name": req.name.strip(), "transport": "http",
+                   "url": url, "token": req.token, "auth": "bearer", "enabled": True}
     else:
         cmd = req.command.strip()
         if not cmd:
@@ -1276,6 +1462,281 @@ def mcp_refresh(sid: str, _: str = Depends(verify_owner)):
     _mcp_disconnect(sid)
     _mcp_connect(srv)
     return _mcp_entry_shape(srv)
+
+
+# ---- OAuth 2.1 + PKCE endpoints ----
+
+def _build_redirect_uri(request: Request) -> str:
+    """Derive absolute redirect_uri from the incoming request's base URL.
+    Never hardcoded — works on localhost and on Fly alike."""
+    base = str(request.base_url).rstrip("/")
+    return f"{base}/api/mcp/oauth/callback"
+
+
+def _mcp_oauth_access_token(server: dict) -> str:
+    """Return a valid access token for an oauth MCP server.
+
+    If the stored token is expiring within 60 s, refresh it first.
+    Raises RuntimeError (fail-closed) if no token is stored or refresh fails.
+    The return value is used directly as a Bearer token in Authorization headers.
+
+    Concurrency: a per-sid lock serialises the full check→refresh→save critical
+    section.  Inside the lock we re-read the token store so a second thread that
+    enters after a refresh is already complete will use the new token without
+    making another network call (and will never reuse a rotated refresh token).
+    """
+    sid = server["id"]
+
+    # Fast pre-check without the refresh lock: if no entry at all, fail now.
+    tokens = _load_mcp_tokens()
+    entry = tokens.get(sid)
+    if not entry or not entry.get("access_token"):
+        raise RuntimeError(f"MCP server '{server.get('name')}' is not OAuth-connected. "
+                           "Complete the OAuth flow via the MCP settings panel.")
+
+    # Acquire per-sid lock for the check→refresh→merge→save section.
+    with _mcp_refresh_lock(sid):
+        # Re-read inside the lock: another thread may have just refreshed.
+        tokens = _load_mcp_tokens()
+        entry = tokens.get(sid)
+        if not entry or not entry.get("access_token"):
+            raise RuntimeError(f"MCP server '{server.get('name')}' is not OAuth-connected. "
+                               "Complete the OAuth flow via the MCP settings panel.")
+
+        expires_at = entry.get("expires_at", 0)
+        if not (expires_at and time.time() > expires_at - 60):
+            # Token is still valid (either originally, or a sibling thread just refreshed it).
+            return entry["access_token"]
+
+        # Token needs refreshing.
+        refresh_token = entry.get("refresh_token")
+        if not refresh_token:
+            raise RuntimeError(f"MCP server '{server.get('name')}' OAuth token expired "
+                               "and no refresh_token available. Re-authorise via MCP settings.")
+
+        oa = server.get("oauth") or {}
+        token_url = oa.get("token_url", "")
+        client_id = oa.get("client_id", "")
+        client_secret = oa.get("client_secret", "")
+
+        # HIGH-2(a): validate token_url before posting (defends bash-rewrites-config vector)
+        _validate_https_url(token_url, "oauth.token_url")
+
+        form = {
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+            "client_id": client_id,
+        }
+        if client_secret:
+            form["client_secret"] = client_secret
+        try:
+            # HIGH-2(b): allow_redirects=False — a 307/308 would re-POST the
+            # refresh_token+client_secret to wherever the Location header points.
+            r = requests.post(token_url, data=form,
+                              headers={"Content-Type": "application/x-www-form-urlencoded"},
+                              timeout=30, allow_redirects=False)
+            if r.is_redirect:
+                raise RuntimeError("token endpoint issued an unexpected redirect")
+            r.raise_for_status()
+            tok = r.json()
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"OAuth token refresh failed for '{server.get('name')}': {exc}")
+
+        # LOW-2: defensive expires_in coercion; absent/bad value → 300s conservative TTL
+        try:
+            expires_delta = int(tok["expires_in"])
+        except (KeyError, TypeError, ValueError):
+            expires_delta = 300
+
+        new_entry = {
+            "access_token": tok.get("access_token", entry["access_token"]),
+            "refresh_token": tok.get("refresh_token", refresh_token),
+            "token_type": tok.get("token_type", "bearer"),
+            "scope": tok.get("scope", entry.get("scope", "")),
+            "expires_at": time.time() + expires_delta,
+        }
+        # Merge only THIS sid into a freshly-loaded dict (no lost-update for other sids).
+        fresh_tokens = _load_mcp_tokens()
+        fresh_tokens[sid] = new_entry
+        _save_mcp_tokens(fresh_tokens)
+        return new_entry["access_token"]
+
+
+@app.post("/api/mcp/{sid}/oauth/start")
+def mcp_oauth_start(sid: str, request: Request, username: str = Depends(verify_owner)):
+    """Build the OAuth 2.1 authorization URL with PKCE S256 and return it.
+    The frontend opens this URL in a new window; the provider redirects back to
+    /api/mcp/oauth/callback after the user grants consent."""
+    servers = _load_mcp_config()
+    srv = next((s for s in servers if s["id"] == sid), None)
+    if not srv:
+        raise HTTPException(404, "No such MCP server")
+    if srv.get("auth") != "oauth":
+        raise HTTPException(400, "Server is not configured for OAuth")
+    oa = srv.get("oauth") or {}
+    authorize_url = oa.get("authorize_url", "")
+    client_id = oa.get("client_id", "")
+    scope = oa.get("scope", "")
+    if not authorize_url or not client_id:
+        raise HTTPException(400, "OAuth server config incomplete (authorize_url and client_id required)")
+
+    verifier = _pkce_verifier()
+    challenge = _pkce_challenge(verifier)
+    state_key = secrets.token_urlsafe(32)
+    redirect_uri = _build_redirect_uri(request)
+
+    # MED-2: pin redirect_uri in the state entry so /callback uses the byte-for-byte
+    # same value regardless of how the callback request arrives (Host header, proxy, etc.)
+    _oauth_state_put(state_key, sid, verifier, username, redirect_uri)
+
+    params = {
+        "response_type": "code",
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "scope": scope,
+        "state": state_key,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+    }
+    full_url = authorize_url + ("&" if "?" in authorize_url else "?") + urllib.parse.urlencode(params)
+    return {"authorize_url": full_url}
+
+
+@app.get("/api/mcp/oauth/callback")
+def mcp_oauth_callback(request: Request,
+                       code: str = "", state: str = "", error: str = "",
+                       error_description: str = ""):
+    """OAuth 2.1 authorization code callback.
+
+    Validates state (CSRF), exchanges code at the token endpoint with PKCE
+    code_verifier, persists tokens in mcp_tokens.json (0600), returns a
+    self-closing HTML page. Tokens are NEVER reflected in the response body.
+    """
+    # --- CSRF guard ---
+    if not state:
+        return HTMLResponse(_oauth_error_page("Missing state parameter."), status_code=400)
+    entry = _oauth_state_pop(state)
+    if entry is None:
+        return HTMLResponse(_oauth_error_page("Unknown, expired, or already-used state. "
+                                              "Please start the OAuth flow again."),
+                            status_code=400)
+
+    # --- Provider-reported error ---
+    if error:
+        return HTMLResponse(_oauth_error_page("The OAuth provider reported an error. "
+                                              "Check the CodeMonkeys MCP settings and try again."),
+                            status_code=400)
+    if not code:
+        return HTMLResponse(_oauth_error_page("No authorization code received."), status_code=400)
+
+    # --- Look up server config ---
+    servers = _load_mcp_config()
+    srv = next((s for s in servers if s["id"] == entry["server_id"]), None)
+    if not srv:
+        return HTMLResponse(_oauth_error_page("MCP server no longer exists."), status_code=400)
+    oa = srv.get("oauth") or {}
+
+    token_url = oa.get("token_url", "")
+    client_id = oa.get("client_id", "")
+    client_secret = oa.get("client_secret", "")
+    # MED-2: use the redirect_uri that was pinned in the state at /start — never
+    # recompute from the current request (Host header may differ behind a proxy).
+    redirect_uri = entry.get("redirect_uri") or _build_redirect_uri(request)
+    code_verifier = entry["code_verifier"]
+
+    # HIGH-2(a): validate token_url before posting (defends bash-rewrites-config vector)
+    try:
+        _validate_https_url(token_url, "oauth.token_url")
+    except Exception:
+        return HTMLResponse(_oauth_error_page("OAuth token endpoint is not https. "
+                                              "Check MCP server config."), status_code=400)
+
+    # --- Exchange authorization code ---
+    form = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "client_id": client_id,
+        "code_verifier": code_verifier,
+    }
+    if client_secret:
+        form["client_secret"] = client_secret
+    try:
+        # HIGH-2(b): allow_redirects=False — a 307/308 would re-POST code+client_secret
+        # to wherever the Location header points (SSRF / secret exfil vector).
+        r = requests.post(token_url, data=form,
+                          headers={"Content-Type": "application/x-www-form-urlencoded"},
+                          timeout=30, allow_redirects=False)
+        if r.is_redirect:
+            return HTMLResponse(_oauth_error_page("Token exchange failed. Check server logs."),
+                                status_code=500)
+        r.raise_for_status()
+        tok = r.json()
+    except Exception:
+        # Do not leak any details about the token exchange failure to the browser
+        return HTMLResponse(_oauth_error_page("Token exchange failed. Check server logs."),
+                            status_code=500)
+
+    if not tok.get("access_token"):
+        return HTMLResponse(_oauth_error_page("No access_token in provider response."),
+                            status_code=500)
+
+    # LOW-2: defensive expires_in coercion; absent/bad value → 300s conservative TTL
+    try:
+        expires_delta = int(tok["expires_in"])
+    except (KeyError, TypeError, ValueError):
+        expires_delta = 300
+
+    # --- Persist tokens at mode 0600 ---
+    new_entry = {
+        "access_token": tok["access_token"],
+        "refresh_token": tok.get("refresh_token", ""),
+        "token_type": tok.get("token_type", "bearer"),
+        "scope": tok.get("scope", oa.get("scope", "")),
+        "expires_at": time.time() + expires_delta,
+    }
+    tokens = _load_mcp_tokens()
+    tokens[entry["server_id"]] = new_entry
+    _save_mcp_tokens(tokens)
+
+    # Trigger a reconnect so the server can use the new token immediately
+    if srv.get("enabled"):
+        threading.Thread(target=_mcp_connect, args=(srv,), daemon=True).start()
+
+    return HTMLResponse(_oauth_success_page())
+
+
+def _oauth_success_page() -> str:
+    return """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Connected</title>
+<style>body{background:#050507;color:#e2e8f0;font-family:monospace;
+display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}
+.box{text-align:center;padding:2rem;border:1px solid rgba(212,175,55,.45);border-radius:8px;}
+h1{color:#d4af37;}</style></head>
+<body><div class="box">
+<h1>Connected</h1>
+<p>OAuth authorisation successful. You can close this window.</p>
+<script>window.close();</script>
+</div></body></html>"""
+
+
+def _oauth_error_page(reason: str) -> str:
+    # reason must NOT contain any token, secret, or provider error detail
+    from html import escape as _he
+    safe_reason = _he(str(reason)[:200])
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>OAuth Error</title>
+<style>body{{background:#050507;color:#e2e8f0;font-family:monospace;
+display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}}
+.box{{text-align:center;padding:2rem;border:1px solid rgba(239,68,68,.45);border-radius:8px;}}
+h1{{color:#ef4444;}}</style></head>
+<body><div class="box">
+<h1>OAuth Error</h1>
+<p>{safe_reason}</p>
+<p style="color:#475569;font-size:.8em;">Close this window and check the MCP settings panel.</p>
+</div></body></html>"""
 
 
 # ----------------------------------------------------------------- unified chat

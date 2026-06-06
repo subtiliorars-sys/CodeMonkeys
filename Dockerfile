@@ -17,4 +17,8 @@ COPY scripts/ scripts/
 
 ENV DATA_DIR=/data PORT=8080
 EXPOSE 8080
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8080"]
+# --proxy-headers + --forwarded-allow-ips=* let uvicorn trust the Fly proxy's
+# X-Forwarded-Proto/Host headers so request.base_url resolves to the real https URL
+# (needed for correct redirect_uri derivation in the OAuth flow).
+CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8080", \
+     "--proxy-headers", "--forwarded-allow-ips=*"]

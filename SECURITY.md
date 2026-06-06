@@ -53,6 +53,66 @@ keep that radius away from everything else.
   gate limits mutating MCP calls but not read-only data flow. The agent could also
   write `mcp_config.json` via unsandboxed `bash` (same kernel-sandbox gap below).
 
+## MCP OAuth 2.1 (Google Drive, Microsoft 365, etc.)
+
+### Token store
+- Access tokens, refresh tokens, and expiry times are stored in a **separate file**
+  `DATA_DIR/mcp_tokens.json`, written with mode **0600** (owner-readable only).
+- This file is **never** returned by any API endpoint (`/api/mcp` GET surfaces only
+  `oauth_connected: bool`), **never** logged, and **never** emitted in SSE events.
+- `client_secret` (for confidential OAuth clients) lives in `mcp_config.json` on
+  `/data` — consistent with the existing bearer token storage policy. This is
+  plaintext-at-rest on the Fly volume. Mitigation: the volume is encrypted-at-rest
+  by Fly; the machine holds no other tenants' data; the secrets are scoped to the
+  specific OAuth app registered by the owner.
+
+### PKCE + state CSRF protection
+- Every OAuth flow uses **PKCE S256** (RFC 7636): a 64-char random `code_verifier`
+  is generated with `secrets.token_urlsafe`, and `code_challenge = BASE64URL(SHA256(verifier))`
+  is sent to the authorization endpoint. The verifier is stored only in server-side
+  memory and sent to the token endpoint — never to the browser.
+- A **cryptographically random `state`** (32-byte base64url from `secrets.token_urlsafe`)
+  is stored in an in-memory dict with a 600-second TTL.  The CSRF protection is
+  **state-secrecy + PKCE** (single-use, TTL-bounded): callbacks with an unknown,
+  expired, or already-consumed state are rejected (`_oauth_state_pop`).  The
+  `username` field in the state entry identifies who initiated the flow as audit
+  context but is **not enforced at callback time** — the callback endpoint carries
+  no auth header (it is a browser redirect) and therefore cannot verify the
+  initiating session identity.  The `error_description` from the provider is never
+  echoed to the callback page (avoids reflected provider-controlled text).
+
+### Redirect URI derivation
+- The redirect URI is derived from `request.base_url` at call time — never hardcoded.
+  It resolves to `<scheme>://<host>/api/mcp/oauth/callback`. This means:
+  - On localhost it is `http://127.0.0.1:8080/api/mcp/oauth/callback`.
+  - On Fly it is the `https://…fly.dev/api/mcp/oauth/callback` (or custom domain).
+- **Owner action required:** register this exact URI in the OAuth app at the provider
+  (Google Cloud Console or Azure Entra ID) before initiating the flow. A mismatch
+  causes the provider to reject the authorization request.
+
+### Refresh handling
+- Before every MCP request on an OAuth server, `_mcp_oauth_access_token` checks
+  `expires_at`. If the token expires within 60 seconds, it uses the stored
+  `refresh_token` to obtain a fresh pair (RFC 6749 §6) and writes the result back
+  to the token store (0600). Fail-closed: if refresh fails, the MCP call returns an
+  error to the agent rather than proceeding with a stale or absent token.
+
+### Accepted residual risk (OAuth-specific)
+- The owner must register the OAuth app at the provider (Google Cloud Console /
+  Azure Entra ID) and supply the correct `client_id` (and optionally `client_secret`
+  for confidential clients). CodeMonkeys does not automate app registration.
+- `client_secret` at rest in `mcp_config.json` is plaintext on `/data` — same risk
+  posture as bearer tokens. If a higher security bar is required, store the secret
+  externally and inject it as a Fly secret / environment variable instead of in the
+  config UI. This is a known gap; addressing it requires a secrets-envelope layer.
+- The OAuth callback endpoint (`/api/mcp/oauth/callback`) is publicly reachable
+  (no auth header — the browser redirect cannot carry one). The state+PKCE
+  mechanism is the sole CSRF guard; it is correct per RFC 7636 but depends on
+  server-side state not being leaked. The in-memory dict is process-local; a
+  restart during the 10-minute flow window will lose pending states.
+- **Gate before production:** this code requires A5 red-team review and a live
+  Google/Azure app registration test before the feature is opened to use.
+
 ## Known limitations (v0.1)
 
 - bash is jailed by cwd, **not** by kernel sandboxing — a hostile prompt could

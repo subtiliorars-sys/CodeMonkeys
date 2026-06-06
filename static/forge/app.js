@@ -548,12 +548,22 @@ function renderMcpRows(servers) {
       : "";
 
     const toolCount = (s.tools || []).length;
+    // OAuth badge + connect button (shown only for oauth servers)
+    const oauthBadge = s.auth === "oauth"
+      ? (s.oauth_connected
+          ? '<span class="rounded px-1 text-[.6rem] bg-green-900/60 text-green-300 ml-1">OAuth ✓</span>'
+          : '<span class="rounded px-1 text-[.6rem] bg-red-900/60 text-red-300 ml-1">OAuth ✗</span>')
+      : "";
+    const oauthConnectBtn = (s.auth === "oauth" && !s.oauth_connected)
+      ? `<button class="mcp-oauth-connect gold-border rounded px-2 py-0.5 text-[.65rem] text-[var(--gold-bright)] hover:bg-yellow-900/20" title="Start OAuth flow">Connect (OAuth)</button>`
+      : "";
     row.innerHTML = `
       <div class="flex items-center gap-2 cursor-pointer mcp-row-header">
         ${mcpStatusDot(s)}
-        <b class="flex-1 text-slate-200">${esc(s.name)}</b>${transportBadge}
+        <b class="flex-1 text-slate-200">${esc(s.name)}</b>${transportBadge}${oauthBadge}
         <span class="text-slate-500">${hint}</span>
         <span class="text-slate-400">${toolCount} tool${toolCount !== 1 ? "s" : ""}</span>
+        ${oauthConnectBtn}
         <button class="mcp-toggle ${s.enabled ? "text-green-400" : "text-slate-600"} hover:text-green-300" title="${s.enabled ? "disable" : "enable"}">${s.enabled ? "on" : "off"}</button>
         <button class="mcp-refresh text-slate-400 hover:text-[var(--gold)]" title="reconnect &amp; refresh tools">↻</button>
         <button class="mcp-del text-red-500/60 hover:text-red-400" title="remove server">✕</button>
@@ -571,6 +581,18 @@ function renderMcpRows(servers) {
       if (e.target.closest("button")) return;
       row.querySelector(".mcp-tool-list").classList.toggle("hidden");
     };
+
+    const oauthConnectEl = row.querySelector(".mcp-oauth-connect");
+    if (oauthConnectEl) {
+      oauthConnectEl.onclick = async () => {
+        try {
+          const d = await api(`/api/mcp/${encodeURIComponent(s.id)}/oauth/start`, "POST", {});
+          window.open(d.authorize_url, "_blank", "noopener,noreferrer,width=600,height=700");
+          // Poll for completion after a short delay so the user has time to authorize
+          $("mcp-msg").textContent = "OAuth window opened — authorize, then click ↻ to refresh.";
+        } catch (err) { $("mcp-msg").textContent = err.message; }
+      };
+    }
 
     row.querySelector(".mcp-toggle").onclick = async () => {
       try {
@@ -614,13 +636,57 @@ $("mcp-transport").onchange = () => {
   $("mcp-stdio-fields").classList.toggle("hidden", !isStdio);
 };
 
+// Auth type: toggle bearer vs oauth fields (http transport only)
+$("mcp-auth").onchange = () => {
+  const isOAuth = $("mcp-auth").value === "oauth";
+  $("mcp-bearer-fields").classList.toggle("hidden", isOAuth);
+  $("mcp-oauth-fields").classList.toggle("hidden", !isOAuth);
+};
+
 $("mcp-preset-github").onclick = () => {
   $("mcp-transport").value = "http";
   $("mcp-transport").dispatchEvent(new Event("change"));
+  $("mcp-auth").value = "bearer";
+  $("mcp-auth").dispatchEvent(new Event("change"));
   $("mcp-name").value = "github";
   $("mcp-url").value = "https://api.githubcopilot.com/mcp/";
   $("mcp-token").placeholder = "Bearer token / PAT — stored server-side";
   $("mcp-token").focus();
+};
+
+// Google Drive official remote MCP — owner must register their own OAuth app at
+// https://console.cloud.google.com and fill in their own client_id (and optionally
+// client_secret for confidential clients). Scope is for Drive read-only; adjust as needed.
+$("mcp-preset-gdrive").onclick = () => {
+  $("mcp-transport").value = "http";
+  $("mcp-transport").dispatchEvent(new Event("change"));
+  $("mcp-auth").value = "oauth";
+  $("mcp-auth").dispatchEvent(new Event("change"));
+  $("mcp-name").value = "google-drive";
+  $("mcp-url").value = "https://drive.googleapis.com/mcp/";
+  $("mcp-oauth-az").value = "https://accounts.google.com/o/oauth2/v2/auth";
+  $("mcp-oauth-tz").value = "https://oauth2.googleapis.com/token";
+  $("mcp-oauth-scope").value = "https://www.googleapis.com/auth/drive.readonly";
+  $("mcp-oauth-cid").value = "";
+  $("mcp-oauth-cid").focus();
+};
+
+// Microsoft 365 official remote MCP — owner must register their own app at
+// https://portal.azure.com (Entra ID) and fill in their own client_id.
+// The tenant 'common' allows both personal and work accounts; replace with your tenant ID
+// if needed. Scopes below cover basic Files read and Mail read.
+$("mcp-preset-m365").onclick = () => {
+  $("mcp-transport").value = "http";
+  $("mcp-transport").dispatchEvent(new Event("change"));
+  $("mcp-auth").value = "oauth";
+  $("mcp-auth").dispatchEvent(new Event("change"));
+  $("mcp-name").value = "microsoft-365";
+  $("mcp-url").value = "https://graph.microsoft.com/mcp/";
+  $("mcp-oauth-az").value = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize";
+  $("mcp-oauth-tz").value = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
+  $("mcp-oauth-scope").value = "Files.Read Mail.Read offline_access";
+  $("mcp-oauth-cid").value = "";
+  $("mcp-oauth-cid").focus();
 };
 
 $("mcp-add").onclick = async () => {
@@ -648,14 +714,38 @@ $("mcp-add").onclick = async () => {
     body = { name, transport: "stdio", command, args, env };
   } else {
     const url  = $("mcp-url").value.trim();
-    const token = $("mcp-token").value;
     if (!url) { $("mcp-msg").textContent = "URL is required for HTTP."; return; }
-    body = { name, transport: "http", url, token };
+    const auth = $("mcp-auth").value;
+    if (auth === "oauth") {
+      const az = $("mcp-oauth-az").value.trim();
+      const tz = $("mcp-oauth-tz").value.trim();
+      const cid = $("mcp-oauth-cid").value.trim();
+      if (!az || !tz || !cid) {
+        $("mcp-msg").textContent = "OAuth requires authorize_url, token_url, and client_id.";
+        return;
+      }
+      body = {
+        name, transport: "http", url, auth: "oauth",
+        oauth: {
+          authorize_url: az,
+          token_url: tz,
+          client_id: cid,
+          client_secret: $("mcp-oauth-csec").value,
+          scope: $("mcp-oauth-scope").value.trim(),
+        },
+      };
+    } else {
+      body = { name, transport: "http", url, token: $("mcp-token").value, auth: "bearer" };
+    }
   }
 
   try {
     await api("/api/mcp", "POST", body);
-    ["mcp-name", "mcp-url", "mcp-token", "mcp-command", "mcp-args", "mcp-env"].forEach((k) => ($(k).value = ""));
+    ["mcp-name", "mcp-url", "mcp-token", "mcp-command", "mcp-args", "mcp-env",
+     "mcp-oauth-az", "mcp-oauth-tz", "mcp-oauth-cid", "mcp-oauth-csec", "mcp-oauth-scope",
+    ].forEach((k) => ($(k).value = ""));
+    $("mcp-auth").value = "bearer";
+    $("mcp-auth").dispatchEvent(new Event("change"));
     $("mcp-msg").textContent = "Added ✓";
     loadMcpServers();
   } catch (e) { $("mcp-msg").textContent = e.message; }
