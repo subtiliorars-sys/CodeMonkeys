@@ -76,6 +76,19 @@ LOGIN_MAX_FAILS = int(os.environ.get("LOGIN_MAX_FAILS", "10"))
 LOGIN_WINDOW_SEC = int(os.environ.get("LOGIN_WINDOW_SEC", "300"))
 LOGIN_LOCKOUT_SEC = int(os.environ.get("LOGIN_LOCKOUT_SEC", "900"))
 LOGIN_TRACK_CAP = 4096     # max distinct keys tracked — bounds memory vs username-spam
+# Two extra throttle dimensions layered on top of the per-username lock, required
+# before OPEN_ENROLLMENT widens the attack surface (SECURITY.md "Add an IP/global
+# dimension..."). Both share LOGIN_WINDOW_SEC / LOGIN_LOCKOUT_SEC. A threshold of
+# <= 0 DISABLES that dimension (escape hatch / restores pre-#13 per-account-only
+# behaviour). IP defaults sit above the per-account default so a single source can
+# brute a couple of accounts before its IP trips; the global ceiling is a
+# system-wide circuit-breaker for distributed guessing across many usernames/IPs.
+LOGIN_IP_MAX_FAILS = int(os.environ.get("LOGIN_IP_MAX_FAILS", "30"))
+LOGIN_GLOBAL_MAX_FAILS = int(os.environ.get("LOGIN_GLOBAL_MAX_FAILS", "200"))
+# Persistent lock store: the throttle state is written through to disk so locks
+# and in-window counters SURVIVE A RESTART (the pre-#13 in-memory tracker was
+# fail-open on restart). Lives under DATA_DIR like users.json / mcp_tokens.json.
+LOGIN_THROTTLE_FILE = os.path.join(DATA_DIR, "login_throttle.json")
 SESSION_BUDGET_USD = float(os.environ.get("SESSION_BUDGET_USD", "1.00"))
 MAX_TURNS = int(os.environ.get("MAX_TURNS", "60"))
 SUBAGENT_MAX_TURNS = int(os.environ.get("SUBAGENT_MAX_TURNS", "25"))
@@ -261,72 +274,185 @@ def register(req: RegisterRequest):
     }
 
 
-# ---- login brute-force throttle (in-memory, process-local) -----------------
-# Keyed by username. Lock is per-account (the documented "account lockout"),
-# which means a determined attacker who knows a username can lock that account
-# out for LOGIN_LOCKOUT_SEC — an availability trade-off accepted in SECURITY.md
-# for a single-owner tool; an IP dimension can be layered on later if enrollment
-# opens. Process-local: a restart clears counters (fail-open on restart only).
+# ---- login brute-force throttle (persistent; three dimensions) -------------
+# Three sliding-window lockout dimensions, all the same {key -> {stamps, until}}
+# shape so one set of helpers serves them:
+#   _login_fails      username -> ...   (per-account; the original #13 lock)
+#   _login_ip_fails   client-IP -> ...  (per source IP, from Fly-Client-IP)
+#   _login_global     "*"       -> ...  (one system-wide circuit-breaker bucket)
+# State is WRITTEN THROUGH to LOGIN_THROTTLE_FILE on every mutation and reloaded
+# at startup, so locks/counters survive a restart (no longer fail-open on reboot).
+_GLOBAL_KEY = "*"
 _login_fails = {}                      # username -> {"stamps": [ts...], "until": ts}
-_LOGIN_LOCK = threading.Lock()
+_login_ip_fails = {}                   # client ip -> {"stamps": [ts...], "until": ts}
+_login_global = {}                     # {_GLOBAL_KEY: {"stamps": [ts...], "until": ts}}
+_LOGIN_LOCK = threading.RLock()        # reentrant: persist() runs inside locked ops
 
 
-def _login_locked_for(key: str) -> int:
-    """Seconds remaining on an active lock for *key*, else 0."""
-    with _LOGIN_LOCK:
-        rec = _login_fails.get(key)
-        if not rec:
-            return 0
-        remaining = int(rec.get("until", 0) - time.time())
-        return remaining if remaining > 0 else 0
+def _client_ip(request) -> str:
+    """Best-effort source IP. Prefer Fly-Client-IP (set by Fly's proxy and not
+    forgeable from outside it); fall back to the socket peer. Returns None when
+    unknowable (e.g. the unit tests call the handlers without a Request) — callers
+    then simply skip the per-IP dimension. Header spoofing off-Fly is backstopped
+    by the global ceiling, which is keyed on nothing the client controls."""
+    if request is None:
+        return None
+    try:
+        ip = request.headers.get("Fly-Client-IP") or request.headers.get("fly-client-ip")
+    except Exception:
+        ip = None
+    if not ip:
+        client = getattr(request, "client", None)
+        ip = getattr(client, "host", None) if client else None
+    return ip or None
 
 
-def _login_prune(now: float) -> None:
+def _locked_for_dim(store: dict, key: str, now: float) -> int:
+    """Seconds remaining on an active lock for *key* in *store*, else 0."""
+    rec = store.get(key)
+    if not rec:
+        return 0
+    remaining = int(rec.get("until", 0) - now)
+    return remaining if remaining > 0 else 0
+
+
+def _prune_dim(store: dict, now: float) -> None:
     """Drop entries with no active lock and no in-window failures. Caller holds
-    _LOGIN_LOCK. Bounds memory against an attacker spamming distinct usernames."""
-    dead = [k for k, r in _login_fails.items()
+    _LOGIN_LOCK. Bounds memory against an attacker spamming distinct keys."""
+    dead = [k for k, r in store.items()
             if r.get("until", 0) <= now
             and not any(now - t < LOGIN_WINDOW_SEC for t in r.get("stamps", []))]
     for k in dead:
-        del _login_fails[k]
+        del store[k]
+
+
+def _note_failure_dim(store: dict, key: str, now: float,
+                      max_fails: int, cap) -> None:
+    """Record a failed attempt in *store*; arm a lockout once the window
+    threshold trips. Caller holds _LOGIN_LOCK. max_fails <= 0 disables the
+    dimension (no-op). *cap* (or None) bounds the number of distinct keys."""
+    if max_fails <= 0:
+        return
+    if cap and len(store) >= cap and key not in store:
+        _prune_dim(store, now)         # reclaim dead entries first
+        if len(store) >= cap:
+            # Hard bound: evict the least-valuable entry. Sort key prefers to
+            # KEEP (a) actively-locked keys (until>0 sorts last), then (b) keys
+            # closest to the threshold (more stamps sorts last), so an attacker
+            # flooding 1-stamp junk keys cannot evict and thereby reset a
+            # victim's near-threshold counter or armed lock.
+            victim = min(store.items(),
+                         key=lambda kv: (kv[1].get("until", 0),
+                                         len(kv[1].get("stamps") or []),
+                                         max(kv[1].get("stamps") or [0])))
+            del store[victim[0]]
+    rec = store.setdefault(key, {"stamps": [], "until": 0})
+    rec["stamps"] = [t for t in rec["stamps"] if now - t < LOGIN_WINDOW_SEC]
+    rec["stamps"].append(now)
+    if len(rec["stamps"]) >= max_fails:
+        rec["until"] = now + LOGIN_LOCKOUT_SEC
+        rec["stamps"] = []             # reset window; the lock is the penalty now
+
+
+def _login_persist() -> None:
+    """Write-through snapshot of all three dimensions. Caller MUST hold
+    _LOGIN_LOCK. Best-effort: a disk error must never break login — the
+    in-memory state still enforces the throttle for this process's lifetime."""
+    try:
+        _save_json(LOGIN_THROTTLE_FILE,
+                   {"v": 1, "users": _login_fails,
+                    "ips": _login_ip_fails, "global": _login_global})
+    except OSError:
+        pass
+
+
+def _login_load() -> None:
+    """Reload persisted throttle state at startup so locks survive a restart.
+    Expired/stale entries are pruned on the way in."""
+    data = _load_json(LOGIN_THROTTLE_FILE, {})
+    now = time.time()
+    with _LOGIN_LOCK:
+        for store, field in ((_login_fails, "users"),
+                             (_login_ip_fails, "ips"),
+                             (_login_global, "global")):
+            store.clear()
+            store.update(data.get(field) or {})
+            _prune_dim(store, now)
+
+
+def _login_locked_for(key: str) -> int:
+    """Seconds remaining on an active per-username lock (back-compat helper)."""
+    with _LOGIN_LOCK:
+        return _locked_for_dim(_login_fails, key, time.time())
+
+
+def _login_check(uname: str, ip: str) -> int:
+    """Max seconds remaining across every dimension that applies to this attempt
+    (username, source IP, global). 0 means no dimension is currently locked."""
+    now = time.time()
+    with _LOGIN_LOCK:
+        rem = _locked_for_dim(_login_fails, uname, now)
+        rem = max(rem, _locked_for_dim(_login_global, _GLOBAL_KEY, now))
+        if ip:
+            rem = max(rem, _locked_for_dim(_login_ip_fails, ip, now))
+        return rem
+
+
+def _login_register_failure(uname: str, ip: str = None) -> None:
+    """Record one failed attempt against username + IP + global, then persist."""
+    now = time.time()
+    with _LOGIN_LOCK:
+        _note_failure_dim(_login_fails, uname, now, LOGIN_MAX_FAILS, LOGIN_TRACK_CAP)
+        if ip:
+            _note_failure_dim(_login_ip_fails, ip, now,
+                              LOGIN_IP_MAX_FAILS, LOGIN_TRACK_CAP)
+        _note_failure_dim(_login_global, _GLOBAL_KEY, now,
+                          LOGIN_GLOBAL_MAX_FAILS, None)
+        _login_persist()
 
 
 def _login_note_failure(key: str) -> None:
-    """Record a failed attempt; arm a lockout once the window threshold trips."""
+    """Record a per-username failure only (back-compat helper); then persist."""
     now = time.time()
     with _LOGIN_LOCK:
-        if len(_login_fails) >= LOGIN_TRACK_CAP and key not in _login_fails:
-            _login_prune(now)          # reclaim dead entries first
-            if len(_login_fails) >= LOGIN_TRACK_CAP:
-                # Hard bound: evict the least-valuable entry. Sort key prefers to
-                # KEEP (a) actively-locked accounts (until>0 sorts last), then
-                # (b) accounts closest to the threshold (more stamps sorts last),
-                # so an attacker flooding 1-stamp junk usernames cannot evict and
-                # thereby reset a victim's near-threshold counter or armed lock.
-                victim = min(_login_fails.items(),
-                             key=lambda kv: (kv[1].get("until", 0),
-                                             len(kv[1].get("stamps") or []),
-                                             max(kv[1].get("stamps") or [0])))
-                del _login_fails[victim[0]]
-        rec = _login_fails.setdefault(key, {"stamps": [], "until": 0})
-        rec["stamps"] = [t for t in rec["stamps"] if now - t < LOGIN_WINDOW_SEC]
-        rec["stamps"].append(now)
-        if len(rec["stamps"]) >= LOGIN_MAX_FAILS:
-            rec["until"] = now + LOGIN_LOCKOUT_SEC
-            rec["stamps"] = []         # reset window; the lock is the penalty now
+        _note_failure_dim(_login_fails, key, now, LOGIN_MAX_FAILS, LOGIN_TRACK_CAP)
+        _login_persist()
+
+
+def _login_prune(now: float) -> None:
+    """Back-compat: prune the per-username store. Caller holds _LOGIN_LOCK."""
+    _prune_dim(_login_fails, now)
+
+
+def _login_note_success(uname: str, ip: str = None) -> None:
+    """A full success clears the username's and the source IP's counters (a
+    legitimate user must not lock their own IP), but NOT the global bucket —
+    other attackers' attempts there still count. Then persist."""
+    with _LOGIN_LOCK:
+        _login_fails.pop(uname, None)
+        if ip:
+            _login_ip_fails.pop(ip, None)
+        _login_persist()
 
 
 def _login_clear(key: str) -> None:
+    """Clear a per-username counter (used by account-setup); then persist."""
     with _LOGIN_LOCK:
         _login_fails.pop(key, None)
+        _login_persist()
+
+
+_login_load()                          # restore persisted locks at startup
 
 
 @app.post("/api/login")
-def login(req: LoginRequest):
+def login(req: LoginRequest, request: Request = None):
     uname = req.username.strip()
+    ip = _client_ip(request)
     # Throttle BEFORE any credential work — denies the attacker free PBKDF2 calls
-    # and applies even to unknown usernames (no account-existence oracle).
-    locked = _login_locked_for(uname)
+    # and applies even to unknown usernames (no account-existence oracle). Checks
+    # the per-account, per-IP and global ceilings together.
+    locked = _login_check(uname, ip)
     if locked > 0:
         raise HTTPException(429, f"Too many attempts. Try again in {locked}s.",
                             headers={"Retry-After": str(locked)})
@@ -335,7 +461,7 @@ def login(req: LoginRequest):
     if not user or not hmac.compare_digest(
         user["pin_hash"], hash_pin(req.pin, user["salt"])
     ):
-        _login_note_failure(uname)
+        _login_register_failure(uname, ip)
         raise HTTPException(401, "Bad credentials")
     # Invited accounts log in with the starter PIN only (no authenticator yet),
     # then are forced through first-time setup. This branch is MFA-less, so the
@@ -346,9 +472,9 @@ def login(req: LoginRequest):
         return {"token": make_token(uname), "username": uname,
                 "role": user["role"], "must_reset": True}
     if not pyotp.TOTP(user["mfa_secret"]).verify(req.mfa_code, valid_window=1):
-        _login_note_failure(uname)
+        _login_register_failure(uname, ip)
         raise HTTPException(401, "Bad MFA code")
-    _login_clear(uname)
+    _login_note_success(uname, ip)
     return {"token": make_token(uname), "username": uname, "role": user["role"]}
 
 
@@ -536,7 +662,7 @@ class WebauthnBegin(BaseModel):
 @app.post("/api/webauthn/login/begin")
 def webauthn_login_begin(req: WebauthnBegin, request: Request):
     uname = req.username.strip()
-    locked = _login_locked_for(uname)        # same key namespace as PIN login
+    locked = _login_check(uname, _client_ip(request))   # account + IP + global
     if locked > 0:
         raise HTTPException(429, f"Too many attempts. Try again in {locked}s.",
                             headers={"Retry-After": str(locked)})
@@ -558,7 +684,8 @@ def webauthn_login_begin(req: WebauthnBegin, request: Request):
 @app.post("/api/webauthn/login/complete")
 def webauthn_login_complete(req: dict, request: Request):
     username = str(req.get("username", "")).strip()
-    locked = _login_locked_for(username)     # shared lock: covers PIN + passkey
+    ip = _client_ip(request)
+    locked = _login_check(username, ip)      # shared lock: covers PIN + passkey
     if locked > 0:
         raise HTTPException(429, f"Too many attempts. Try again in {locked}s.",
                             headers={"Retry-After": str(locked)})
@@ -570,9 +697,9 @@ def webauthn_login_complete(req: dict, request: Request):
     try:
         server.authenticate_complete(pending["state"], pending["creds"], response)
     except Exception as e:
-        _login_note_failure(username)        # a forged-assertion attempt counts
+        _login_register_failure(username, ip)  # a forged-assertion attempt counts
         raise HTTPException(401, f"Biometric verification failed: {e}")
-    _login_clear(username)
+    _login_note_success(username, ip)
     role = load_users()[username]["role"]
     return {"token": make_token(username), "username": username, "role": role}
 
