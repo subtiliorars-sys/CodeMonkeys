@@ -582,6 +582,7 @@ def load_models():
 def save_models(cfg):
     with _MODELS_LOCK:
         _save_json(MODELS_FILE, cfg)
+    _bust_secret_cache()      # newly-added API keys must be redactable immediately
 
 
 def _resolve(prov):
@@ -2276,9 +2277,58 @@ def restore_sessions():
 restore_sessions()
 
 
+# ---- secret redaction --------------------------------------------------------
+# bash can read env/app files (the conceded kernel-sandbox gap); GITHUB_TOKEN is
+# the most sensitive item on the box. Scrub known secret VALUES out of anything
+# that flows back to the model, to the UI, or into the immutable JSONL event log
+# / history.json on /data. This does NOT affect execution (git still uses the
+# real env var) — only what gets echoed, displayed, and persisted.
+_SECRET_CACHE = None
+_SECRET_NAME_RE = re.compile(r"TOKEN|SECRET|KEY|PASSWORD|PASSWD|PAT|CREDENTIAL", re.I)
+
+
+def _sensitive_values():
+    global _SECRET_CACHE
+    if _SECRET_CACHE is not None:
+        return _SECRET_CACHE
+    vals = set()
+    for k, v in os.environ.items():           # GITHUB_TOKEN, SESSION_*, etc.
+        if v and len(v) >= 8 and _SECRET_NAME_RE.search(k):
+            vals.add(v)
+    try:
+        vals.add(_session_secret().hex())     # HMAC signing secret
+    except Exception:
+        pass
+    try:
+        for prov in (load_models().get("providers") or {}).values():   # model API keys
+            key = prov.get("key")
+            if key and len(key) >= 8:
+                vals.add(key)
+    except Exception:
+        pass
+    _SECRET_CACHE = vals
+    return vals
+
+
+def _bust_secret_cache():
+    """Call after model keys change so newly-added keys are redacted too."""
+    global _SECRET_CACHE
+    _SECRET_CACHE = None
+
+
+def _redact(text):
+    if not isinstance(text, str) or not text:
+        return text
+    for v in _sensitive_values():
+        if v in text:
+            text = text.replace(v, "[REDACTED]")
+    return text
+
+
 def emit(session, etype, **fields):
     with session["lock"]:
         evt = {"i": len(session["events"]), "ts": int(time.time()), "type": etype, **fields}
+        evt = {k: (_redact(v) if isinstance(v, str) else v) for k, v in evt.items()}
         session["events"].append(evt)
     try:
         with open(_events_path(session["id"]), "a") as f:
@@ -2425,17 +2475,19 @@ def agent_loop(session, provider, system, history, tool_names, max_turns,
         session["spent_usd"] += usd
         emit(session, "cost", usd=round(usd, 6), in_tokens=resp["in_tokens"],
              out_tokens=resp["out_tokens"], model=provider["model"], agent=agent_label)
-        history.append({"role": "assistant", "text": resp["text"],
+        text_out = _redact(resp["text"])      # scrub before model-context reuse + persist
+        history.append({"role": "assistant", "text": text_out,
                         "tool_calls": resp["tool_calls"]})
-        if resp["text"]:
-            emit(session, "text", text=resp["text"], agent=agent_label)
-            final_text = resp["text"]
+        if text_out:
+            emit(session, "text", text=text_out, agent=agent_label)
+            final_text = text_out
         if not resp["tool_calls"]:
             return final_text
         for tc in resp["tool_calls"]:
             detail = json.dumps(tc["args"])[:300]
             emit(session, "tool", name=tc["name"], detail=detail, agent=agent_label)
             result, ok = executor(tc)
+            result = _redact(result)          # scrub tool output (e.g. `cat config`, `env`)
             emit(session, "tool_result", name=tc["name"], ok=ok,
                  detail=result[:600], agent=agent_label)
             history.append({"role": "tool", "tool_call_id": tc["id"],
