@@ -44,6 +44,25 @@ keep that radius away from everything else.
 
 - File tools are path-jailed to the workspace (realpath prefix check)
 - bash runs with cwd=workspace, 180 s timeout, output capped
+- Baseline browser security headers on every response: `X-Frame-Options:
+  SAMEORIGIN` + CSP `frame-ancestors 'self'` (anti-clickjacking — a cross-origin
+  page can't frame-and-phish the PIN/TOTP login), `X-Content-Type-Options:
+  nosniff`, `Referrer-Policy: no-referrer`. CSP is kept minimal (no `script-src`)
+  so it doesn't break the Tailwind CDN; a stricter `script-src` pairs with
+  vendoring Tailwind (see Known limitations).
+- **Approval-gate matching is quote/escape-resistant.** Risky commands
+  (`git push`, `fly`/`flyctl`, `rm -rf`, `git reset --hard`, `git clean`,
+  `gh repo delete`, `sudo`) are detected by `_is_risky`, which matches
+  `RISKY_PATTERNS` against **both** the raw command and a shlex-normalized form.
+  Normalizing first means shell quoting/escaping (`git "push"`, `g''it push`,
+  `git\ push`, `"git" push`) can no longer hide a risky verb from the gate; a
+  command that fails to tokenize (unbalanced quotes) fails **closed** (gated).
+  Normalization errs toward gating: a risky phrase inside a string literal
+  (`echo "...rm -rf..."`) also prompts — an extra click, never a missed action.
+  **Residual:** runtime-only constructs resolved by bash at execution time —
+  variable expansion (`g=git; $g push`), command substitution (`$(echo git) push`),
+  and `eval` — are not visible to static matching and remain an accepted residual
+  risk of gating a raw shell string (the kernel-sandbox gap below is the backstop).
 - Per-session USD budget halts the loop; subagent spawn cap 8; recursion depth 1
 - **Plan mode is read-only, end to end.** Its toolset is read/list/glob/grep +
   `spawn_agent` + `save_spec`; it has no write_file/edit_file/bash. Subagents
