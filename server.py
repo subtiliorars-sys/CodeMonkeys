@@ -79,6 +79,11 @@ READ_CAP = 24000
 APPROVAL_TIMEOUT = 3600
 MCP_MAX_TOOLS = 128        # cap merged MCP tools/session — hostile server can't blow context/cost
 MCP_DESC_CAP = 1024        # cap each MCP tool description fed to the model
+MAX_MSG_CHARS = int(os.environ.get("MAX_MSG_CHARS", "200000"))   # cap a single message
+MAX_UPLOAD_FILES = 20
+MAX_UPLOAD_BYTES = 10_000_000                                    # 10 MB written per file
+# base64 expands ~4/3; cap the ENCODED input so we never decode a huge blob into memory
+MAX_UPLOAD_B64 = MAX_UPLOAD_BYTES * 4 // 3 + 1024
 
 # Commands that pause the loop for human approval (CodeMonkeys design rule:
 # no silent pushes/deploys/destruction; git reset --hard has bitten us before)
@@ -2606,6 +2611,49 @@ def session_list(_: str = Depends(verify_user)):
         for s in SESSIONS.values()], key=lambda x: -x["created"])}
 
 
+def _cap_message(text: str) -> str:
+    """Bound a single user message so one request can't blow memory/context."""
+    text = text or ""
+    if len(text) > MAX_MSG_CHARS:
+        text = text[:MAX_MSG_CHARS] + "\n…[message truncated]"
+    return text
+
+
+def _save_uploads(sid: str, files) -> list:
+    """Persist attached files into <workspace>/uploads/<sid>/, defensively.
+
+    - count-capped (MAX_UPLOAD_FILES) and the encoded payload is size-checked
+      BEFORE decoding (no unbounded base64→bytes memory spike);
+    - filename reduced to a basename, '.'/'..' rejected, and the destination is
+      _jail-checked (defense in depth vs the parent-dir basename case);
+    - one bad file is skipped, never 500s the whole message.
+    """
+    names = []
+    for f in (files or [])[:MAX_UPLOAD_FILES]:
+        b64 = f.content_b64 or ""
+        if not b64 or len(b64) > MAX_UPLOAD_B64:   # reject oversized pre-decode
+            continue
+        safe = os.path.basename(f.name or "") or "file"
+        if safe in (".", ".."):
+            continue
+        try:
+            dest = _jail(os.path.join("uploads", sid, safe))
+        except ValueError:
+            continue
+        try:
+            blob = base64.b64decode(b64)
+        except Exception:
+            continue
+        try:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "wb") as fh:
+                fh.write(blob[:MAX_UPLOAD_BYTES])
+        except OSError:
+            continue
+        names.append(f"uploads/{sid}/{safe}")
+    return names
+
+
 @app.post("/api/sessions/{sid}/message")
 def session_message(sid: str, req: MessageRequest, _: str = Depends(verify_user)):
     s = SESSIONS.get(sid)
@@ -2614,22 +2662,10 @@ def session_message(sid: str, req: MessageRequest, _: str = Depends(verify_user)
     if s["status"] != "idle":
         raise HTTPException(409, "Session is busy")
     s["mode"] = req.mode if req.mode in ("plan", "default", "auto") else "default"
-    text = req.text
-    if req.files:
-        updir = os.path.join(WORKSPACE_DIR, "uploads", sid)
-        os.makedirs(updir, exist_ok=True)
-        names = []
-        for f in req.files[:20]:
-            safe = os.path.basename(f.name) or "file"
-            try:
-                blob = base64.b64decode(f.content_b64)
-            except Exception:
-                continue
-            with open(os.path.join(updir, safe), "wb") as fh:
-                fh.write(blob[:10_000_000])
-            names.append(f"uploads/{sid}/{safe}")
-        if names:
-            text += "\n\n[Attached files saved in workspace: " + ", ".join(names) + "]"
+    text = _cap_message(req.text)
+    names = _save_uploads(sid, req.files)
+    if names:
+        text += "\n\n[Attached files saved in workspace: " + ", ".join(names) + "]"
     emit(s, "user", text=text)
     threading.Thread(target=run_session_message, args=(s, text), daemon=True).start()
     return {"ok": True}
