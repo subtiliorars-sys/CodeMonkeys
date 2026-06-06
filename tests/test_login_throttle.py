@@ -55,8 +55,12 @@ def _login(uname, pin, mfa=""):
 
 
 def _expect_status(uname, pin, mfa, status):
+    return _expect_status_call(lambda: _login(uname, pin, mfa), status)
+
+
+def _expect_status_call(fn, status):
     with pytest.raises(server.HTTPException) as ei:
-        _login(uname, pin, mfa)
+        fn()
     assert ei.value.status_code == status
     return ei.value
 
@@ -110,6 +114,47 @@ def test_correct_login_succeeds_when_unlocked():
     _make_user("alice")
     out = _login("alice", GOOD_PIN, pyotp.TOTP(MFA_SECRET).now())
     assert out["role"] == "Owner" and out["token"]
+
+
+def test_webauthn_login_paths_share_the_lock():
+    # A lock armed by PIN failures must also block the passkey path (shared key),
+    # and the 429 is raised before any fido state is touched (request unused).
+    server._login_fails["alice"] = {"stamps": [], "until": server.time.time() + 999}
+    _expect_status_call(
+        lambda: server.webauthn_login_begin(
+            server.WebauthnBegin(username="alice"), request=None), 429)
+    _expect_status_call(
+        lambda: server.webauthn_login_complete({"username": "alice"}, request=None), 429)
+
+
+def test_must_reset_login_does_not_clear_counter():
+    # Invited (MFA-less) accounts: a correct starter-PIN login still authenticates
+    # but must NOT wipe the throttle window (the throttle is their only barrier).
+    _make_user("invitee", must_reset=True)
+    server._login_note_failure("invitee")
+    server._login_note_failure("invitee")
+    out = _login("invitee", GOOD_PIN, "")
+    assert out.get("must_reset") is True and out["token"]
+    assert "invitee" in server._login_fails        # counter preserved
+
+
+def test_account_setup_clears_counter():
+    _make_user("invitee", must_reset=True)
+    server._login_note_failure("invitee")
+    server.account_setup(server.FirstSetup(new_username="", new_pin="9876"),
+                         username="invitee")
+    assert "invitee" not in server._login_fails
+
+
+def test_eviction_retains_near_threshold_account(monkeypatch):
+    monkeypatch.setattr(server, "LOGIN_TRACK_CAP", 50)
+    # victim is one failure away from lockout but not yet locked (until=0)
+    server._login_fails.clear()
+    server._login_fails["victim"] = {
+        "stamps": [server.time.time()] * (server.LOGIN_MAX_FAILS - 1), "until": 0}
+    for i in range(300):                             # flood 1-stamp junk keys
+        _expect_status(f"junk-{i}", "00000", "000000", 401)
+    assert "victim" in server._login_fails           # near-threshold not evicted
 
 
 def test_tracking_dict_is_bounded(monkeypatch):

@@ -298,11 +298,14 @@ def _login_note_failure(key: str) -> None:
         if len(_login_fails) >= LOGIN_TRACK_CAP and key not in _login_fails:
             _login_prune(now)          # reclaim dead entries first
             if len(_login_fails) >= LOGIN_TRACK_CAP:
-                # Hard bound: evict the least-recently-active entry, preferring
-                # unlocked ones (until=0 sorts first) so an actively-locked
-                # account is never evicted while evictable junk exists.
+                # Hard bound: evict the least-valuable entry. Sort key prefers to
+                # KEEP (a) actively-locked accounts (until>0 sorts last), then
+                # (b) accounts closest to the threshold (more stamps sorts last),
+                # so an attacker flooding 1-stamp junk usernames cannot evict and
+                # thereby reset a victim's near-threshold counter or armed lock.
                 victim = min(_login_fails.items(),
                              key=lambda kv: (kv[1].get("until", 0),
+                                             len(kv[1].get("stamps") or []),
                                              max(kv[1].get("stamps") or [0])))
                 del _login_fails[victim[0]]
         rec = _login_fails.setdefault(key, {"stamps": [], "until": 0})
@@ -334,10 +337,12 @@ def login(req: LoginRequest):
     ):
         _login_note_failure(uname)
         raise HTTPException(401, "Bad credentials")
-    # invited accounts log in with the starter PIN only (no authenticator yet),
-    # then are forced through first-time setup
+    # Invited accounts log in with the starter PIN only (no authenticator yet),
+    # then are forced through first-time setup. This branch is MFA-less, so the
+    # throttle is its ONLY brute-force barrier — deliberately do NOT clear the
+    # counter here (a correct guess still gets in, but a lucky near-miss run does
+    # not get its window wiped). The counter is cleared after /api/account/setup.
     if user.get("must_reset"):
-        _login_clear(uname)
         return {"token": make_token(uname), "username": uname,
                 "role": user["role"], "must_reset": True}
     if not pyotp.TOTP(user["mfa_secret"]).verify(req.mfa_code, valid_window=1):
@@ -441,6 +446,10 @@ def account_setup(req: FirstSetup, username: str = Depends(verify_token)):
         user["must_reset"] = False
         users[target] = user
         save_users(users)
+    # setup finished — the starter-PIN window is no longer relevant; clear both
+    # the old (pre-rename) and new keys so a rename can't strand a stale counter.
+    _login_clear(username)
+    _login_clear(target)
     uri = pyotp.TOTP(mfa_secret).provisioning_uri(name=target, issuer_name="CodeMonkeys")
     return {"token": make_token(target), "username": target,
             "role": load_users()[target]["role"], "mfa_otpauth_uri": uri}
@@ -526,8 +535,13 @@ class WebauthnBegin(BaseModel):
 
 @app.post("/api/webauthn/login/begin")
 def webauthn_login_begin(req: WebauthnBegin, request: Request):
+    uname = req.username.strip()
+    locked = _login_locked_for(uname)        # same key namespace as PIN login
+    if locked > 0:
+        raise HTTPException(429, f"Too many attempts. Try again in {locked}s.",
+                            headers={"Retry-After": str(locked)})
     users = load_users()
-    user = users.get(req.username.strip())
+    user = users.get(uname)
     if not user:
         raise HTTPException(404, "User not found")
     creds = _user_credentials(user)
@@ -544,6 +558,10 @@ def webauthn_login_begin(req: WebauthnBegin, request: Request):
 @app.post("/api/webauthn/login/complete")
 def webauthn_login_complete(req: dict, request: Request):
     username = str(req.get("username", "")).strip()
+    locked = _login_locked_for(username)     # shared lock: covers PIN + passkey
+    if locked > 0:
+        raise HTTPException(429, f"Too many attempts. Try again in {locked}s.",
+                            headers={"Retry-After": str(locked)})
     pending = _webauthn_states.pop(f"login_{username}", None)
     if pending is None:
         raise HTTPException(400, "Login challenge expired — try again")
@@ -552,7 +570,9 @@ def webauthn_login_complete(req: dict, request: Request):
     try:
         server.authenticate_complete(pending["state"], pending["creds"], response)
     except Exception as e:
+        _login_note_failure(username)        # a forged-assertion attempt counts
         raise HTTPException(401, f"Biometric verification failed: {e}")
+    _login_clear(username)
     role = load_users()[username]["role"]
     return {"token": make_token(username), "username": username, "role": role}
 
