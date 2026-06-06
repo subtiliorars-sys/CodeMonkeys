@@ -38,25 +38,44 @@ Daystrom agent corps in `corps/`. Full overview: `README.md` +
 - Approval gate: push/deploy/destructive bash pauses for in-UI APPROVE.
 - Pixel-art console + live swarm view (`static/forge/swarm.html`).
 
-## Next up (from docs/IDEATION.md)
-1. ~~MCP client~~ ✅ **SHIPPED 2026-06-06** (branch `work/mcp-client`, not yet
-   deployed — owner deploys manually). See "MCP connectors" below.
-2. **Self-heal loop** — run → fail → fix → rerun + lint/LSP feedback.
-Then spec-first plan mode (#3) and blackboard memory (#4). MCP follow-ups
-#1a OAuth (Drive/MS), #1b stdio+Node image, #1c startup auto-connect in IDEATION.
+## Shipped so far (v0.2 — 2026-06-06, all merged to `main`, NOT yet deployed)
+- **MCP client** (#1): sync Streamable-HTTP JSON-RPC over `requests` (no SDK/new
+  deps). Owner-only `/api/mcp` CRUD + ⚙ MCP panel. See "MCP connectors" below.
+- **MCP stdio transport** (#1b): local MCP servers (`npx …`) over newline JSON-RPC;
+  `Popen([cmd,*args])` never shell=True; Node added to the Docker image (~80 MB).
+- **MCP startup auto-connect** (#1c): enabled servers warmed in a background
+  thread on boot (lazy-connect remains the fallback).
+- **MCP OAuth 2.1** (#1a): auth-code + PKCE S256 for Google Drive / Microsoft 365;
+  tokens in `mcp_tokens.json` (0600, never returned/logged). **Owner-gated** —
+  needs a registered Google/Azure OAuth app before it can complete a round-trip.
+- **Self-heal loop** (#2): auto-mode run → read-failure → patch → rerun-until-green
+  doctrine in `MODE_GUIDANCE["auto"]` (caps: 5 iters / repeat-signature=blocked /
+  budget). plan/default unchanged.
 
-## MCP connectors (v1, shipped 2026-06-06)
-- Sync Streamable-HTTP JSON-RPC client over `requests` (no new deps, no SDK,
-  remote HTTP servers only). Owner-only `/api/mcp` CRUD + ⚙ MCP panel in
-  `static/forge/`. Per-server bearer/PAT (write-only, stored on `/data`).
-  GitHub preset: `https://api.githubcopilot.com/mcp/` (owner pastes a PAT).
+## Next up (from docs/IDEATION.md)
+1. **Spec-first plan mode** (#3) — Constitution/Spec/Plan/Tasks artifacts.
+2. **Blackboard cross-session memory** (#4) — `.codemonkeys/blackboard-<task>.md`.
+3. **apply_patch tool** (#8) — unified-diff edits without full rewrites.
+4. **Connector marketplace UI** (#9) — poll the MCP Registry, one-click add (now
+   that the MCP client exists). Plus **escalation-on-failure** (cheapest→pricier).
+
+## MCP connectors (v1+v2, merged to main 2026-06-06)
+- Sync Streamable-HTTP JSON-RPC client over `requests` (no new deps, no SDK).
+  Owner-only `/api/mcp` CRUD + ⚙ MCP panel in `static/forge/`. Transports:
+  **http** (bearer/PAT or OAuth) and **stdio** (local process). Per-server token
+  write-only on `/data`. GitHub preset `https://api.githubcopilot.com/mcp/`;
+  Google Drive / M365 presets (OAuth — owner supplies client_id).
 - Tools merged into the commander loop as `mcp_<slug>_<tool>` (NOT given to corps
   subagents). Red-teamed + hardened: `readOnlyHint` is a UI hint only, never
-  trusted for gating — plan mode = no MCP tools, default mode gates every MCP
-  call, auto skips; https-only (localhost http ok); slowloris/byte-capped stream;
-  ≤128 tools/session; first-writer-wins namespacing. See SECURITY.md "MCP".
-- **Owner action to use it:** open ⚙ MCP, add GitHub (preset) + paste a PAT,
-  then `fly deploy --app codemonkeys` (this is on a branch, undeployed).
+  trusted for gating — plan mode = no MCP tools, default gates every MCP call,
+  auto skips; https-only (localhost http ok); wall-clock+byte-capped streams
+  (http SSE and stdio); per-sid connect lock; ≤128 tools/session; first-writer
+  namespacing; OAuth tokens 0600 + PKCE + state CSRF. See SECURITY.md "MCP".
+- **Owner action to use it:** `fly deploy --app codemonkeys`, then open ⚙ MCP:
+  add GitHub (preset) + paste a PAT. For Drive/M365: register a Google/Azure
+  OAuth app (redirect `https://<host>/api/mcp/oauth/callback`), fill client_id,
+  click Connect (OAuth). **Unverified until deploy:** the Node-in-image Docker
+  build and any real `npx`/OAuth round-trip (no local Docker/Node on dev host).
 
 ## How to work this repo
 - Branch per task (`work/<topic>`); the owner runs **concurrent consoles** —
