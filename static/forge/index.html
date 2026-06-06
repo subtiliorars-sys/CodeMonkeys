@@ -231,7 +231,23 @@
         <!-- http fields -->
         <div id="mcp-http-fields" class="contents">
           <input id="mcp-url" class="input rounded px-2 py-1" placeholder="https://…/mcp/">
-          <input id="mcp-token" type="password" class="input rounded px-2 py-1" placeholder="Bearer token / PAT — stored server-side">
+          <!-- auth type selector (http only) -->
+          <select id="mcp-auth" class="input rounded px-2 py-1 bg-slate-900 text-slate-200">
+            <option value="bearer">Bearer token</option>
+            <option value="oauth">OAuth 2.1 (PKCE)</option>
+          </select>
+          <!-- bearer fields -->
+          <div id="mcp-bearer-fields" class="contents">
+            <input id="mcp-token" type="password" class="input rounded px-2 py-1 col-span-2" placeholder="Bearer token / PAT — stored server-side">
+          </div>
+          <!-- oauth fields (hidden until auth=oauth) -->
+          <div id="mcp-oauth-fields" class="contents hidden">
+            <input id="mcp-oauth-az" class="input rounded px-2 py-1 col-span-2" placeholder="authorize_url  e.g. https://accounts.google.com/o/oauth2/v2/auth">
+            <input id="mcp-oauth-tz" class="input rounded px-2 py-1 col-span-2" placeholder="token_url  e.g. https://oauth2.googleapis.com/token">
+            <input id="mcp-oauth-cid" class="input rounded px-2 py-1" placeholder="client_id">
+            <input id="mcp-oauth-csec" type="password" class="input rounded px-2 py-1" placeholder="client_secret (optional)">
+            <input id="mcp-oauth-scope" class="input rounded px-2 py-1 col-span-2" placeholder="scope  e.g. https://www.googleapis.com/auth/drive.readonly">
+          </div>
         </div>
         <!-- stdio fields (hidden until transport=stdio) -->
         <div id="mcp-stdio-fields" class="contents hidden">
@@ -241,6 +257,8 @@
         </div>
         <div class="flex gap-2">
           <button id="mcp-preset-github" class="gold-border rounded px-2 py-1 text-[var(--gold-bright)] hover:bg-yellow-900/20">GitHub</button>
+          <button id="mcp-preset-gdrive" class="gold-border rounded px-2 py-1 text-[var(--gold-bright)] hover:bg-yellow-900/20">Google Drive</button>
+          <button id="mcp-preset-m365" class="gold-border rounded px-2 py-1 text-[var(--gold-bright)] hover:bg-yellow-900/20">M365</button>
         </div>
         <button id="mcp-add" class="gold-btn rounded py-1">Add server</button>
         <p id="mcp-msg" class="col-span-2 text-xs text-slate-400"></p>
