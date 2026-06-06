@@ -43,10 +43,20 @@ def reset_state(monkeypatch):
     monkeypatch.setattr(server, "LOGIN_MAX_FAILS", 3)
     monkeypatch.setattr(server, "LOGIN_WINDOW_SEC", 300)
     monkeypatch.setattr(server, "LOGIN_LOCKOUT_SEC", 900)
+    # This file exercises the per-USERNAME dimension only; disable the per-IP and
+    # global ceilings (added later) so their thresholds don't trip during the
+    # high-volume flood tests here. The IP/global dimensions get their own suite
+    # in test_login_ip_ceiling.py. Clear all three stores for isolation.
+    monkeypatch.setattr(server, "LOGIN_IP_MAX_FAILS", 0)
+    monkeypatch.setattr(server, "LOGIN_GLOBAL_MAX_FAILS", 0)
     server._login_fails.clear()
+    server._login_ip_fails.clear()
+    server._login_global.clear()
     server.save_users({})
     yield
     server._login_fails.clear()
+    server._login_ip_fails.clear()
+    server._login_global.clear()
     server.save_users({})
 
 

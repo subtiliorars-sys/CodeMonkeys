@@ -28,11 +28,16 @@ keep that radius away from everything else.
 - Every coding endpoint requires the Owner role; unauthenticated → 401, wrong
   role → 403 (fail closed)
 - Login is brute-force throttled on **both** factors: the PIN/TOTP path
-  (`/api/login`) and the passkey path (`/api/webauthn/login/*`) share one
-  per-account counter, so a lock covers both. Invited (`must_reset`) accounts
-  log in PIN-only (MFA not yet enrolled) — the throttle is their sole barrier
-  and is deliberately not cleared until `/api/account/setup` completes. After
-  repeated failures: HTTP 429 + `Retry-After`. See "Known limitations" for
+  (`/api/login`) and the passkey path (`/api/webauthn/login/*`) share the same
+  counters, so a lock covers both. The throttle has **three dimensions**, any of
+  which trips an HTTP 429 + `Retry-After`: per-account (`LOGIN_MAX_FAILS`), per
+  source-IP (`LOGIN_IP_MAX_FAILS`, keyed on `Fly-Client-IP`) so one source is
+  bounded across *all* usernames it tries, and a system-wide global ceiling
+  (`LOGIN_GLOBAL_MAX_FAILS`) as a circuit-breaker for distributed guessing. The
+  state is **persisted** (`data/login_throttle.json`, write-through) so locks and
+  counters survive a restart. Invited (`must_reset`) accounts log in PIN-only
+  (MFA not yet enrolled) — the throttle is their sole barrier and is deliberately
+  not cleared until `/api/account/setup` completes. See "Known limitations" for
   tunables and residuals.
 - Lockout recovery only via `fly ssh console` (`scripts/reset_access.py`)
 
@@ -153,23 +158,67 @@ keep that radius away from everything else.
   read app files or env vars on the machine. Mitigation: the machine holds
   nothing but CodeMonkeys itself; GITHUB_TOKEN is the most sensitive item.
 - Single-machine trust boundary; no per-agent isolation yet (worktrees planned)
-- Login brute-force throttle is in place (fail2ban-style): after
-  `LOGIN_MAX_FAILS` (default 10) failed attempts within `LOGIN_WINDOW_SEC`
-  (default 300 s) an account is locked for `LOGIN_LOCKOUT_SEC` (default 900 s),
-  returning HTTP 429 + `Retry-After`. The throttle runs **before** any PBKDF2
-  work and applies to unknown usernames too (no account-existence oracle).
-  **Residuals:** (a) the lock is keyed per-username and held in process memory —
-  a restart clears it (fail-open on restart only), and an attacker who knows a
-  username can deliberately lock that account out for the cooldown (an
-  availability trade accepted for a single-owner tool); (b) the lock check and
-  the failure-record are separate critical sections, so up to ~(server
-  concurrency) extra in-flight guesses can land before the lock arms each cycle —
-  bounded by CPU-bound PBKDF2, never an unbounded bypass; (c) there is no
-  per-IP/global ceiling, so distributed guessing across many usernames is bounded
-  only per-account. Add an IP/global dimension before opening enrollment widely.
+- Login brute-force throttle is in place (fail2ban-style) with three sliding-
+  window dimensions, all sharing `LOGIN_WINDOW_SEC` (default 300 s) and
+  window dimensions, all sharing `LOGIN_WINDOW_SEC` (default 300 s) and
+  `LOGIN_LOCKOUT_SEC` (default 900 s), each returning HTTP 429 + `Retry-After`:
+  `LOGIN_LOCKOUT_SEC` (default 900 s), each returning HTTP 429 + `Retry-After`:
+  - **per-account** — `LOGIN_MAX_FAILS` (default 10) failures locks that username;
+  - **per-account** — `LOGIN_MAX_FAILS` (default 10) failures locks that username;
+  - **per source-IP** — `LOGIN_IP_MAX_FAILS` (default 30, `<=0` disables) locks one
+  - **per source-IP** — `LOGIN_IP_MAX_FAILS` (default 30, `<=0` disables) locks one
+    `Fly-Client-IP` across *all* usernames it attempts;
+    `Fly-Client-IP` across *all* usernames it attempts;
+  - **global** — `LOGIN_GLOBAL_MAX_FAILS` (default 200, `<=0` disables) is a
+  - **global** — `LOGIN_GLOBAL_MAX_FAILS` (default 200, `<=0` disables) is a
+    system-wide circuit-breaker for guessing distributed across many IPs/usernames.
+    system-wide circuit-breaker for guessing distributed across many IPs/usernames.
+
+
+  The throttle runs **before** any PBKDF2 work and applies to unknown usernames
+  The throttle runs **before** any PBKDF2 work and applies to unknown usernames
+  too (no account-existence oracle). State is written through to
+  too (no account-existence oracle). State is written through to
+  `data/login_throttle.json` and reloaded at startup, so locks **survive a
+  `data/login_throttle.json` and reloaded at startup, so locks **survive a
+  restart** (no longer fail-open on reboot). Both tracking dicts are bounded
+  restart** (no longer fail-open on reboot). Both tracking dicts are bounded
+  (`LOGIN_TRACK_CAP`) with locked/near-threshold entries protected from eviction,
+  (`LOGIN_TRACK_CAP`) with locked/near-threshold entries protected from eviction,
+  so IP-spoofing or username-spam floods can't grow memory or reset a victim.
+  so IP-spoofing or username-spam floods can't grow memory or reset a victim.
+  **Residuals:** (a) a global lock is a deliberate availability trade — a
+  **Residuals:** (a) a global lock is a deliberate availability trade — a
+  sufficiently large distributed flood can freeze *all* logins for the cooldown;
+  sufficiently large distributed flood can freeze *all* logins for the cooldown;
+  the ceiling is set high to make this a genuine emergency brake, and the owner
+  the ceiling is set high to make this a genuine emergency brake, and the owner
+  can recover via `fly ssh console` (`scripts/reset_access.py`) or by deleting
+  can recover via `fly ssh console` (`scripts/reset_access.py`) or by deleting
+  `data/login_throttle.json` and restarting; (b) an attacker who knows a username
+  `data/login_throttle.json` and restarting; (b) an attacker who knows a username
+  can still deliberately lock that one account for the cooldown; (c) the lock
+  can still deliberately lock that one account for the cooldown; (c) the lock
+  check and the failure-record are separate critical sections, so up to ~(server
+  check and the failure-record are separate critical sections, so up to ~(server
+  concurrency) extra in-flight guesses can land before a lock arms each cycle —
+  concurrency) extra in-flight guesses can land before a lock arms each cycle —
+  bounded by CPU-bound PBKDF2, never an unbounded bypass; (d) off-Fly, the
+  bounded by CPU-bound PBKDF2, never an unbounded bypass; (d) off-Fly, the
+  `Fly-Client-IP` header is client-supplied and could be spoofed to dodge the
+  `Fly-Client-IP` header is client-supplied and could be spoofed to dodge the
+  per-IP lock — on Fly the proxy sets it authoritatively, and the global ceiling
+  per-IP lock — on Fly the proxy sets it authoritatively, and the global ceiling
+  (keyed on nothing the client controls) backstops spoofing either way.
+  (keyed on nothing the client controls) backstops spoofing either way.
 - The TOTP enrollment QR is now generated **locally** server-side (segno, SVG
   data URI) — the otpauth secret is never sent to an external QR service. If
+  data URI) — the otpauth secret is never sent to an external QR service. If
+  segno is not installed the UI shows the secret for manual entry (it never
   segno is not installed the UI shows the secret for manual entry (it never
   falls back to an external CDN). **Still external:** Tailwind is loaded from a
+  falls back to an external CDN). **Still external:** Tailwind is loaded from a
   CDN (`cdn.tailwindcss.com`) — cosmetic, no secret, but vendor it before any
+  CDN (`cdn.tailwindcss.com`) — cosmetic, no secret, but vendor it before any
+  multi-user/offline use.
   multi-user/offline use.
