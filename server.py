@@ -98,6 +98,23 @@ for _d in (DATA_DIR, SESSIONS_DIR, WORKSPACE_DIR):
 app = FastAPI(title="CodeMonkeys")
 
 
+@app.middleware("http")
+async def _security_headers(request, call_next):
+    """Baseline browser-hardening for an auth-gated console that fronts a shell.
+    Anti-clickjacking (no cross-origin framing of the login/console), no MIME
+    sniffing, no referrer leakage. CSP is intentionally limited to frame-ancestors
+    / object-src / base-uri so it does NOT block the Tailwind CDN or app.js —
+    tightening script-src is a follow-up that pairs with vendoring Tailwind."""
+    resp = await call_next(request)
+    resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    resp.headers.setdefault(
+        "Content-Security-Policy",
+        "frame-ancestors 'self'; object-src 'none'; base-uri 'self'")
+    return resp
+
+
 @app.on_event("startup")
 def _startup_warm_mcp():
     """Background-warm every enabled MCP server so tools are ready before first use."""

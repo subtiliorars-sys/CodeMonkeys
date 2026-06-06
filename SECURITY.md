@@ -32,6 +32,12 @@ keep that radius away from everything else.
 
 - File tools are path-jailed to the workspace (realpath prefix check)
 - bash runs with cwd=workspace, 180 s timeout, output capped
+- Baseline browser security headers on every response: `X-Frame-Options:
+  SAMEORIGIN` + CSP `frame-ancestors 'self'` (anti-clickjacking — a cross-origin
+  page can't frame-and-phish the PIN/TOTP login), `X-Content-Type-Options:
+  nosniff`, `Referrer-Policy: no-referrer`. CSP is kept minimal (no `script-src`)
+  so it doesn't break the Tailwind CDN; a stricter `script-src` pairs with
+  vendoring Tailwind (see Known limitations).
 - Per-session USD budget halts the loop; subagent spawn cap 8; recursion depth 1
 - **Plan mode is read-only, end to end.** Its toolset is read/list/glob/grep +
   `spawn_agent` + `save_spec`; it has no write_file/edit_file/bash. Subagents
