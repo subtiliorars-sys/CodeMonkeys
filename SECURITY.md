@@ -39,6 +39,12 @@ keep that radius away from everything else.
 
 - File tools are path-jailed to the workspace (realpath prefix check)
 - bash runs with cwd=workspace, 180 s timeout, output capped
+- Baseline browser security headers on every response: `X-Frame-Options:
+  SAMEORIGIN` + CSP `frame-ancestors 'self'` (anti-clickjacking — a cross-origin
+  page can't frame-and-phish the PIN/TOTP login), `X-Content-Type-Options:
+  nosniff`, `Referrer-Policy: no-referrer`. CSP is kept minimal (no `script-src`)
+  so it doesn't break the Tailwind CDN; a stricter `script-src` pairs with
+  vendoring Tailwind (see Known limitations).
 - **Approval-gate matching is quote/escape-resistant.** Risky commands
   (`git push`, `fly`/`flyctl`, `rm -rf`, `git reset --hard`, `git clean`,
   `gh repo delete`, `sudo`) are detected by `_is_risky`, which matches
