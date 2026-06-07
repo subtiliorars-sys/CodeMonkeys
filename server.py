@@ -3926,15 +3926,26 @@ def session_message(sid: str, req: MessageRequest, _: str = Depends(verify_user)
     s = SESSIONS.get(sid)
     if not s:
         raise HTTPException(404, "No such session")
-    if s["status"] != "idle":
-        raise HTTPException(409, "Session is busy")
-    s["mode"] = req.mode if req.mode in ("plan", "default", "auto") else "default"
-    text = _cap_message(req.text)
-    names = _save_uploads(sid, req.files)
-    if names:
-        text += "\n\n[Attached files saved in workspace: " + ", ".join(names) + "]"
-    emit(s, "user", text=text)
-    threading.Thread(target=run_session_message, args=(s, text), daemon=True).start()
+    # Check-and-claim atomically: the worker thread only flips status to
+    # "running" once it gets scheduled, so two rapid-fire duplicate POSTs
+    # (double-click / double-Enter / client retry) could BOTH pass a bare
+    # status check and each spawn a real model run. Claim under the session
+    # lock; the loser of the race gets the same 409 a busy session always got.
+    with s["lock"]:
+        if s["status"] != "idle":
+            raise HTTPException(409, "Session is busy")
+        s["status"] = "running"
+    try:
+        s["mode"] = req.mode if req.mode in ("plan", "default", "auto") else "default"
+        text = _cap_message(req.text)
+        names = _save_uploads(sid, req.files)
+        if names:
+            text += "\n\n[Attached files saved in workspace: " + ", ".join(names) + "]"
+        emit(s, "user", text=text)
+        threading.Thread(target=run_session_message, args=(s, text), daemon=True).start()
+    except BaseException:
+        s["status"] = "idle"      # never brick the session on a failed accept
+        raise
     return {"ok": True}
 
 
