@@ -1511,7 +1511,9 @@ def _mcp_connect(server: dict):
                     raise ValueError("stdio MCP server missing 'command'")
                 args_list = server.get("args", [])
                 env_extra = server.get("env", {})
-                child_env = {**os.environ, **env_extra}
+                # scrub secret-named host vars (consistent with the bash tool);
+                # the server's own declared env_extra still applies on top
+                child_env = {**_subprocess_env(), **env_extra}
                 proc = subprocess.Popen(
                     [cmd, *args_list],
                     stdin=subprocess.PIPE,
@@ -2639,7 +2641,7 @@ def t_bash(args, session=None):
                         f"verifier panel refused this high-risk command: {summary}\n"
                         "Adjust the approach, or tell the user to rerun in "
                         "default mode where they can approve it themselves.")
-    env = dict(os.environ)
+    env = _subprocess_env()        # defense-in-depth: drops the naive printenv exfil
     try:
         r = subprocess.run(["bash", "-c", cmd], cwd=WORKSPACE_DIR, env=env,
                            capture_output=True, text=True, timeout=BASH_TIMEOUT)
@@ -3268,6 +3270,44 @@ def _bust_secret_cache():
     """Call after model keys change so newly-added keys are redacted too."""
     global _SECRET_CACHE
     _SECRET_CACHE = None
+
+
+# Env-name secret match for SUBPROCESS scrubbing. Two tiers, because dropping a
+# var from the shell env (unlike redaction) can BREAK commands:
+#  - long unambiguous keywords match anywhere (PGPASSWORD, CLIENTSECRET, GITHUBTOKEN);
+#  - short/ambiguous tokens (KEY/PAT/AUTH/URL/…) match only at a name boundary so
+#    PATH (contains PAT) and EXECPATH survive.
+# An always-keep safelist protects essential vars even if they match (SSH_AUTH_SOCK
+# matches AUTH but is a socket path, not a secret).
+_ENV_SECRET_SUBSTR_RE = re.compile(
+    r"PASSWORD|PASSWD|PASSPHRASE|SECRET|TOKEN|CREDENTIAL|APIKEY|PRIVATEKEY|ACCESSKEY",
+    re.I)
+_ENV_SECRET_TOKEN_RE = re.compile(
+    r"(?:^|_)(?:KEY|PAT|AUTH|URL|URI|DSN|CONN|CONNECTION|COOKIE|SESSION|JWT|"
+    r"BEARER|NETRC)(?:_|$)", re.I)
+_ENV_KEEP = {"PATH", "HOME", "PWD", "SHELL", "TERM", "USER", "LOGNAME", "LANG",
+             "LC_ALL", "LC_CTYPE", "TMPDIR", "TZ", "HOSTNAME",
+             "SSH_AUTH_SOCK", "SSH_AGENT_PID", "LD_LIBRARY_PATH"}
+
+
+def _env_name_is_secret(name: str) -> bool:
+    return bool(_ENV_SECRET_SUBSTR_RE.search(name)
+                or _ENV_SECRET_TOKEN_RE.search(name))
+
+
+def _subprocess_env():
+    """Environment for model-/owner-invoked shell commands (the `bash` tool, the
+    owner terminal, stdio MCP servers). Drops secret-named vars so a command
+    can't exfiltrate one with the naive `printenv X | base64` / `| rev` — a
+    transform that slips past the output redactor's literal-substring match.
+
+    DEFENSE-IN-DEPTH ONLY, not a boundary. bash runs same-uid and unjailed
+    (SECURITY.md "conceded kernel-sandbox gap"), so a determined command can
+    still read the server's own `/proc/<pid>/environ` or `cat ../<file>` on
+    /data. Closing those needs sandboxing — tracked as an owner decision, not
+    this layer. PATH/HOME/etc. are preserved so normal tooling still works."""
+    return {k: v for k, v in os.environ.items()
+            if k in _ENV_KEEP or not _env_name_is_secret(k)}
 
 
 def _redact(text):
@@ -4393,7 +4433,7 @@ def terminal_exec(req: TerminalExec, owner: str = Depends(verify_owner)):
         emit(s, "terminal_exec", by=owner, command=cmd, status="run")
         try:
             r = subprocess.run(["bash", "-c", cmd], cwd=WORKSPACE_DIR,
-                               env=dict(os.environ), capture_output=True,
+                               env=_subprocess_env(), capture_output=True,
                                text=True, timeout=BASH_TIMEOUT)
             out = (r.stdout or "")
             if r.stderr:

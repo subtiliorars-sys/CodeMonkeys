@@ -51,6 +51,14 @@ keep that radius away from everything else.
 
 - File tools are path-jailed to the workspace (realpath prefix check)
 - bash runs with cwd=workspace, 180 s timeout, output capped
+- **Subprocess env scrub (defense-in-depth, NOT a boundary).** The `bash` tool,
+  the owner terminal, and stdio MCP servers run with `_subprocess_env()` — host
+  env vars whose name looks like a secret (`*TOKEN*`, `*SECRET*`, `*_KEY`,
+  `PGPASSWORD`, `DATABASE_URL`, …) are stripped, so a command can't grab one
+  with the naive `printenv X | base64` (a transform that evades the output
+  redactor). PATH/HOME/SSH_AUTH_SOCK and other essentials are safelisted.
+  **This does not close the conceded sandbox gap below** — it only removes the
+  laziest vector.
 - Baseline browser security headers on every response: `X-Frame-Options:
   SAMEORIGIN` + CSP `frame-ancestors 'self'` (anti-clickjacking — a cross-origin
   page can't frame-and-phish the PIN/TOTP login), `X-Content-Type-Options:
@@ -195,8 +203,22 @@ keep that radius away from everything else.
 ## Known limitations (v0.1)
 
 - bash is jailed by cwd, **not** by kernel sandboxing — a hostile prompt could
-  read app files or env vars on the machine. Mitigation: the machine holds
-  nothing but CodeMonkeys itself; GITHUB_TOKEN is the most sensitive item.
+  read app files or env vars on the machine. The `_subprocess_env()` scrub
+  (above) removes secret-named host env vars from the shell, but this is
+  defense-in-depth, **not a boundary**. A determined command still reaches:
+  - the server's own **`/proc/<pid>/environ`** (same-uid child) — every secret
+    Fly injected at startup, regardless of the child's scrubbed env;
+  - **`/data` files** via `cat ../<file>` (bash is cwd-jailed, not chroot'd):
+    `session_secret.key` (HMAC signing key → session forgery / auth bypass),
+    `model_config.json` (model API keys), `mcp_tokens.json` (OAuth tokens),
+    `users.json` (PBKDF2 hashes).
+  Transforms (`| base64`, `| rev`) evade the output redactor, and `/data`
+  secrets aren't in the redactor's value set at all. **Real fix = sandbox bash**
+  (separate uid / mount+pid namespace / seccomp) and/or evict startup secrets
+  from the server environ + encrypt `/data` secrets at rest. Tracked as an
+  owner decision (see questions.md). Mitigation today: the machine holds nothing
+  but CodeMonkeys itself, and risky bash is approval-gated (default) /
+  debate-verified (auto).
 - Single-machine trust boundary; no per-agent isolation yet (worktrees planned)
 - Login brute-force throttle is in place (fail2ban-style) with three sliding-
   window dimensions, all sharing `LOGIN_WINDOW_SEC` (default 300 s) and
