@@ -4,6 +4,10 @@
 # Linux/py3.12 target (pydantic-core, cryptography ship per-platform wheels), so
 # it can't be produced reliably from a Windows dev host without breaking the build.
 fastapi==0.136.3
+# Security: floor Starlette at the patched release for CVE-2026-48710 (auth bypass).
+# FastAPI pulls Starlette transitively; pin a floor so a resolved version below the
+# fix can never slip in. Bump the floor (not a hard ==) so FastAPI's own range still resolves.
+starlette>=1.0.1
 uvicorn==0.49.0
 pydantic==2.13.4
 requests==2.34.2
