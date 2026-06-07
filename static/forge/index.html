@@ -29,6 +29,11 @@
   .ev-tool { color: #94a3b8; font-size: .78rem; cursor: pointer; }
   .ev-tool .detail { display: none; white-space: pre-wrap; color: #64748b; }
   .ev-tool.open .detail { display: block; }
+  .diff-block { display: none; font-family: monospace; font-size: .72rem; white-space: pre;
+                overflow-x: auto; background: #050508; border: 1px solid #1e293b;
+                border-radius: 4px; padding: 6px 8px; margin-top: 4px; color: #94a3b8; }
+  .ev-tool.open .diff-block { display: block; }
+  .diff-add { color: #4ade80; } .diff-del { color: #f87171; } .diff-hunk { color: #60a5fa; }
   .ev-err { background: rgba(239,68,68,.12); border-left: 3px solid #ef4444; }
   .ev-cost { color: #475569; font-size: .68rem; text-align: right; }
   .ev-agent { color: var(--gold-bright); font-size: .8rem; }
@@ -153,6 +158,7 @@
           <button id="btn-invite" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">👥 Invite developers</button>
           <button id="btn-memory" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">🧠 Memory boards</button>
           <div id="memory-list" class="space-y-1"></div>
+          <button id="btn-cost-dashboard" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">💰 Cost dashboard</button>
           <a href="/static/forge/swarm.html" class="block text-slate-400 hover:text-[var(--gold)]">🐵 Swarm view</a>
         </div>
       </div>
@@ -281,6 +287,58 @@
         <p id="mcp-msg" class="col-span-2 text-xs text-slate-400"></p>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- ============ COST DASHBOARD MODAL (owner-only) ============ -->
+<div id="modal-cost" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+  <div class="panel gold-border rounded-lg p-5 w-full max-w-2xl max-h-[90vh] overflow-y-auto text-sm">
+    <div class="flex justify-between items-center mb-4">
+      <h2 class="wordmark font-bold">Cost dashboard</h2>
+      <button id="cost-close" class="text-slate-400 hover:text-white">✕</button>
+    </div>
+
+    <!-- totals row -->
+    <div class="grid grid-cols-3 gap-3 mb-5">
+      <div class="gold-border rounded p-3 text-center">
+        <div class="text-[.65rem] text-slate-500 uppercase tracking-wider mb-1">Total spend</div>
+        <div id="cd-total-usd" class="text-xl font-bold text-[var(--gold-bright)]">—</div>
+      </div>
+      <div class="gold-border rounded p-3 text-center">
+        <div class="text-[.65rem] text-slate-500 uppercase tracking-wider mb-1">Sessions</div>
+        <div id="cd-total-sessions" class="text-xl font-bold text-slate-200">—</div>
+      </div>
+      <div class="gold-border rounded p-3 text-center">
+        <div class="text-[.65rem] text-slate-500 uppercase tracking-wider mb-1">Tokens (in / out)</div>
+        <div id="cd-total-tokens" class="text-xl font-bold text-slate-200">—</div>
+      </div>
+    </div>
+
+    <!-- spend by day -->
+    <div class="mb-5">
+      <div class="text-slate-500 uppercase tracking-wider text-[.65rem] mb-2">Spend by day</div>
+      <div id="cd-by-day" class="space-y-1">
+        <p class="text-slate-600 text-xs">No data</p>
+      </div>
+    </div>
+
+    <!-- spend by model -->
+    <div class="mb-5">
+      <div class="text-slate-500 uppercase tracking-wider text-[.65rem] mb-2">Spend by model</div>
+      <div id="cd-by-model" class="space-y-1">
+        <p class="text-slate-600 text-xs">No data</p>
+      </div>
+    </div>
+
+    <!-- per-session table -->
+    <div>
+      <div class="text-slate-500 uppercase tracking-wider text-[.65rem] mb-2">Per-session breakdown</div>
+      <div id="cd-sessions" class="space-y-1">
+        <p class="text-slate-600 text-xs">No data</p>
+      </div>
+    </div>
+
+    <p id="cd-err" class="text-xs text-red-400 mt-3 hidden"></p>
   </div>
 </div>
 

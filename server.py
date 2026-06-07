@@ -15,12 +15,14 @@ Storage: JSON files under DATA_DIR (no database). Frontend: static/forge/.
 """
 
 import base64
+import difflib
 import fnmatch
 import hashlib
 import hmac
 import io
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -83,6 +85,7 @@ SECRET_FILE = os.path.join(DATA_DIR, "session_secret.key")
 CORPS_DIR = os.path.join(BASE_DIR, "corps", "agents")
 
 MCP_TOKENS_FILE = os.path.join(DATA_DIR, "mcp_tokens.json")
+DAILY_SPEND_FILE = os.path.join(DATA_DIR, "daily_spend.json")
 # OAuth state entries expire after this many seconds (short window reduces CSRF exposure)
 _OAUTH_STATE_TTL = 600
 
@@ -111,6 +114,11 @@ LOGIN_THROTTLE_FILE = os.path.join(DATA_DIR, "login_throttle.json")
 SESSION_BUDGET_USD = float(os.environ.get("SESSION_BUDGET_USD", "1.00"))
 # Ceiling for a per-session budget override (W10) — a client can't set a runaway cap.
 SESSION_BUDGET_MAX_USD = float(os.environ.get("SESSION_BUDGET_MAX_USD", "50.00"))
+# N2 rolling daily spend cap across ALL sessions. Unset or <=0 → no daily cap
+# (fully backward compatible). When set, agent_loop halts ANY run that would push
+# today's cumulative spend over the ceiling.
+_raw_daily_cap = os.environ.get("SPEND_DAILY_CAP_USD", "")
+SPEND_DAILY_CAP_USD: float = float(_raw_daily_cap) if _raw_daily_cap else 0.0
 MAX_TURNS = int(os.environ.get("MAX_TURNS", "60"))
 SUBAGENT_MAX_TURNS = int(os.environ.get("SUBAGENT_MAX_TURNS", "25"))
 MAX_SUBAGENTS = 8          # Campaign cap from CORPS_COMMANDER.md
@@ -269,6 +277,69 @@ def healthz():
             "sessions": len(SESSIONS)}
 
 
+@app.get("/readyz")
+def readyz():
+    """Unauthenticated readiness probe — returns 200 when all required checks
+    pass, 503 when any required check fails.  Leaks NOTHING sensitive: only
+    boolean flags, not keys/paths/usernames.
+
+    Checks
+    ------
+    data_writable     (required) write+delete a temp file under DATA_DIR
+    crypto_ok         (required) if CM_MASTER_KEY is set, _FERNET_AVAILABLE
+                      must be True; if CM_MASTER_KEY is unset → True (N/A)
+    provider_configured (warning-only) at least one callable provider exists;
+                      failure makes status "not ready" but does NOT trigger 503
+                      so the app is considered ready for traffic even without a
+                      configured model (owner may add the key post-deploy)
+    """
+    from fastapi.responses import JSONResponse
+
+    # -- check: data_writable --------------------------------------------------
+    data_writable = False
+    try:
+        fd, tmp = tempfile.mkstemp(dir=DATA_DIR, prefix=".readyz_")
+        os.close(fd)
+        os.unlink(tmp)
+        data_writable = True
+    except Exception:
+        pass
+
+    # -- check: crypto_ok ------------------------------------------------------
+    # If CM_MASTER_KEY is set the cryptography package must be available,
+    # otherwise the app cannot decrypt the session signing secret and will
+    # refuse to serve sessions.  If CM_MASTER_KEY is unset this is N/A → True.
+    if CM_MASTER_KEY:
+        crypto_ok = _FERNET_AVAILABLE
+    else:
+        crypto_ok = True
+
+    # -- check: provider_configured (warning-only) ----------------------------
+    try:
+        cfg = load_models()
+        provider_configured = bool(_usable(cfg))
+    except Exception:
+        provider_configured = False
+
+    # -- aggregate ------------------------------------------------------------
+    # Required checks determine the HTTP status code.
+    required_ok = data_writable and crypto_ok
+    overall = "ready" if (required_ok and provider_configured) else "not ready"
+
+    body = {
+        "status": overall,
+        "uptime_s": int(time.time()) - _BOOT_TIME,
+        "sessions": len(SESSIONS),
+        "checks": {
+            "data_writable": data_writable,
+            "crypto_ok": crypto_ok,
+            "provider_configured": provider_configured,
+        },
+    }
+    status_code = 200 if required_ok else 503
+    return JSONResponse(content=body, status_code=status_code)
+
+
 @app.middleware("http")
 async def _security_headers(request, call_next):
     """Baseline browser-hardening for an auth-gated console that fronts a shell.
@@ -308,6 +379,12 @@ _USERS_LOCK = threading.Lock()
 _MODELS_LOCK = threading.Lock()
 _MCP_LOCK = threading.Lock()
 _SESSIONS_LOCK = threading.Lock()
+# N2 daily spend cap — in-memory state (date string + usd float).
+# Guarded by _DAILY_LOCK; persisted atomically to DAILY_SPEND_FILE after every
+# accrue so a restart doesn't reset the day's total.
+_DAILY_LOCK = threading.Lock()
+_daily_state: dict = {"date": "", "usd": 0.0}  # mutable, always accessed under lock
+_daily_cap_override: float = 0.0  # owner-set in-memory override (0 = not overridden)
 
 
 def _load_json(path, default):
@@ -323,6 +400,64 @@ def _save_json(path, data):
     with open(tmp, "w") as f:
         json.dump(data, f, indent=2)
     os.replace(tmp, path)
+
+
+# ----------------------------------------------------------------- N2 daily spend cap
+
+def _daily_utc_date() -> str:
+    """Today's date in UTC as YYYY-MM-DD."""
+    import datetime
+    return datetime.datetime.utcnow().strftime("%Y-%m-%d")
+
+
+def _load_daily_spend() -> None:
+    """Populate _daily_state from persisted file on boot.
+
+    If the stored date differs from today (UTC), rolls over to zero so yesterday's
+    total never pollutes today's cap check. Called once after restore_sessions().
+    """
+    global _daily_state
+    data = _load_json(DAILY_SPEND_FILE, {})
+    today = _daily_utc_date()
+    with _DAILY_LOCK:
+        if data.get("date") == today:
+            _daily_state = {"date": today, "usd": float(data.get("usd", 0.0))}
+        else:
+            _daily_state = {"date": today, "usd": 0.0}
+
+
+def _persist_daily_spend() -> None:
+    """Atomically write _daily_state to disk. Must be called under _DAILY_LOCK."""
+    _save_json(DAILY_SPEND_FILE, {"date": _daily_state["date"],
+                                  "usd": round(_daily_state["usd"], 6)})
+
+
+def _accrue_daily(usd: float) -> None:
+    """Add usd to today's running total (thread-safe). Rolls over at UTC midnight."""
+    global _daily_state
+    today = _daily_utc_date()
+    with _DAILY_LOCK:
+        if _daily_state["date"] != today:
+            _daily_state = {"date": today, "usd": 0.0}
+        _daily_state["usd"] += usd
+        _persist_daily_spend()
+
+
+def daily_total_usd() -> float:
+    """Return today's cumulative spend (USD) across all sessions (thread-safe)."""
+    today = _daily_utc_date()
+    with _DAILY_LOCK:
+        if _daily_state["date"] != today:
+            return 0.0
+        return _daily_state["usd"]
+
+
+def effective_daily_cap() -> float:
+    """The active daily cap: owner override if set, else SPEND_DAILY_CAP_USD.
+    Returns 0.0 when no cap is configured (i.e., unlimited)."""
+    if _daily_cap_override > 0:
+        return _daily_cap_override
+    return max(SPEND_DAILY_CAP_USD, 0.0)
 
 
 # ----------------------------------------------------------------- auth
@@ -2782,11 +2917,21 @@ def t_read_file(args):
 
 def t_write_file(args):
     full = _jail(args["path"])
+    # Read old content before the write so we can produce a diff (N4).
+    try:
+        with open(full, "r", errors="replace") as f:
+            old_content = f.read()
+    except FileNotFoundError:
+        old_content = ""
     os.makedirs(os.path.dirname(full) or full, exist_ok=True)
+    new_content = args["content"]
     with open(full, "w") as f:
-        f.write(args["content"])
-    return (f"Wrote {len(args['content'])} chars to {args['path']}"
-            + _secret_warning(args["content"]))
+        f.write(new_content)
+    result = (f"Wrote {len(new_content)} chars to {args['path']}"
+              + _secret_warning(new_content))
+    # Attach diff as a separate return value; agent_loop unpacks it.
+    _diff = _diff_preview(old_content, new_content, args["path"])
+    return result, _diff
 
 
 # W6 — secret-scan write guard. Flag (do NOT block) obvious credentials being
@@ -2833,20 +2978,80 @@ def _secret_warning(text: str) -> str:
             "use an env var or /data secret instead.")
 
 
+# ---- unified-diff preview (N4) ----------------------------------------------
+# For write_file / edit_file: compute a unified diff of old vs new content so
+# the owner can see exactly what changed, not just "a write happened."
+# For apply_patch: the patch IS a diff — surface it cleaned/capped.
+# Diffs are capped (DIFF_LINE_CAP lines / DIFF_BYTE_CAP bytes) with a truncation
+# marker, then passed through _redact() so secrets never appear in the preview.
+DIFF_LINE_CAP = 200
+DIFF_BYTE_CAP = 8192  # ~8 KB
+
+
+def _diff_preview(old: str, new: str, path: str = "") -> str:
+    """Return a capped, redacted unified diff of old→new, or '' if unchanged."""
+    if old == new:
+        return ""
+    old_lines = old.splitlines(keepends=True)
+    new_lines = new.splitlines(keepends=True)
+    fname = path or "file"
+    lines = list(difflib.unified_diff(
+        old_lines, new_lines,
+        fromfile=f"a/{fname}", tofile=f"b/{fname}",
+        lineterm="",
+    ))
+    truncated = False
+    if len(lines) > DIFF_LINE_CAP:
+        lines = lines[:DIFF_LINE_CAP]
+        truncated = True
+    diff_text = "\n".join(lines)
+    if len(diff_text) > DIFF_BYTE_CAP:
+        diff_text = diff_text[:DIFF_BYTE_CAP]
+        truncated = True
+    if truncated:
+        diff_text += "\n...[diff truncated]"
+    # _redact is available later in the file; call it indirectly via the module
+    # so the helper can live here close to t_write/t_edit.
+    # NOTE: _redact is defined below — forward call is fine in Python.
+    return _redact(diff_text)
+
+
+def _patch_preview(patch: str) -> str:
+    """Surface a patch (already a diff) capped + redacted."""
+    if not patch:
+        return ""
+    lines = patch.splitlines()
+    truncated = False
+    if len(lines) > DIFF_LINE_CAP:
+        lines = lines[:DIFF_LINE_CAP]
+        truncated = True
+    text = "\n".join(lines)
+    if len(text) > DIFF_BYTE_CAP:
+        text = text[:DIFF_BYTE_CAP]
+        truncated = True
+    if truncated:
+        text += "\n...[diff truncated]"
+    return _redact(text)
+
+
 def t_edit_file(args):
     full = _jail(args["path"])
     with open(full, "r") as f:
-        text = f.read()
+        old_text = f.read()
     old = args["old_string"]
-    n = text.count(old)
+    n = old_text.count(old)
     if n == 0:
-        return "ERROR: old_string not found"
+        return "ERROR: old_string not found", ""
     if n > 1 and not args.get("replace_all"):
-        return f"ERROR: old_string occurs {n} times; pass replace_all=true or be more specific"
+        return (f"ERROR: old_string occurs {n} times; pass replace_all=true or be more specific",
+                "")
+    new_text = (old_text.replace(old, args["new_string"]) if args.get("replace_all")
+                else old_text.replace(old, args["new_string"], 1))
     with open(full, "w") as f:
-        f.write(text.replace(old, args["new_string"]) if args.get("replace_all")
-                else text.replace(old, args["new_string"], 1))
-    return "Edit applied" + _secret_warning(args["new_string"])
+        f.write(new_text)
+    result = "Edit applied" + _secret_warning(args["new_string"])
+    _diff = _diff_preview(old_text, new_text, args["path"])
+    return result, _diff
 
 
 def t_list_dir(args):
@@ -2964,6 +3169,7 @@ def _debate_verify(session, cmd):
             notes.append(f"{lens}: REFUTE (verifier error: {e})")
             continue
         session["spent_usd"] = session.get("spent_usd", 0) + usd
+        _accrue_daily(usd)   # N2 red-team R3: debate-verify spend must count toward the daily cap too
         emit(session, "cost", usd=round(usd, 6), in_tokens=resp["in_tokens"],
              out_tokens=resp["out_tokens"], model=provider["model"],
              agent=f"debate-verify:{lens}")
@@ -3026,9 +3232,9 @@ def t_apply_patch(args):
     """
     patch = args.get("patch", "")
     if not patch or not patch.strip():
-        return "ERROR: patch is empty"
+        return "ERROR: patch is empty", ""
     if len(patch) > _PATCH_SIZE_CAP:
-        return f"ERROR: patch exceeds size cap ({_PATCH_SIZE_CAP} bytes)"
+        return f"ERROR: patch exceeds size cap ({_PATCH_SIZE_CAP} bytes)", ""
 
     # --- Parse target paths from --- / +++ headers ---
     # Standard unified diff header lines look like:
@@ -3046,17 +3252,17 @@ def t_apply_patch(args):
             target_paths.add(clean)
 
     if not target_paths:
-        return "ERROR: no target file paths found in patch headers"
+        return "ERROR: no target file paths found in patch headers", ""
 
     # --- Jail-check every path before touching the filesystem ---
     for p in target_paths:
         # Absolute paths are an explicit escape attempt
         if os.path.isabs(p):
-            return f"ERROR: patch targets a path outside the workspace: {p}"
+            return f"ERROR: patch targets a path outside the workspace: {p}", ""
         try:
             _jail(p)
         except ValueError:
-            return f"ERROR: patch targets a path outside the workspace: {p}"
+            return f"ERROR: patch targets a path outside the workspace: {p}", ""
 
     # --- Apply with git apply (atomic, works even without a git repo) ---
     patch_bytes = patch.encode()
@@ -3069,20 +3275,23 @@ def t_apply_patch(args):
             timeout=60,
         )
     except subprocess.TimeoutExpired:
-        return "ERROR: git apply timed out after 60s"
+        return "ERROR: git apply timed out after 60s", ""
     except FileNotFoundError:
-        return "ERROR: git is not installed in this environment"
+        return "ERROR: git is not installed in this environment", ""
 
     if r.returncode != 0:
         stderr = (r.stderr or b"").decode(errors="replace").strip()
-        return ("ERROR: " + stderr)[:OUTPUT_CAP]
+        return ("ERROR: " + stderr)[:OUTPUT_CAP], ""
 
     n = len(target_paths)
     # Scan only the added (+) lines of the diff for secrets.
     added = "\n".join(ln[1:] for ln in patch.splitlines()
                       if ln.startswith("+") and not ln.startswith("+++"))
-    return (f"Patch applied to {n} file(s): {', '.join(sorted(target_paths))}"
-            + _secret_warning(added))
+    result = (f"Patch applied to {n} file(s): {', '.join(sorted(target_paths))}"
+              + _secret_warning(added))
+    # Surface the patch itself as the diff preview (it already is a unified diff).
+    _diff = _patch_preview(patch)
+    return result, _diff
 
 
 _SPEC_ARTIFACTS = ("constitution", "spec", "plan", "tasks")
@@ -3586,6 +3795,7 @@ def restore_sessions():
 
 
 restore_sessions()
+_load_daily_spend()   # N2: boot from persisted today-total (rolls over at UTC midnight)
 
 
 # ---- secret redaction --------------------------------------------------------
@@ -3782,13 +3992,14 @@ def make_executor(session, allowed, agent_label=None, depth=0):
             if name == "read_file":
                 return t_read_file(args), True
             if name == "write_file":
-                return t_write_file(args), True
+                r, diff = t_write_file(args)
+                return r, True, diff
             if name == "edit_file":
-                r = t_edit_file(args)
-                return r, not r.startswith("ERROR")
+                r, diff = t_edit_file(args)
+                return r, not r.startswith("ERROR"), diff
             if name == "apply_patch":
-                r = t_apply_patch(args)
-                return r, not r.startswith("ERROR")
+                r, diff = t_apply_patch(args)
+                return r, not r.startswith("ERROR"), diff
             if name == "list_dir":
                 return t_list_dir(args), True
             if name == "glob_files":
@@ -3836,6 +4047,17 @@ def agent_loop(session, provider, system, history, tool_names, max_turns,
             emit(session, "error", message="Stopped by user", agent=agent_label)
             _set_outcome("stopped")
             break
+        # N2: daily cap check — whichever limit trips first wins.
+        _dcap = effective_daily_cap()
+        if _dcap > 0:
+            _dtotal = daily_total_usd()
+            if _dtotal >= _dcap:
+                emit(session, "error", agent=agent_label,
+                     message=f"Daily spend cap ${_dcap:.2f} reached "
+                             f"(spent ${_dtotal:.2f} today). "
+                             "Runs are paused until tomorrow (UTC) or the owner raises the cap.")
+                _set_outcome("daily_cap")
+                break
         _budget = session_budget(session)
         if session["spent_usd"] >= _budget:
             emit(session, "error", agent=agent_label,
@@ -3869,6 +4091,7 @@ def agent_loop(session, provider, system, history, tool_names, max_turns,
                 break
         usd = call_cost(provider, resp["in_tokens"], resp["out_tokens"])
         session["spent_usd"] += usd
+        _accrue_daily(usd)   # N2: persist to daily running total (thread-safe)
         emit(session, "cost", usd=round(usd, 6), in_tokens=resp["in_tokens"],
              out_tokens=resp["out_tokens"], model=provider["model"], agent=agent_label)
         text_out = _redact(resp["text"])      # scrub before model-context reuse + persist
@@ -3882,10 +4105,22 @@ def agent_loop(session, provider, system, history, tool_names, max_turns,
         for tc in resp["tool_calls"]:
             detail = json.dumps(tc["args"])[:300]
             emit(session, "tool", name=tc["name"], detail=detail, agent=agent_label)
-            result, ok = executor(tc)
+            raw = executor(tc)
+            # write_file / edit_file / apply_patch return (result, ok, diff);
+            # all other tools return (result, ok).
+            if len(raw) == 3:
+                result, ok, diff = raw
+            else:
+                result, ok = raw
+                diff = ""
             result = _redact(result)          # scrub tool output (e.g. `cat config`, `env`)
-            emit(session, "tool_result", name=tc["name"], ok=ok,
-                 detail=result[:600], agent=agent_label)
+            # diff was already redacted inside _diff_preview/_patch_preview; pass
+            # it as an optional field so the frontend can render it inline.
+            _emit_kw = {"name": tc["name"], "ok": ok, "detail": result[:600],
+                        "agent": agent_label}
+            if diff:
+                _emit_kw["diff"] = diff
+            emit(session, "tool_result", **_emit_kw)
             history.append({"role": "tool", "tool_call_id": tc["id"],
                             "name": tc["name"], "content": result})
     else:
@@ -4226,6 +4461,109 @@ def blackboard_delete(slug: str, _: str = Depends(verify_owner)):
     return {"ok": True, "removed": _bb_slug(slug)}
 
 
+# ----------------------------------------------------------------- N11 audit log
+
+# Security-relevant event types only — everything else is filtered out before the
+# payload leaves the server.  text/tool/tool_result/cost/user events are excluded;
+# they carry prompts, tool args, and model output which may contain PII or secrets.
+#
+# Fields exposed per event: session id, timestamp, type, agent label, and a small
+# number of boolean/int/short-string fields that are already redacted by emit().
+# "command" is truncated at 300 chars (same as debate_verify) and never includes
+# raw tool args or full prompt context.
+#
+# This surface is owner-only and should get a red-team pass before any multi-user
+# expansion.
+
+_AUDIT_SAFELIST: frozenset[str] = frozenset({
+    "approval",          # human-gate request (command field, approval_id)
+    "approval_result",   # human decision (approved bool)
+    "terminal_exec",     # owner-typed shell command (status + command)
+    "terminal_exec_result",  # shell exit code (no raw output — omitted below)
+    "debate_verify",     # risky-command verifier result (allowed, refutes, summary)
+    "error",             # agent/model errors (message, agent)
+})
+
+# Per-type safe fields: only these keys are forwarded; everything else is dropped.
+# "i", "ts", "type" are always included (added by emit()).
+_AUDIT_SAFE_FIELDS: dict[str, frozenset[str]] = {
+    "approval":          frozenset({"approval_id", "command"}),
+    "approval_result":   frozenset({"approval_id", "approved"}),
+    "terminal_exec":     frozenset({"by", "command", "status"}),
+    "terminal_exec_result": frozenset({"command", "exit_code"}),
+    "debate_verify":     frozenset({"command", "allowed", "refutes", "summary"}),
+    "error":             frozenset({"message", "agent"}),
+}
+
+_AUDIT_LIMIT_DEFAULT = 200
+_AUDIT_LIMIT_CAP     = 1000
+
+
+def _audit_filter_event(sid: str, evt: dict) -> dict | None:
+    """Return a safe projection of evt if it is in the safelist, else None."""
+    etype = evt.get("type")
+    if etype not in _AUDIT_SAFELIST:
+        return None
+    safe = frozenset(_AUDIT_SAFE_FIELDS.get(etype, frozenset()))
+    proj: dict = {"sid": sid, "i": evt.get("i"), "ts": evt.get("ts"), "type": etype}
+    for k in safe:
+        if k in evt:
+            v = evt[k]
+            # Strings already went through _redact() inside emit(); truncate defensively.
+            if isinstance(v, str):
+                v = v[:600]
+            proj[k] = v
+    return proj
+
+
+@app.get("/api/audit")
+def audit_log(
+    limit: int = _AUDIT_LIMIT_DEFAULT,
+    type: str = "",
+    session: str = "",
+    _: str = Depends(verify_owner),
+):
+    """N11 — owner-only security-event aggregator.
+
+    Aggregates events from in-memory SESSIONS (already redacted by emit()).
+    Returns only safelisted event types; strips prompt/PII fields.
+    Query params: limit (≤1000), type (filter to one safelisted type),
+    session (filter to one sid). Results are newest-first.
+    """
+    limit = min(max(1, limit), _AUDIT_LIMIT_CAP)
+    type_filter  = type.strip() or ""
+    sid_filter   = session.strip() or ""
+
+    # Type filter must be in safelist (fail-closed: unknown type → empty result)
+    if type_filter and type_filter not in _AUDIT_SAFELIST:
+        return {"events": [], "total": 0,
+                "note": f"type '{type_filter}' is not in the audit safelist"}
+
+    collected: list[dict] = []
+    with _SESSIONS_LOCK:
+        sids = list(SESSIONS.keys())
+
+    for sid in sids:
+        if sid_filter and sid != sid_filter:
+            continue
+        s = SESSIONS.get(sid)
+        if s is None:
+            continue
+        with s["lock"]:
+            raw_events = list(s["events"])
+        for evt in raw_events:
+            if type_filter and evt.get("type") != type_filter:
+                continue
+            proj = _audit_filter_event(sid, evt)
+            if proj is not None:
+                collected.append(proj)
+
+    # Newest-first, then apply limit
+    collected.sort(key=lambda e: (e.get("ts") or 0, e.get("i") or 0), reverse=True)
+    collected = collected[:limit]
+    return {"events": collected, "total": len(collected)}
+
+
 # Wave 4 #6 — fractal/tiered memory, phase 1: deterministic theme-token
 # extraction. NOT a lossy LLM summary — we walk the persisted history and pull
 # structured facts (files touched, tools used, commands run, errors seen) so a
@@ -4476,9 +4814,14 @@ def memory_patterns(repo: str = "", format: str = "json",
 
 @app.get("/api/usage")
 def usage_summary(_: str = Depends(verify_owner)):
-    """Owner-only ledger rollup: per-session and total USD + token counts,
-    derived from the persisted `cost` events. No keys or prompt content."""
+    """Owner-only ledger rollup: per-session, by-day, by-model, and total USD +
+    token counts, derived from the persisted `cost` events. No keys or prompt
+    content."""
+    import datetime as _dt
     per_session, tot_usd, tot_in, tot_out = [], 0.0, 0, 0
+    day_usd: dict = {}    # "YYYY-MM-DD" -> float
+    model_usd: dict = {}  # model_name -> float
+    model_calls: dict = {}
     for s in SESSIONS.values():
         with s["lock"]:
             costs = [e for e in s["events"] if e.get("type") == "cost"]
@@ -4491,10 +4834,85 @@ def usage_summary(_: str = Depends(verify_owner)):
         per_session.append({
             "id": s["id"], "title": s["title"], "calls": len(costs),
             "usd": round(usd, 6), "in_tokens": in_tok, "out_tokens": out_tok})
+        for e in costs:
+            # by-day rollup (UTC date from unix ts)
+            ts = e.get("ts")
+            if ts:
+                day = _dt.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
+                day_usd[day] = day_usd.get(day, 0.0) + e.get("usd", 0)
+            # by-model rollup
+            mdl = e.get("model") or "unknown"
+            model_usd[mdl] = model_usd.get(mdl, 0.0) + e.get("usd", 0)
+            model_calls[mdl] = model_calls.get(mdl, 0) + 1
     per_session.sort(key=lambda x: -x["usd"])
+    by_day = sorted(
+        [{"day": d, "usd": round(v, 6)} for d, v in day_usd.items()],
+        key=lambda x: x["day"])
+    by_model = sorted(
+        [{"model": m, "usd": round(model_usd[m], 6), "calls": model_calls[m]}
+         for m in model_usd],
+        key=lambda x: -x["usd"])
     return {"total": {"usd": round(tot_usd, 6), "in_tokens": tot_in,
                       "out_tokens": tot_out, "sessions": len(per_session)},
+            "by_day": by_day, "by_model": by_model,
             "sessions": per_session}
+
+
+# ----------------------------------------------------------------- N2 daily spend endpoints
+
+@app.get("/api/spend/today")
+def spend_today(_: str = Depends(verify_owner)):
+    """Owner-only: today's rolling daily spend vs the cap. No keys or PII."""
+    cap = effective_daily_cap()
+    total = daily_total_usd()
+    remaining = max(cap - total, 0.0) if cap > 0 else None
+    return {
+        "date": _daily_utc_date(),
+        "usd": round(total, 6),
+        "cap": round(cap, 6) if cap > 0 else None,
+        "remaining": round(remaining, 6) if remaining is not None else None,
+    }
+
+
+class DailyCapRequest(BaseModel):
+    usd: float
+
+
+@app.post("/api/spend/cap")
+def set_daily_cap(req: DailyCapRequest, _: str = Depends(verify_owner)):
+    """Owner-only: set an in-memory daily cap override for the rest of today.
+
+    usd > 0  → raise/set cap to this value for the remainder of the day.
+    usd <= 0 → clear the in-memory override (falls back to SPEND_DAILY_CAP_USD).
+
+    The override is NOT persisted — a restart reverts to the env-var value, which
+    is intentional: a human restart is a natural circuit-break point.
+    """
+    global _daily_cap_override
+    # N2 red-team R4: reject non-finite (Infinity/NaN) — an Inf override would
+    # silently disable the cap (the one feature whose job is cost protection).
+    if not math.isfinite(req.usd):
+        raise HTTPException(422, "usd must be a finite number")
+    with _DAILY_LOCK:
+        _daily_cap_override = max(req.usd, 0.0)
+    cap = effective_daily_cap()
+    return {
+        "override_usd": round(_daily_cap_override, 6),
+        "effective_cap": round(cap, 6) if cap > 0 else None,
+        "note": "override not persisted — reverts to SPEND_DAILY_CAP_USD on restart",
+    }
+
+
+@app.post("/api/spend/reset")
+def reset_daily_spend(_: str = Depends(verify_owner)):
+    """Owner-only: zero today's running total (e.g. to re-enable runs after a cap hit
+    without waiting for UTC midnight). Persists the reset so it survives a restart."""
+    global _daily_state
+    today = _daily_utc_date()
+    with _DAILY_LOCK:
+        _daily_state = {"date": today, "usd": 0.0}
+        _persist_daily_spend()
+    return {"date": today, "usd": 0.0, "note": "daily counter reset"}
 
 
 def _cap_message(text: str) -> str:
@@ -4902,6 +5320,16 @@ def terminal_page():
     )
 
 
+@app.get("/audit")
+def audit_page():
+    """N11 — owner-only audit-log viewer UI (served as a static page; auth is
+    enforced by the /api/audit endpoint the page calls, not by this route)."""
+    return FileResponse(
+        os.path.join(BASE_DIR, "static", "forge", "audit.html"),
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
 # ----------------------------------------------------------------- repos
 
 class RepoClone(BaseModel):
@@ -4983,7 +5411,7 @@ def swarm_state(_: str = Depends(verify_user)):
         "stats": {
             "sessions": len(SESSIONS),
             "running": sum(1 for s in SESSIONS.values() if s["status"] != "idle"),
-            "spend_today_usd": round(sum(s["spent_usd"] for s in SESSIONS.values()), 4),
+            "spend_today_usd": round(daily_total_usd(), 4),   # N2: authoritative daily counter
             "budget_per_session_usd": SESSION_BUDGET_USD,
         },
     }
