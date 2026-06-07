@@ -3724,7 +3724,8 @@ def _session_index_path():
 
 def _persist_index():
     idx = {sid: {"title": s["title"], "repo": s["repo"], "created": s["created"],
-                 "budget_usd": s.get("budget_usd")}
+                 "budget_usd": s.get("budget_usd"),
+                 "status": s.get("status", "idle"), "mode": s.get("mode", "default")}
            for sid, s in SESSIONS.items()}
     _save_json(_session_index_path(), idx)
 
@@ -3769,12 +3770,22 @@ def new_session(title="", repo="", budget_usd=None):
     return SESSIONS[sid]
 
 
+_N6_INTERRUPTED_STATUSES = ("running", "waiting_approval")
+
+
 def restore_sessions():
     idx = _load_json(_session_index_path(), {})
     for sid, meta in idx.items():
+        persisted_status = meta.get("status", "idle")
+        # N6: sessions that were mid-run when the server stopped must not come
+        # back stuck in "running" — their thread is gone. Mark them interrupted
+        # so the UI can show a Resume affordance.
+        was_running = persisted_status in _N6_INTERRUPTED_STATUSES
         s = {
             "id": sid, "title": meta.get("title", sid), "repo": meta.get("repo", ""),
-            "created": meta.get("created", 0), "status": "idle", "mode": "default",
+            "created": meta.get("created", 0),
+            "status": "interrupted" if was_running else persisted_status,
+            "mode": meta.get("mode", "default"),
             "events": [], "history": [], "spent_usd": 0.0,
             "budget_usd": _clamp_budget(meta.get("budget_usd")),
             "agents_spawned": 0, "stop_flag": threading.Event(),
@@ -3791,7 +3802,21 @@ def restore_sessions():
             pass
         hist = _load_json(os.path.join(SESSIONS_DIR, f"{sid}.history.json"), [])
         s["history"] = hist
+        if was_running:
+            # Emit (and persist) a sentinel so the event stream shows what happened
+            evt = {"i": len(s["events"]), "ts": int(time.time()), "type": "interrupted",
+                   "message": "Server restarted while this session was running."}
+            s["events"].append(evt)
+            try:
+                with open(_events_path(sid), "a") as f:
+                    f.write(json.dumps(evt) + "\n")
+            except OSError:
+                pass
         SESSIONS[sid] = s
+    # Re-persist the index so interrupted status is durable even if the server
+    # immediately restarts again before any resume call updates it.
+    if idx:
+        _persist_index()
 
 
 restore_sessions()
@@ -4306,6 +4331,7 @@ def run_session_message(session, text):
         _notify_done(session, errored=True, outcome="no_provider")
         return
     session["status"] = "running"
+    _persist_index()          # N6: durably record "running" so a restart knows this was live
     session["stop_flag"].clear()
     session["history"].append({"role": "user", "text": text})
     mode = session.get("mode", "default")
@@ -4333,6 +4359,7 @@ def run_session_message(session, text):
         session["status"] = "idle"
         emit(session, "done")
         persist_history(session)
+        _persist_index()      # N6: durably record "idle" so restart doesn't mis-classify
         _notify_done(session, errored=errored, outcome=outcome)
 
 
@@ -5113,7 +5140,10 @@ def session_message(sid: str, req: MessageRequest, username: str = Depends(verif
     # status check and each spawn a real model run. Claim under the session
     # lock; the loser of the race gets the same 409 a busy session always got.
     with s["lock"]:
-        if s["status"] != "idle":
+        # N6: interrupted sessions (mid-run when server stopped) are also
+        # sendable — the user might choose to send a fresh message instead of
+        # using /resume, which is fine; either path unblocks the session.
+        if s["status"] not in ("idle", "interrupted"):
             raise HTTPException(409, "Session is busy")
         s["status"] = "running"
     try:
@@ -5289,12 +5319,52 @@ def session_stop(sid: str, _: str = Depends(verify_user)):
     return {"ok": True}
 
 
+@app.post("/api/sessions/{sid}/resume")
+def session_resume(sid: str, username: str = Depends(verify_user)):
+    """N6: re-dispatch a session whose run thread died on a server restart.
+
+    Allowed when status is ``interrupted`` (primary use-case) or ``idle``
+    (user wants to continue a finished session without typing). Rejected 409
+    if the session is already running. Mode is NOT escalated — auto is still
+    gated by the normal Owner check via the existing session_message path;
+    here we just re-dispatch whatever mode the session already had (default or
+    plan), or default if the persisted mode would be auto and the user isn't
+    Owner.
+    """
+    s = SESSIONS.get(sid)
+    if not s:
+        raise HTTPException(404, "No such session")
+    with s["lock"]:
+        if s["status"] not in ("interrupted", "idle"):
+            raise HTTPException(409, "Session is busy")
+        # Guard: auto mode only for Owner; silently fall back to default.
+        if s.get("mode") == "auto":
+            user_role = load_users().get(username, {}).get("role")
+            if user_role != "Owner":
+                s["mode"] = "default"
+        s["status"] = "running"
+    # Synthesise a continuation nudge. If the last history turn was from the
+    # user, re-dispatch that text verbatim (the model never saw the reply).
+    # Otherwise inject a lightweight "continue" prompt so the agent can pick
+    # up mid-task context from history.
+    hist = s.get("history", [])
+    last_user = next((h["text"] for h in reversed(hist) if h.get("role") == "user"), None)
+    nudge = last_user if last_user else "Continue where you left off."
+    emit(s, "interrupted_resume", message="Resuming after server restart.")
+    try:
+        threading.Thread(target=run_session_message, args=(s, nudge), daemon=True).start()
+    except BaseException:
+        s["status"] = "idle"
+        raise
+    return {"ok": True}
+
+
 @app.delete("/api/sessions/{sid}")
 def session_delete(sid: str, _: str = Depends(verify_user)):
     s = SESSIONS.get(sid)
     if not s:
         raise HTTPException(404, "No such session")
-    if s["status"] != "idle":
+    if s["status"] not in ("idle", "interrupted"):
         raise HTTPException(409, "Stop the session before deleting it")
     with _SESSIONS_LOCK:
         SESSIONS.pop(sid, None)
@@ -5316,7 +5386,7 @@ def session_delete(sid: str, _: str = Depends(verify_user)):
 
 _FLEET_STATE = {"running": "WORKING", "waiting_approval": "BLOCKED",
                 "error": "ERROR", "done": "DONE", "idle": "IDLE",
-                "connected": "IDLE"}
+                "connected": "IDLE", "interrupted": "BLOCKED"}
 
 
 def _fleet_ops_label(text: str, cap: int) -> str:

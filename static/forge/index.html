@@ -42,6 +42,7 @@
   .dot { width: 9px; height: 9px; border-radius: 9999px; display: inline-block; }
   .dot.idle { background: #475569; } .dot.running { background: #39d353; animation: pulse 1.2s infinite; }
   .dot.waiting_approval { background: var(--gold); animation: pulse .6s infinite; }
+  .dot.interrupted { background: #f59e0b; }
   @keyframes pulse { 50% { opacity: .35; } }
   .scanlines::after { content: ""; pointer-events: none; position: fixed; inset: 0;
     background: repeating-linear-gradient(0deg, rgba(0,0,0,.16) 0 1px, transparent 1px 3px); opacity:.5; }
