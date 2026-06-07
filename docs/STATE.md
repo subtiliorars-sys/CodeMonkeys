@@ -15,7 +15,13 @@ Daystrom agent corps in `corps/`. Full overview: `README.md` +
 - Owner account registered; **enrollment is locked**.
 - `GITHUB_TOKEN` secret set. Model API keys are entered in the UI (⚙ Models),
   stored on `/data`, not in Fly secrets.
-- Deploy: `fly deploy --app codemonkeys`. Logs: `fly logs -a codemonkeys`.
+- Deploy: `fly deploy --app codemonkeys --remote-only` (Chromebook host has no
+  local Docker — remote Depot builder). Logs: `fly logs -a codemonkeys`.
+- **2026-06-07: redeployed at version 10** — everything through Wave 3 is LIVE
+  (v0.2 MCP + v0.3 security wave + #21 blackboard + #22 debate-verify + Wave 3
+  W1–W12). `/healthz` (W1) is wired as the Fly liveness check (1 passing).
+  Smoke-tested live: `/healthz` 200, `/api/usage` + `/api/kb` 401 fail-closed,
+  `/` 200.
 
 ## Shipped so far (v0.1)
 - Auth: 4-digit+ PIN (PBKDF2) + mandatory TOTP; HMAC tokens; fail-closed.
