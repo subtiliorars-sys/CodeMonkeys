@@ -363,8 +363,10 @@ def _session_secret() -> bytes:
                 "CM_MASTER_KEY is set but the 'cryptography' package is unavailable; "
                 "refusing to boot rather than mishandle the encrypted session secret.")
         if CM_MASTER_KEY and len(CM_MASTER_KEY) < 16:
-            _logging.warning(
-                "CM_MASTER_KEY is short — use a 32+ byte random value (see _make_fernet).")
+            # enforce, don't warn — a too-short key must not reach production silently
+            raise RuntimeError(
+                "CM_MASTER_KEY is too short (<16 chars); use a 32+ byte random value "
+                "(e.g. python -c \"import secrets;print(secrets.token_urlsafe(32))\").")
 
         fernet = _make_fernet()            # None iff CM_MASTER_KEY unset
         exists = os.path.exists(SECRET_FILE)
@@ -398,6 +400,10 @@ def _session_secret() -> bytes:
                 _persist(raw, encrypt=False)
             else:
                 raw = blob
+                if len(raw) != 32:
+                    raise RuntimeError(
+                        "session_secret.key is corrupt (expected 32 plaintext bytes); "
+                        "refusing to boot.")
             _logging.warning(
                 "session_secret.key stored UNENCRYPTED; set CM_MASTER_KEY to encrypt at rest")
             _SESSION_SECRET_CACHE = raw
@@ -418,6 +424,10 @@ def _session_secret() -> bytes:
         else:
             # Legacy plaintext + key now set → migrate ONCE to encrypted.
             raw = blob
+            if len(raw) != 32:
+                raise RuntimeError(
+                    "session_secret.key is corrupt (expected 32 plaintext bytes); "
+                    "refusing to migrate/boot.")
             _persist(raw, encrypt=True)
             _logging.info("session_secret.key migrated from plaintext to Fernet-encrypted")
         _SESSION_SECRET_CACHE = raw
