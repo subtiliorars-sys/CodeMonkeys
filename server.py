@@ -36,7 +36,8 @@ import pyotp
 import requests
 from enum import Enum
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               PlainTextResponse)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -97,6 +98,8 @@ LOGIN_GLOBAL_MAX_FAILS = int(os.environ.get("LOGIN_GLOBAL_MAX_FAILS", "200"))
 # fail-open on restart). Lives under DATA_DIR like users.json / mcp_tokens.json.
 LOGIN_THROTTLE_FILE = os.path.join(DATA_DIR, "login_throttle.json")
 SESSION_BUDGET_USD = float(os.environ.get("SESSION_BUDGET_USD", "1.00"))
+# Ceiling for a per-session budget override (W10) — a client can't set a runaway cap.
+SESSION_BUDGET_MAX_USD = float(os.environ.get("SESSION_BUDGET_MAX_USD", "50.00"))
 MAX_TURNS = int(os.environ.get("MAX_TURNS", "60"))
 SUBAGENT_MAX_TURNS = int(os.environ.get("SUBAGENT_MAX_TURNS", "25"))
 MAX_SUBAGENTS = 8          # Campaign cap from CORPS_COMMANDER.md
@@ -2906,7 +2909,8 @@ def _session_index_path():
 
 
 def _persist_index():
-    idx = {sid: {"title": s["title"], "repo": s["repo"], "created": s["created"]}
+    idx = {sid: {"title": s["title"], "repo": s["repo"], "created": s["created"],
+                 "budget_usd": s.get("budget_usd")}
            for sid, s in SESSIONS.items()}
     _save_json(_session_index_path(), idx)
 
@@ -2915,13 +2919,35 @@ def _events_path(sid):
     return os.path.join(SESSIONS_DIR, f"{sid}.events.jsonl")
 
 
-def new_session(title="", repo=""):
+def _clamp_budget(budget_usd):
+    """Per-session budget: positive float, capped at a sane ceiling; else None
+    (use the global default). Rejects 0/negative/NaN so a bad value can't make a
+    session run free-forever or halt instantly."""
+    if budget_usd is None:
+        return None
+    try:
+        b = float(budget_usd)
+    except (TypeError, ValueError):
+        return None
+    if b != b or b <= 0:            # NaN or non-positive → ignore
+        return None
+    return min(b, SESSION_BUDGET_MAX_USD)
+
+
+def session_budget(session) -> float:
+    """The effective USD ceiling for a session: its override, else the global."""
+    b = session.get("budget_usd")
+    return b if b else SESSION_BUDGET_USD
+
+
+def new_session(title="", repo="", budget_usd=None):
     sid = uuid.uuid4().hex[:12]
     with _SESSIONS_LOCK:
         SESSIONS[sid] = {
             "id": sid, "title": title or f"session-{sid[:6]}", "repo": repo,
             "created": int(time.time()), "status": "idle", "mode": "default",
             "events": [], "history": [], "spent_usd": 0.0,
+            "budget_usd": _clamp_budget(budget_usd),
             "agents_spawned": 0, "stop_flag": threading.Event(),
             "approvals": {}, "lock": threading.Lock(),
         }
@@ -2936,6 +2962,7 @@ def restore_sessions():
             "id": sid, "title": meta.get("title", sid), "repo": meta.get("repo", ""),
             "created": meta.get("created", 0), "status": "idle", "mode": "default",
             "events": [], "history": [], "spent_usd": 0.0,
+            "budget_usd": _clamp_budget(meta.get("budget_usd")),
             "agents_spawned": 0, "stop_flag": threading.Event(),
             "approvals": {}, "lock": threading.Lock(),
         }
@@ -3153,10 +3180,12 @@ def agent_loop(session, provider, system, history, tool_names, max_turns,
         if session["stop_flag"].is_set():
             emit(session, "error", message="Stopped by user", agent=agent_label)
             break
-        if session["spent_usd"] >= SESSION_BUDGET_USD:
+        _budget = session_budget(session)
+        if session["spent_usd"] >= _budget:
             emit(session, "error", agent=agent_label,
-                 message=f"Session budget ${SESSION_BUDGET_USD:.2f} reached "
-                         f"(spent ${session['spent_usd']:.2f}). Raise SESSION_BUDGET_USD or start a new session.")
+                 message=f"Session budget ${_budget:.2f} reached "
+                         f"(spent ${session['spent_usd']:.2f}). Start a new session "
+                         "or raise the budget.")
             break
         try:
             resp = call_model(provider, system, history, tools)
@@ -3352,6 +3381,7 @@ def run_session_message(session, text):
 class SessionCreate(BaseModel):
     title: str = ""
     repo: str = ""
+    budget_usd: float | None = None     # W10: per-session cap; None → global default
 
 
 class FileUpload(BaseModel):
@@ -3372,8 +3402,8 @@ class ApproveRequest(BaseModel):
 
 @app.post("/api/sessions")
 def session_create(req: SessionCreate, _: str = Depends(verify_user)):
-    s = new_session(req.title, req.repo)
-    return {"id": s["id"]}
+    s = new_session(req.title, req.repo, req.budget_usd)
+    return {"id": s["id"], "budget_usd": session_budget(s)}
 
 
 @app.get("/api/sessions")
@@ -3381,8 +3411,57 @@ def session_list(_: str = Depends(verify_user)):
     return {"sessions": sorted([
         {"id": s["id"], "title": s["title"], "repo": s["repo"],
          "created": s["created"], "status": s["status"],
-         "spent_usd": round(s["spent_usd"], 4)}
+         "spent_usd": round(s["spent_usd"], 4),
+         "budget_usd": round(session_budget(s), 4)}
         for s in SESSIONS.values()], key=lambda x: -x["created"])}
+
+
+def _render_transcript_md(s) -> str:
+    """Render a session's history as readable Markdown (no secrets beyond what
+    is already in the persisted, redacted history)."""
+    lines = [f"# {s['title']}", "",
+             f"- session: `{s['id']}`  ·  repo: `{s['repo'] or '(none)'}`",
+             f"- spent: ${round(s['spent_usd'], 4)}  ·  budget: ${round(session_budget(s), 4)}",
+             ""]
+    role_label = {"user": "User", "assistant": "Assistant", "tool": "Tool"}
+    for h in s.get("history", []):
+        role = h.get("role", "?")
+        if role == "tool":
+            lines.append(f"### Tool result — `{h.get('name', '?')}`")
+            lines.append("```\n" + (h.get("content", "") or "")[:4000] + "\n```")
+        else:
+            lines.append(f"### {role_label.get(role, role)}")
+            if h.get("text"):
+                lines.append(h["text"])
+            for tc in h.get("tool_calls") or []:
+                lines.append(f"- ↳ called `{tc.get('name')}`("
+                             + json.dumps(tc.get("args", {}))[:300] + ")")
+        lines.append("")
+    return "\n".join(lines).strip() + "\n"
+
+
+@app.get("/api/sessions/{sid}/export")
+def session_export(sid: str, format: str = "md", _: str = Depends(verify_user)):
+    """Download a session transcript as Markdown (default) or JSON."""
+    s = SESSIONS.get(sid)
+    if not s:
+        raise HTTPException(404, "No such session")
+    if format == "json":
+        with s["lock"]:
+            payload = {
+                "id": s["id"], "title": s["title"], "repo": s["repo"],
+                "created": s["created"], "spent_usd": round(s["spent_usd"], 6),
+                "budget_usd": round(session_budget(s), 6),
+                "history": s.get("history", []),
+                "events": list(s["events"]),
+            }
+        return JSONResponse(
+            payload,
+            headers={"Content-Disposition": f'attachment; filename="{sid}.json"'})
+    md = _render_transcript_md(s)
+    return PlainTextResponse(
+        md, media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="{sid}.md"'})
 
 
 @app.get("/api/usage")
