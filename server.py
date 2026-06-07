@@ -21,6 +21,7 @@ import hashlib
 import hmac
 import io
 import json
+import math
 import os
 import re
 import secrets
@@ -81,6 +82,7 @@ SECRET_FILE = os.path.join(DATA_DIR, "session_secret.key")
 CORPS_DIR = os.path.join(BASE_DIR, "corps", "agents")
 
 MCP_TOKENS_FILE = os.path.join(DATA_DIR, "mcp_tokens.json")
+DAILY_SPEND_FILE = os.path.join(DATA_DIR, "daily_spend.json")
 # OAuth state entries expire after this many seconds (short window reduces CSRF exposure)
 _OAUTH_STATE_TTL = 600
 
@@ -109,6 +111,11 @@ LOGIN_THROTTLE_FILE = os.path.join(DATA_DIR, "login_throttle.json")
 SESSION_BUDGET_USD = float(os.environ.get("SESSION_BUDGET_USD", "1.00"))
 # Ceiling for a per-session budget override (W10) — a client can't set a runaway cap.
 SESSION_BUDGET_MAX_USD = float(os.environ.get("SESSION_BUDGET_MAX_USD", "50.00"))
+# N2 rolling daily spend cap across ALL sessions. Unset or <=0 → no daily cap
+# (fully backward compatible). When set, agent_loop halts ANY run that would push
+# today's cumulative spend over the ceiling.
+_raw_daily_cap = os.environ.get("SPEND_DAILY_CAP_USD", "")
+SPEND_DAILY_CAP_USD: float = float(_raw_daily_cap) if _raw_daily_cap else 0.0
 MAX_TURNS = int(os.environ.get("MAX_TURNS", "60"))
 SUBAGENT_MAX_TURNS = int(os.environ.get("SUBAGENT_MAX_TURNS", "25"))
 MAX_SUBAGENTS = 8          # Campaign cap from CORPS_COMMANDER.md
@@ -369,6 +376,12 @@ _USERS_LOCK = threading.Lock()
 _MODELS_LOCK = threading.Lock()
 _MCP_LOCK = threading.Lock()
 _SESSIONS_LOCK = threading.Lock()
+# N2 daily spend cap — in-memory state (date string + usd float).
+# Guarded by _DAILY_LOCK; persisted atomically to DAILY_SPEND_FILE after every
+# accrue so a restart doesn't reset the day's total.
+_DAILY_LOCK = threading.Lock()
+_daily_state: dict = {"date": "", "usd": 0.0}  # mutable, always accessed under lock
+_daily_cap_override: float = 0.0  # owner-set in-memory override (0 = not overridden)
 
 
 def _load_json(path, default):
@@ -384,6 +397,64 @@ def _save_json(path, data):
     with open(tmp, "w") as f:
         json.dump(data, f, indent=2)
     os.replace(tmp, path)
+
+
+# ----------------------------------------------------------------- N2 daily spend cap
+
+def _daily_utc_date() -> str:
+    """Today's date in UTC as YYYY-MM-DD."""
+    import datetime
+    return datetime.datetime.utcnow().strftime("%Y-%m-%d")
+
+
+def _load_daily_spend() -> None:
+    """Populate _daily_state from persisted file on boot.
+
+    If the stored date differs from today (UTC), rolls over to zero so yesterday's
+    total never pollutes today's cap check. Called once after restore_sessions().
+    """
+    global _daily_state
+    data = _load_json(DAILY_SPEND_FILE, {})
+    today = _daily_utc_date()
+    with _DAILY_LOCK:
+        if data.get("date") == today:
+            _daily_state = {"date": today, "usd": float(data.get("usd", 0.0))}
+        else:
+            _daily_state = {"date": today, "usd": 0.0}
+
+
+def _persist_daily_spend() -> None:
+    """Atomically write _daily_state to disk. Must be called under _DAILY_LOCK."""
+    _save_json(DAILY_SPEND_FILE, {"date": _daily_state["date"],
+                                  "usd": round(_daily_state["usd"], 6)})
+
+
+def _accrue_daily(usd: float) -> None:
+    """Add usd to today's running total (thread-safe). Rolls over at UTC midnight."""
+    global _daily_state
+    today = _daily_utc_date()
+    with _DAILY_LOCK:
+        if _daily_state["date"] != today:
+            _daily_state = {"date": today, "usd": 0.0}
+        _daily_state["usd"] += usd
+        _persist_daily_spend()
+
+
+def daily_total_usd() -> float:
+    """Return today's cumulative spend (USD) across all sessions (thread-safe)."""
+    today = _daily_utc_date()
+    with _DAILY_LOCK:
+        if _daily_state["date"] != today:
+            return 0.0
+        return _daily_state["usd"]
+
+
+def effective_daily_cap() -> float:
+    """The active daily cap: owner override if set, else SPEND_DAILY_CAP_USD.
+    Returns 0.0 when no cap is configured (i.e., unlimited)."""
+    if _daily_cap_override > 0:
+        return _daily_cap_override
+    return max(SPEND_DAILY_CAP_USD, 0.0)
 
 
 # ----------------------------------------------------------------- auth
@@ -2932,6 +3003,7 @@ def _debate_verify(session, cmd):
             notes.append(f"{lens}: REFUTE (verifier error: {e})")
             continue
         session["spent_usd"] = session.get("spent_usd", 0) + usd
+        _accrue_daily(usd)   # N2 red-team R3: debate-verify spend must count toward the daily cap too
         emit(session, "cost", usd=round(usd, 6), in_tokens=resp["in_tokens"],
              out_tokens=resp["out_tokens"], model=provider["model"],
              agent=f"debate-verify:{lens}")
@@ -3554,6 +3626,7 @@ def restore_sessions():
 
 
 restore_sessions()
+_load_daily_spend()   # N2: boot from persisted today-total (rolls over at UTC midnight)
 
 
 # ---- secret redaction --------------------------------------------------------
@@ -3805,6 +3878,17 @@ def agent_loop(session, provider, system, history, tool_names, max_turns,
             emit(session, "error", message="Stopped by user", agent=agent_label)
             _set_outcome("stopped")
             break
+        # N2: daily cap check — whichever limit trips first wins.
+        _dcap = effective_daily_cap()
+        if _dcap > 0:
+            _dtotal = daily_total_usd()
+            if _dtotal >= _dcap:
+                emit(session, "error", agent=agent_label,
+                     message=f"Daily spend cap ${_dcap:.2f} reached "
+                             f"(spent ${_dtotal:.2f} today). "
+                             "Runs are paused until tomorrow (UTC) or the owner raises the cap.")
+                _set_outcome("daily_cap")
+                break
         _budget = session_budget(session)
         if session["spent_usd"] >= _budget:
             emit(session, "error", agent=agent_label,
@@ -3838,6 +3922,7 @@ def agent_loop(session, provider, system, history, tool_names, max_turns,
                 break
         usd = call_cost(provider, resp["in_tokens"], resp["out_tokens"])
         session["spent_usd"] += usd
+        _accrue_daily(usd)   # N2: persist to daily running total (thread-safe)
         emit(session, "cost", usd=round(usd, 6), in_tokens=resp["in_tokens"],
              out_tokens=resp["out_tokens"], model=provider["model"], agent=agent_label)
         text_out = _redact(resp["text"])      # scrub before model-context reuse + persist
@@ -4604,6 +4689,63 @@ def usage_summary(_: str = Depends(verify_owner)):
             "sessions": per_session}
 
 
+# ----------------------------------------------------------------- N2 daily spend endpoints
+
+@app.get("/api/spend/today")
+def spend_today(_: str = Depends(verify_owner)):
+    """Owner-only: today's rolling daily spend vs the cap. No keys or PII."""
+    cap = effective_daily_cap()
+    total = daily_total_usd()
+    remaining = max(cap - total, 0.0) if cap > 0 else None
+    return {
+        "date": _daily_utc_date(),
+        "usd": round(total, 6),
+        "cap": round(cap, 6) if cap > 0 else None,
+        "remaining": round(remaining, 6) if remaining is not None else None,
+    }
+
+
+class DailyCapRequest(BaseModel):
+    usd: float
+
+
+@app.post("/api/spend/cap")
+def set_daily_cap(req: DailyCapRequest, _: str = Depends(verify_owner)):
+    """Owner-only: set an in-memory daily cap override for the rest of today.
+
+    usd > 0  → raise/set cap to this value for the remainder of the day.
+    usd <= 0 → clear the in-memory override (falls back to SPEND_DAILY_CAP_USD).
+
+    The override is NOT persisted — a restart reverts to the env-var value, which
+    is intentional: a human restart is a natural circuit-break point.
+    """
+    global _daily_cap_override
+    # N2 red-team R4: reject non-finite (Infinity/NaN) — an Inf override would
+    # silently disable the cap (the one feature whose job is cost protection).
+    if not math.isfinite(req.usd):
+        raise HTTPException(422, "usd must be a finite number")
+    with _DAILY_LOCK:
+        _daily_cap_override = max(req.usd, 0.0)
+    cap = effective_daily_cap()
+    return {
+        "override_usd": round(_daily_cap_override, 6),
+        "effective_cap": round(cap, 6) if cap > 0 else None,
+        "note": "override not persisted — reverts to SPEND_DAILY_CAP_USD on restart",
+    }
+
+
+@app.post("/api/spend/reset")
+def reset_daily_spend(_: str = Depends(verify_owner)):
+    """Owner-only: zero today's running total (e.g. to re-enable runs after a cap hit
+    without waiting for UTC midnight). Persists the reset so it survives a restart."""
+    global _daily_state
+    today = _daily_utc_date()
+    with _DAILY_LOCK:
+        _daily_state = {"date": today, "usd": 0.0}
+        _persist_daily_spend()
+    return {"date": today, "usd": 0.0, "note": "daily counter reset"}
+
+
 def _cap_message(text: str) -> str:
     """Bound a single user message so one request can't blow memory/context."""
     text = text or ""
@@ -5100,7 +5242,7 @@ def swarm_state(_: str = Depends(verify_user)):
         "stats": {
             "sessions": len(SESSIONS),
             "running": sum(1 for s in SESSIONS.values() if s["status"] != "idle"),
-            "spend_today_usd": round(sum(s["spent_usd"] for s in SESSIONS.values()), 4),
+            "spend_today_usd": round(daily_total_usd(), 4),   # N2: authoritative daily counter
             "budget_per_session_usd": SESSION_BUDGET_USD,
         },
     }
