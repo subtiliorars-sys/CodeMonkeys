@@ -39,6 +39,12 @@ keep that radius away from everything else.
   (MFA not yet enrolled) — the throttle is their sole barrier and is deliberately
   not cleared until `/api/account/setup` completes. See "Known limitations" for
   tunables and residuals.
+- Passkeys are self-service revocable: `GET /api/webauthn/credentials` lists the
+  caller's own passkeys (handles only — no key material) and `DELETE
+  /api/webauthn/credentials/{cred_id}` removes one. The filter only ever touches
+  the **caller's own** credential list (no IDOR — a known foreign `cred_id` finds
+  no match → 404). Removing every passkey is allowed: PIN+TOTP remain, so it can
+  never lock the account out.
 - Lockout recovery only via `fly ssh console` (`scripts/reset_access.py`)
 
 ## Sandboxing & limits
@@ -76,12 +82,13 @@ keep that radius away from everything else.
   closed:** a verifier error, garbled verdict, or missing provider counts as a
   refutal. Verifier calls are metered into the session ledger and emit
   `debate_verify` events. default/plan keep the human approval gate unchanged.
-  **Scope & residual:** this gates the `bash` tool only — auto-mode **MCP** tool
-  calls remain ungated (an Owner-added connector is trusted; see the MCP
-  section). The verifiers also share `_is_risky`'s static-match residual above,
-  and an LLM verdict is probabilistic. Treat this as **damage reduction for auto
-  mode, never an authorization boundary** — the default-mode human gate is the
-  only real boundary.
+  **Scope & residual:** the same panel gates risky `bash` **and** every
+  auto-mode **MCP** tool call (W7 — an Owner-added connector is still a
+  prompt-injection-reachable side effect with no human in the loop). The
+  verifiers share `_is_risky`'s static-match residual above (for bash), and an
+  LLM verdict is probabilistic. Treat this as **damage reduction for auto mode,
+  never an authorization boundary** — the default-mode human gate is the only
+  real boundary.
 - Per-session USD budget halts the loop; subagent spawn cap 8; recursion depth 1
 - **Plan mode is read-only, end to end.** Its toolset is read/list/glob/grep +
   `spawn_agent` + `save_spec`; it has no write_file/edit_file/bash. Subagents

@@ -36,7 +36,8 @@ import pyotp
 import requests
 from enum import Enum
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               PlainTextResponse)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -97,6 +98,8 @@ LOGIN_GLOBAL_MAX_FAILS = int(os.environ.get("LOGIN_GLOBAL_MAX_FAILS", "200"))
 # fail-open on restart). Lives under DATA_DIR like users.json / mcp_tokens.json.
 LOGIN_THROTTLE_FILE = os.path.join(DATA_DIR, "login_throttle.json")
 SESSION_BUDGET_USD = float(os.environ.get("SESSION_BUDGET_USD", "1.00"))
+# Ceiling for a per-session budget override (W10) — a client can't set a runaway cap.
+SESSION_BUDGET_MAX_USD = float(os.environ.get("SESSION_BUDGET_MAX_USD", "50.00"))
 MAX_TURNS = int(os.environ.get("MAX_TURNS", "60"))
 SUBAGENT_MAX_TURNS = int(os.environ.get("SUBAGENT_MAX_TURNS", "25"))
 MAX_SUBAGENTS = 8          # Campaign cap from CORPS_COMMANDER.md
@@ -156,6 +159,16 @@ for _d in (DATA_DIR, SESSIONS_DIR, WORKSPACE_DIR):
     os.makedirs(_d, exist_ok=True)
 
 app = FastAPI(title="CodeMonkeys")
+_BOOT_TIME = int(time.time())
+
+
+@app.get("/healthz")
+def healthz():
+    """Unauthenticated liveness/readiness probe for Fly health checks.
+    Deliberately leaks NOTHING sensitive: no usernames, keys, repos, or model
+    config — just that the process is up and how many sessions are loaded."""
+    return {"status": "ok", "uptime_s": int(time.time()) - _BOOT_TIME,
+            "sessions": len(SESSIONS)}
 
 
 @app.middleware("http")
@@ -699,6 +712,49 @@ def _user_credentials(user_entry):
 def _flat_options(data):
     d = _fido_clean(dict(data))
     return d.get("publicKey", d)  # tolerate either wrapped or flat shapes
+
+
+def _credential_id_hex(b64: str):
+    """Stable handle for a stored passkey: hex of its credential_id, or None if
+    the blob can't be parsed."""
+    try:
+        return AttestedCredentialData(base64.b64decode(b64)).credential_id.hex()
+    except Exception:
+        return None
+
+
+@app.get("/api/webauthn/credentials")
+def webauthn_credentials_list(username: str = Depends(verify_token)):
+    """List the caller's own registered passkeys (handles only — no key material)."""
+    user = load_users().get(username, {})
+    out = []
+    for i, b64 in enumerate(user.get("webauthn_credentials", [])):
+        cid = _credential_id_hex(b64)
+        out.append({"id": cid or f"unparsable-{i}", "index": i,
+                    "short": (cid[:12] if cid else "????")})
+    return {"credentials": out, "count": len(out)}
+
+
+@app.delete("/api/webauthn/credentials/{cred_id}")
+def webauthn_credentials_delete(cred_id: str, username: str = Depends(verify_token)):
+    """Revoke one of the caller's OWN passkeys by its credential_id hex handle.
+    PIN+TOTP remain, so removing every passkey never locks the account out."""
+    with _USERS_LOCK:
+        users = load_users()
+        entry = users.get(username)
+        if not entry:
+            raise HTTPException(404, "No such user")
+        creds = entry.get("webauthn_credentials", [])
+        # Handle per credential mirrors the list endpoint: parsed hex, or the
+        # `unparsable-<i>` fallback — so a corrupt/garbage blob is still prunable
+        # (red-team R5). Match on either form.
+        kept = [b64 for i, b64 in enumerate(creds)
+                if (_credential_id_hex(b64) or f"unparsable-{i}") != cred_id]
+        if len(kept) == len(creds):
+            raise HTTPException(404, "No passkey with that id on your account")
+        entry["webauthn_credentials"] = kept
+        save_users(users)
+    return {"ok": True, "removed": cred_id, "remaining": len(kept)}
 
 
 @app.post("/api/webauthn/register/begin")
@@ -2044,6 +2100,14 @@ h1{{color:#ef4444;}}</style></head>
 #   {"role": "tool", "tool_call_id": str, "name": str, "content": str}
 
 
+# Transient provider failures worth a retry (rate limit / gateway / overload).
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504, 529})
+
+
+class TransientModelError(RuntimeError):
+    """A provider error that is worth retrying (rate-limit / 5xx / network)."""
+
+
 def _chat_openai(provider, system, history, tools, max_tokens):
     messages = [{"role": "system", "content": system}]
     for h in history:
@@ -2065,11 +2129,16 @@ def _chat_openai(provider, system, history, tools, max_tokens):
         payload["tools"] = [{"type": "function", "function":
                              {"name": t["name"], "description": t["description"],
                               "parameters": t["parameters"]}} for t in tools]
-    r = requests.post(
-        provider["base_url"].rstrip("/") + "/chat/completions",
-        headers={"Authorization": f"Bearer {provider['api_key']}",
-                 "Content-Type": "application/json"},
-        json=payload, timeout=300)
+    try:
+        r = requests.post(
+            provider["base_url"].rstrip("/") + "/chat/completions",
+            headers={"Authorization": f"Bearer {provider['api_key']}",
+                     "Content-Type": "application/json"},
+            json=payload, timeout=300)
+    except requests.exceptions.RequestException as e:
+        raise TransientModelError(f"{provider['name']} network error: {e}")
+    if r.status_code in _RETRYABLE_STATUS:
+        raise TransientModelError(f"{provider['name']} HTTP {r.status_code}: {r.text[:200]}")
     if r.status_code >= 400:
         raise RuntimeError(f"{provider['name']} HTTP {r.status_code}: {r.text[:400]}")
     data = r.json()
@@ -2132,10 +2201,46 @@ def _chat_anthropic(provider, system, history, tools, max_tokens):
             "in_tokens": resp.usage.input_tokens, "out_tokens": resp.usage.output_tokens}
 
 
-def call_model(provider, system, history, tools, max_tokens=8192):
+_MODEL_RETRIES = 3            # total attempts on a transient failure
+_MODEL_BACKOFF_S = (1, 3, 8)  # fixed backoff between attempts (no jitter: testable)
+
+
+def _call_provider(provider, system, history, tools, max_tokens):
     if provider["kind"] == "anthropic":
-        return _chat_anthropic(provider, system, history, tools, max_tokens)
+        try:
+            return _chat_anthropic(provider, system, history, tools, max_tokens)
+        except Exception as e:
+            # Surface anthropic SDK overload/rate-limit/5xx as retryable.
+            if getattr(e, "status_code", None) in _RETRYABLE_STATUS:
+                raise TransientModelError(str(e))
+            raise
     return _chat_openai(provider, system, history, tools, max_tokens)
+
+
+def call_model(provider, system, history, tools, max_tokens=8192):
+    """Call the provider, retrying transient failures (429/5xx/network) with a
+    bounded fixed backoff. Non-transient errors (bad key, 400) raise immediately."""
+    last = None
+    for attempt in range(_MODEL_RETRIES):
+        try:
+            return _call_provider(provider, system, history, tools, max_tokens)
+        except TransientModelError as e:
+            last = e
+            if attempt < _MODEL_RETRIES - 1:
+                time.sleep(_MODEL_BACKOFF_S[min(attempt, len(_MODEL_BACKOFF_S) - 1)])
+    raise last
+
+
+def _pricier_provider(cfg, current):
+    """Escalation-on-failure: the cheapest USABLE provider strictly pricier than
+    `current` (by output cost), or None. Lets the loop retry one tier up when a
+    provider keeps failing rather than dying on the cheapest one."""
+    cur_out = current.get("output_cost_per_m", 0)
+    cur_model = current.get("model")
+    candidates = [_resolve(p) for _, p in _usable(cfg)]
+    pricier = [p for p in candidates
+               if p.get("output_cost_per_m", 0) > cur_out and p.get("model") != cur_model]
+    return pricier[0] if pricier else None
 
 
 def call_cost(provider, in_tokens, out_tokens):
@@ -2247,7 +2352,7 @@ def t_grep(args):
 # provider counts as a refutal. This is damage-reduction for auto mode, NOT an
 # authorization boundary (an LLM verdict is probabilistic and shares _is_risky's
 # static-match residual); the default-mode human gate remains the real boundary.
-# Scope: bash only — auto-mode MCP calls are still ungated (see SECURITY.md).
+# Scope: risky bash AND auto-mode MCP tool calls (W7) — same panel guards both.
 # default/plan keep the human gate unchanged.
 _DEBATE_LENSES = (
     ("intent", "Does this command match the user's stated objective and the "
@@ -2804,7 +2909,8 @@ def _session_index_path():
 
 
 def _persist_index():
-    idx = {sid: {"title": s["title"], "repo": s["repo"], "created": s["created"]}
+    idx = {sid: {"title": s["title"], "repo": s["repo"], "created": s["created"],
+                 "budget_usd": s.get("budget_usd")}
            for sid, s in SESSIONS.items()}
     _save_json(_session_index_path(), idx)
 
@@ -2813,13 +2919,35 @@ def _events_path(sid):
     return os.path.join(SESSIONS_DIR, f"{sid}.events.jsonl")
 
 
-def new_session(title="", repo=""):
+def _clamp_budget(budget_usd):
+    """Per-session budget: positive float, capped at a sane ceiling; else None
+    (use the global default). Rejects 0/negative/NaN so a bad value can't make a
+    session run free-forever or halt instantly."""
+    if budget_usd is None:
+        return None
+    try:
+        b = float(budget_usd)
+    except (TypeError, ValueError):
+        return None
+    if b != b or b <= 0:            # NaN or non-positive → ignore
+        return None
+    return min(b, SESSION_BUDGET_MAX_USD)
+
+
+def session_budget(session) -> float:
+    """The effective USD ceiling for a session: its override, else the global."""
+    b = session.get("budget_usd")
+    return b if b else SESSION_BUDGET_USD
+
+
+def new_session(title="", repo="", budget_usd=None):
     sid = uuid.uuid4().hex[:12]
     with _SESSIONS_LOCK:
         SESSIONS[sid] = {
             "id": sid, "title": title or f"session-{sid[:6]}", "repo": repo,
             "created": int(time.time()), "status": "idle", "mode": "default",
             "events": [], "history": [], "spent_usd": 0.0,
+            "budget_usd": _clamp_budget(budget_usd),
             "agents_spawned": 0, "stop_flag": threading.Event(),
             "approvals": {}, "lock": threading.Lock(),
         }
@@ -2834,6 +2962,7 @@ def restore_sessions():
             "id": sid, "title": meta.get("title", sid), "repo": meta.get("repo", ""),
             "created": meta.get("created", 0), "status": "idle", "mode": "default",
             "events": [], "history": [], "spent_usd": 0.0,
+            "budget_usd": _clamp_budget(meta.get("budget_usd")),
             "agents_spawned": 0, "stop_flag": threading.Event(),
             "approvals": {}, "lock": threading.Lock(),
         }
@@ -2989,13 +3118,20 @@ def make_executor(session, allowed, agent_label=None, depth=0):
                     return f"ERROR: MCP tool '{name}' not found", False
                 srv_id, tool_name, read_only = entry
                 # readOnlyHint is remote-controlled and not trusted for gating.
+                _mcp_label = f"MCP {name} {json.dumps(args)[:200]}"
                 if session.get("mode") != "auto":
-                    approved = request_approval(
-                        session,
-                        f"MCP {name} {json.dumps(args)[:200]}"
-                    )
+                    approved = request_approval(session, _mcp_label)
                     if not approved:
                         return "DENIED", False
+                else:
+                    # W7 — auto mode has no human gate; an Owner-added connector
+                    # is still a prompt-injection-reachable side effect. Run the
+                    # same debate-verify panel over the pending MCP call. (Local
+                    # name avoids shadowing the closure's `allowed` allowlist.)
+                    _verdict_ok, _summary = _debate_verify(session, _mcp_label)
+                    if not _verdict_ok:
+                        return ("BLOCKED by debate-verify — the verifier panel "
+                                f"refused this auto-mode MCP call: {_summary}", False)
                 return _mcp_call_tool(srv_id, tool_name, args), True
             if name == "bash":
                 return t_bash(args, session=session), True
@@ -3044,16 +3180,34 @@ def agent_loop(session, provider, system, history, tool_names, max_turns,
         if session["stop_flag"].is_set():
             emit(session, "error", message="Stopped by user", agent=agent_label)
             break
-        if session["spent_usd"] >= SESSION_BUDGET_USD:
+        _budget = session_budget(session)
+        if session["spent_usd"] >= _budget:
             emit(session, "error", agent=agent_label,
-                 message=f"Session budget ${SESSION_BUDGET_USD:.2f} reached "
-                         f"(spent ${session['spent_usd']:.2f}). Raise SESSION_BUDGET_USD or start a new session.")
+                 message=f"Session budget ${_budget:.2f} reached "
+                         f"(spent ${session['spent_usd']:.2f}). Start a new session "
+                         "or raise the budget.")
             break
         try:
             resp = call_model(provider, system, history, tools)
         except Exception as e:
-            emit(session, "error", message=f"Model call failed: {e}", agent=agent_label)
-            break
+            # Escalation-on-failure: try one tier up before giving up. The cost
+            # governor picks cheapest-first; a persistently-failing cheap
+            # provider shouldn't kill the whole run if a pricier one is keyed.
+            escalated = _pricier_provider(load_models(), provider) if depth == 0 else None
+            if escalated is not None:
+                emit(session, "error", agent=agent_label,
+                     message=f"Model call failed ({e}); escalating to "
+                             f"{escalated['model']}")
+                try:
+                    resp = call_model(escalated, system, history, tools)
+                    provider = escalated      # stick with the working tier
+                except Exception as e2:
+                    emit(session, "error", agent=agent_label,
+                         message=f"Model call failed after escalation: {e2}")
+                    break
+            else:
+                emit(session, "error", message=f"Model call failed: {e}", agent=agent_label)
+                break
         usd = call_cost(provider, resp["in_tokens"], resp["out_tokens"])
         session["spent_usd"] += usd
         emit(session, "cost", usd=round(usd, 6), in_tokens=resp["in_tokens"],
@@ -3227,6 +3381,7 @@ def run_session_message(session, text):
 class SessionCreate(BaseModel):
     title: str = ""
     repo: str = ""
+    budget_usd: float | None = None     # W10: per-session cap; None → global default
 
 
 class FileUpload(BaseModel):
@@ -3247,8 +3402,8 @@ class ApproveRequest(BaseModel):
 
 @app.post("/api/sessions")
 def session_create(req: SessionCreate, _: str = Depends(verify_user)):
-    s = new_session(req.title, req.repo)
-    return {"id": s["id"]}
+    s = new_session(req.title, req.repo, req.budget_usd)
+    return {"id": s["id"], "budget_usd": session_budget(s)}
 
 
 @app.get("/api/sessions")
@@ -3256,7 +3411,8 @@ def session_list(_: str = Depends(verify_user)):
     return {"sessions": sorted([
         {"id": s["id"], "title": s["title"], "repo": s["repo"],
          "created": s["created"], "status": s["status"],
-         "spent_usd": round(s["spent_usd"], 4)}
+         "spent_usd": round(s["spent_usd"], 4),
+         "budget_usd": round(session_budget(s), 4)}
         for s in SESSIONS.values()], key=lambda x: -x["created"])}
 
 
@@ -3306,6 +3462,77 @@ def blackboard_delete(slug: str, _: str = Depends(verify_owner)):
         except OSError as e:
             raise HTTPException(500, f"Could not delete: {e}")
     return {"ok": True, "removed": _bb_slug(slug)}
+
+
+def _render_transcript_md(s) -> str:
+    """Render a session's history as readable Markdown (no secrets beyond what
+    is already in the persisted, redacted history)."""
+    lines = [f"# {s['title']}", "",
+             f"- session: `{s['id']}`  ·  repo: `{s['repo'] or '(none)'}`",
+             f"- spent: ${round(s['spent_usd'], 4)}  ·  budget: ${round(session_budget(s), 4)}",
+             ""]
+    role_label = {"user": "User", "assistant": "Assistant", "tool": "Tool"}
+    for h in s.get("history", []):
+        role = h.get("role", "?")
+        if role == "tool":
+            lines.append(f"### Tool result — `{h.get('name', '?')}`")
+            lines.append("```\n" + (h.get("content", "") or "")[:4000] + "\n```")
+        else:
+            lines.append(f"### {role_label.get(role, role)}")
+            if h.get("text"):
+                lines.append(h["text"])
+            for tc in h.get("tool_calls") or []:
+                lines.append(f"- ↳ called `{tc.get('name')}`("
+                             + json.dumps(tc.get("args", {}))[:300] + ")")
+        lines.append("")
+    return "\n".join(lines).strip() + "\n"
+
+
+@app.get("/api/sessions/{sid}/export")
+def session_export(sid: str, format: str = "md", _: str = Depends(verify_user)):
+    """Download a session transcript as Markdown (default) or JSON."""
+    s = SESSIONS.get(sid)
+    if not s:
+        raise HTTPException(404, "No such session")
+    if format == "json":
+        with s["lock"]:
+            payload = {
+                "id": s["id"], "title": s["title"], "repo": s["repo"],
+                "created": s["created"], "spent_usd": round(s["spent_usd"], 6),
+                "budget_usd": round(session_budget(s), 6),
+                "history": s.get("history", []),
+                "events": list(s["events"]),
+            }
+        return JSONResponse(
+            payload,
+            headers={"Content-Disposition": f'attachment; filename="{sid}.json"'})
+    md = _render_transcript_md(s)
+    return PlainTextResponse(
+        md, media_type="text/markdown",
+        headers={"Content-Disposition": f'attachment; filename="{sid}.md"'})
+
+
+@app.get("/api/usage")
+def usage_summary(_: str = Depends(verify_owner)):
+    """Owner-only ledger rollup: per-session and total USD + token counts,
+    derived from the persisted `cost` events. No keys or prompt content."""
+    per_session, tot_usd, tot_in, tot_out = [], 0.0, 0, 0
+    for s in SESSIONS.values():
+        with s["lock"]:
+            costs = [e for e in s["events"] if e.get("type") == "cost"]
+        usd = sum(e.get("usd", 0) for e in costs)
+        in_tok = sum(e.get("in_tokens", 0) for e in costs)
+        out_tok = sum(e.get("out_tokens", 0) for e in costs)
+        tot_usd += usd
+        tot_in += in_tok
+        tot_out += out_tok
+        per_session.append({
+            "id": s["id"], "title": s["title"], "calls": len(costs),
+            "usd": round(usd, 6), "in_tokens": in_tok, "out_tokens": out_tok})
+    per_session.sort(key=lambda x: -x["usd"])
+    return {"total": {"usd": round(tot_usd, 6), "in_tokens": tot_in,
+                      "out_tokens": tot_out, "sessions": len(per_session)},
+            "sessions": per_session}
 
 
 def _cap_message(text: str) -> str:

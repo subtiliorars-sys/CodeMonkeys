@@ -27,6 +27,28 @@ human.** That loop is the thing to own.
 | 9 | **Connector marketplace UI** | Poll the MCP Registry, one-click add servers — the realistic "self-healing connectors." Depends on #1 (now shipped). | M |
 | 10 | **Two-layer KB** | Hand-authored rules + deterministically-generated project facts; build fails if secrets would leak into context. (OmniVerse pattern.) | S |
 
+## Wave 3 — safe self-contained items (ideated 2026-06-07, owner-requested)
+
+All Tier-A safe: docs/tests/own-branch code, no deploy, no owner secrets, no
+irreversible/external actions. Each ships as `work/<topic>` + an UNMERGED PR
+(owner merges). Security-touching items get a red-team pass. Grouped into PRs
+to keep review sane and limit single-file (`server.py`) merge pain.
+
+| # | Item | Group / PR | Risk |
+|---|------|-----------|------|
+| ~~W1~~ | ✅ **`/healthz` liveness endpoint** — unauthenticated, leaks nothing (status/uptime/session-count). PR A. | A (ops) | low |
+| ~~W2~~ | ✅ **Escalation-on-failure** — `agent_loop` retries one tier up (`_pricier_provider`) before dying; sticks with the working tier. PR A. | A (ops) | low |
+| ~~W3~~ | ✅ **Model-call retry w/ backoff** — `call_model` retries transient 429/5xx/network (`TransientModelError`, 3 tries, fixed 1/3/8s); 4xx not retried. PR A. | A (ops) | low |
+| ~~W4~~ | ✅ **Usage/cost summary** — Owner-only `/api/usage` rollup from `cost` events. PR A. | A (ops) | low |
+| W5 | **Harden `_is_risky`** — add `dd`/`mkfs`/`chmod -R`/`chown -R`/`> /dev/…`/`curl\|sh`/`git push --force`/`truncate` to the approval gate + tests. | B (sec) | low |
+| W6 | **Secret-scan write guard** — flag/log when `write_file`/`apply_patch` would persist an obvious secret (API key/token/PEM) into the workspace. | B (sec) | low |
+| W7 | **Extend debate-verify to risky auto-mode MCP calls** — MED-2 follow-up; stacks on #22. | E (sec) | low |
+| W8 | **Blackboard management API + ⚙ panel** — Owner-only list/read/delete of boards; stacks on #21. | F (ux) | low |
+| W9 | **Session transcript export** — download a session as Markdown/JSON. | C (ux) | low |
+| W10 | **Per-session budget override** — set the USD budget at session creation (today only the global `SESSION_BUDGET_USD`). | C (ux) | low |
+| W11 | **Two-layer KB (#10)** — hand-authored rules + deterministically-generated project facts injected into context, with a secret-leak guard on generation. | C (ux) | low |
+| W12 | **Remove-passkey UI + endpoint** — close the known gap (passkeys can be added but not revoked); Owner-gated. | D (auth) | med — red-team |
+
 ## MCP follow-ups (carved out of #1) — ALL SHIPPED 2026-06-06
 
 - ~~**#1a — OAuth 2.1 client flow**~~ ✅ auth-code + PKCE S256; tokens in
