@@ -102,7 +102,8 @@ def test_no_provider_fails_closed(monkeypatch):
 
 def _cfg(*outs):
     return {"providers": {f"p{i}": {"key": "k", "label": f"p{i}", "kind": "openai",
-                                    "model": f"m{i}", "out": o}
+                                    "model": f"m{i}", "out": o,
+                                    "base_url": "http://x"}
                           for i, o in enumerate(outs)}}
 
 
