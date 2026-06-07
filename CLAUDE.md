@@ -27,3 +27,11 @@ and the next steps. Backlog in `docs/IDEATION.md`.
   gates, fail-closed auth, budget). Changes touching them need a red-team pass.
 - Verify before claiming done: `./.venv/bin/python -c "import server"` minimum;
   run the smoke flow in docs/SETUP.md → Local development for behavior changes.
+
+<!-- BEGIN agent-corps governance (managed) -->
+## Governance — Tier D (Agentic / acts in the world)
+This repo is governed under the Corps Constitution (agent-corps/CORPS_CONSTITUTION.md),
+**Tier D**. Its binding invariant checklist + dated audit live in `GOVERNANCE.md`;
+read it before touching auth/exec/data/money surfaces. The git-guards `.githooks/`
+enforce the mechanical invariants — do not bypass with `--no-verify`.
+<!-- END agent-corps governance (managed) -->

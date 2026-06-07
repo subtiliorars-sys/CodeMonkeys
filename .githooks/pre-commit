@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+#
+# Composable pre-commit DISPATCHER (agent-corps git-guards kit).
+# Runs every script in .githooks/pre-commit.d/ in lexical order. A blocking
+# sub-hook (e.g. 10-secret-scan) exits non-zero to ABORT the commit; an advisory
+# sub-hook (e.g. 20-add-all-advisory) exits 0 and only warns.
+#
+# Sub-hooks are invoked via `bash <file>` so they need no +x bit (a fresh
+# checkout often drops it). Bypass everything (rare): git commit --no-verify
+#
+set -uo pipefail
+
+top="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+d="$top/.githooks/pre-commit.d"
+[ -d "$d" ] || exit 0
+
+status=0
+for h in "$d"/*; do
+  [ -f "$h" ] || continue
+  bash "$h" "$@" || status=$?
+done
+exit "$status"

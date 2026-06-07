@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+#
+# Composable pre-push DISPATCHER (agent-corps git-guards kit).
+# Runs every script in .githooks/pre-push.d/ in lexical order. git delivers the
+# pushed-ref list on STDIN once; this dispatcher captures it and re-feeds the same
+# list to each sub-hook (so both 10-deploy-gate and 20-brand-lint can read it).
+#
+# Sub-hooks are invoked via `bash <file>` (no +x bit needed). git passes the
+# remote name + url as $1/$2; those are forwarded.
+# Bypass everything (emergencies only): git push --no-verify
+#
+set -uo pipefail
+
+top="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+d="$top/.githooks/pre-push.d"
+[ -d "$d" ] || exit 0
+
+refs="$(cat)"   # consume the stdin ref list exactly once
+status=0
+for h in "$d"/*; do
+  [ -f "$h" ] || continue
+  printf '%s\n' "$refs" | bash "$h" "$@" || status=$?
+done
+exit "$status"

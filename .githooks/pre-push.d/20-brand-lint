@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+#
+# pre-push.d/20-brand-lint — BLOCKING, overridable (agent-corps git-guards kit).
+# T-4 no-endorsement-entanglement. Scans PUBLIC-SURFACE tracked files for
+# prohibited brand / program-affiliation strings (whole-word, case-insensitive)
+# and blocks the push on a hit. Brands stay separate (OmniTender != MM != Cairn ...)
+# and public surfaces imply NO affiliation with AA or any 12-step program.
+#
+# Wordlist:    .githooks/brand-wordlist.txt   (one pattern/line; '#' = comment)
+#              -> NO wordlist => no-op. Prune THIS repo's own brand from the list.
+# Scan paths:  env BRAND_SCAN_PATHS  >  .githooks/brand-scan-paths  >  default 'static'
+#              Preview repos (name contains 'preview', or a .githooks/preview-repo
+#              marker file) scan the WHOLE tree.
+# Override:    ALLOW_BRAND_STRINGS=1 git push   (or git push --no-verify)
+# CI use:      BRAND_SCAN_PATHS="static docs" bash .githooks/pre-push.d/20-brand-lint
+#
+set -uo pipefail
+[ "${ALLOW_BRAND_STRINGS:-}" = "1" ] && exit 0
+
+top="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 0
+hooks_dir="$top/.githooks"
+wordlist="$hooks_dir/brand-wordlist.txt"
+[ -f "$wordlist" ] || exit 0   # no wordlist => nothing to enforce
+
+# Resolve scan paths.
+paths=""
+if [ -n "${BRAND_SCAN_PATHS:-}" ]; then
+  paths="$BRAND_SCAN_PATHS"
+elif [ -f "$hooks_dir/brand-scan-paths" ]; then
+  paths="$(grep -vE '^[[:space:]]*(#|$)' "$hooks_dir/brand-scan-paths" | tr '\n' ' ')"
+fi
+[ -n "${paths// /}" ] || paths="static"   # never leave it empty (would scan ALL files)
+
+# Preview repos: scan everything.
+if [ -f "$hooks_dir/preview-repo" ] || basename "$top" | grep -qi 'preview'; then
+  paths="."
+fi
+
+# Any tracked files under the scan paths? (NUL-safe: never store the list in a
+# string — command substitution strips NUL bytes and would concatenate names.)
+# shellcheck disable=SC2086
+git ls-files -z -- $paths 2>/dev/null | grep -qz . || exit 0
+
+hits=""
+while IFS= read -r pat; do
+  case "$pat" in ''|'#'*) continue ;; esac
+  pat="${pat%"${pat##*[![:space:]]}"}"   # rstrip trailing whitespace
+  [ -n "$pat" ] || continue
+  # Re-list (cheap) and pipe NUL-delimited straight to xargs -0 — no var round-trip.
+  # shellcheck disable=SC2086
+  h="$(git ls-files -z -- $paths 2>/dev/null | xargs -0 grep -nwiIE -- "$pat" 2>/dev/null || true)"
+  [ -n "$h" ] && hits="$hits"$'\n'"== match: '$pat' =="$'\n'"$h"
+done < "$wordlist"
+
+if [ -n "$hits" ]; then
+  {
+    echo ""
+    echo "🚫  PUSH BLOCKED (T-4) — brand / program-affiliation strings on public surfaces:"
+    printf '%s\n' "$hits"
+    echo ""
+    echo "Brands stay separate; public surfaces imply no AA / program affiliation."
+    echo "Fix the copy, prune your OWN brand from .githooks/brand-wordlist.txt,"
+    echo "or override deliberately:  ALLOW_BRAND_STRINGS=1 git push"
+    echo ""
+  } >&2
+  exit 1
+fi
+exit 0
