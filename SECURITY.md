@@ -64,6 +64,24 @@ keep that radius away from everything else.
   variable expansion (`g=git; $g push`), command substitution (`$(echo git) push`),
   and `eval` — are not visible to static matching and remain an accepted residual
   risk of gating a raw shell string (the kernel-sandbox gap below is the backstop).
+- **Auto-mode risky _bash_ commands pass a debate-verify gate** (IDEATION #7).
+  Auto mode has no human in the loop; before a `_is_risky` **bash** command
+  executes there, three verifiers (intent / safety / security lenses, no tools —
+  single judgment calls, not subagent loops) each try to refute it given recent
+  session context. They run on **distinct providers when 3+ are keyed**
+  (decorrelates the panel so one model's blind spot/jailbreak/injection can't
+  sink all three); with fewer keyed providers the cheapest is reused, so the
+  panel degrades to correlated lenses on one model — still useful, but weaker.
+  Majority refute (≥2/3) = BLOCKED, reasons returned to the model. **Fail
+  closed:** a verifier error, garbled verdict, or missing provider counts as a
+  refutal. Verifier calls are metered into the session ledger and emit
+  `debate_verify` events. default/plan keep the human approval gate unchanged.
+  **Scope & residual:** this gates the `bash` tool only — auto-mode **MCP** tool
+  calls remain ungated (an Owner-added connector is trusted; see the MCP
+  section). The verifiers also share `_is_risky`'s static-match residual above,
+  and an LLM verdict is probabilistic. Treat this as **damage reduction for auto
+  mode, never an authorization boundary** — the default-mode human gate is the
+  only real boundary.
 - Per-session USD budget halts the loop; subagent spawn cap 8; recursion depth 1
 - **Plan mode is read-only, end to end.** Its toolset is read/list/glob/grep +
   `spawn_agent` + `save_spec`; it has no write_file/edit_file/bash. Subagents
