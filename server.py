@@ -2412,10 +2412,20 @@ _SECRET_PATTERNS = [
     ("AWS access key id", r"\bAKIA[0-9A-Z]{16}\b"),
     ("GitHub token", r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
     ("OpenAI key", r"\bsk-[A-Za-z0-9]{20,}\b"),
+    # Anthropic keys carry hyphens (sk-ant-api03-…) which break the OpenAI rule
+    ("Anthropic key", r"\bsk-ant-[A-Za-z0-9_-]{20,}"),
+    ("Stripe key", r"\b[sr]k_live_[A-Za-z0-9]{16,}\b"),
     ("Slack token", r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
     ("Google API key", r"\bAIza[0-9A-Za-z_\-]{35}\b"),
     ("private key block", r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----"),
     ("AWS secret access key", r"\baws_secret_access_key\s*[=:]\s*\S{20,}"),
+    # JSON Web Token (header.payload.signature)
+    ("JWT", r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{6,}"),
+    # credentials embedded in a URL: scheme://user:pass@host
+    ("basic-auth URL", r"://[^/\s:@]{1,}:[^/\s@]{2,}@"),
+    # generic `password=…` / `api_key: …` / `secret=…` assignments
+    ("generic credential",
+     r"(?i)\b(?:password|passwd|pwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)\b\s*[=:]\s*\S{6,}"),
 ]
 _SECRET_RE = [(kind, re.compile(rx)) for kind, rx in _SECRET_PATTERNS]
 
@@ -3705,10 +3715,28 @@ def blackboard_delete(slug: str, _: str = Depends(verify_owner)):
 # extraction. NOT a lossy LLM summary — we walk the persisted history and pull
 # structured facts (files touched, tools used, commands run, errors seen) so a
 # session can be compacted/recalled without spending a model call or hallucinating.
+# Phase 2 (S3): the digest is the SCRUBBED working-memory tier — free-text
+# (commands, errors) is secret-scrubbed here, because history `tool_calls` args
+# are stored raw (only assistant text + tool RESULTS are redacted upstream), so a
+# bash command like `curl -H "Authorization: Bearer sk-…"` would otherwise leak
+# through the digest. Phase 2 also adds a cross-session curated pattern library.
+
+def _scrub_memory_text(text: str) -> str:
+    """Tier-1/2 memory is a derived, exportable artifact — scrub it harder than
+    raw history: strip the server's own secrets, and if an obvious third-party
+    credential remains (user/model typed it into a command), withhold the line.
+    BEST-EFFORT, deny-list based: novel/opaque credential formats can still slip
+    through, so the export must still be treated as sensitive."""
+    text = _redact(str(text or ""))
+    if _scan_secrets(text):
+        return "(withheld: possible secret)"
+    return text
+
 
 def _extract_theme_tokens(history) -> dict:
-    """Walk a session's history → a compact structured digest. Deterministic:
-    same history always yields the same tokens (no model, no randomness)."""
+    """Walk a session's history → a compact, SCRUBBED structured digest.
+    Deterministic: same history always yields the same tokens (no model, no
+    randomness)."""
     files_read, files_written, tools = set(), set(), {}
     commands, errors = [], []
     user_turns = assistant_turns = 0
@@ -3724,17 +3752,20 @@ def _extract_theme_tokens(history) -> dict:
                 args = tc.get("args") or {}
                 path = args.get("path")
                 if name in ("read_file", "list_dir", "glob_files", "grep") and path:
-                    files_read.add(path)
+                    files_read.add(_scrub_memory_text(path)[:200])
                 elif name in ("write_file", "edit_file") and path:
-                    files_written.add(path)
+                    files_written.add(_scrub_memory_text(path)[:200])
                 elif name == "bash":
-                    cmd = (args.get("command") or "").strip()
+                    # str(): a hostile/garbled tool-call may make command a
+                    # list/number; scrub the FULL string THEN truncate so a
+                    # secret straddling the cut can't shed below the match length
+                    cmd = str(args.get("command") or "").strip()
                     if cmd:
-                        commands.append(cmd[:200])
+                        commands.append(_scrub_memory_text(cmd)[:200])
         elif role == "tool":
             content = h.get("content") or ""
             if isinstance(content, str) and content.startswith("ERROR"):
-                errors.append(content[:160])
+                errors.append(_scrub_memory_text(content)[:160])
     return {
         "user_turns": user_turns,
         "assistant_turns": assistant_turns,
@@ -3744,6 +3775,87 @@ def _extract_theme_tokens(history) -> dict:
         "commands": commands[:40],
         "errors": errors[:20],
     }
+
+
+# Phase 2 (S3) — tier-2 CURATED PATTERN LIBRARY. Deterministically aggregate the
+# tier-1 digests of many sessions into cross-session patterns: hot files,
+# recurring commands, recurring error signatures, a tool histogram. No LLM, no
+# randomness — same sessions in always yield the same library out. Rides on the
+# already-scrubbed tier-1 tokens (best-effort, deny-list); the export is still
+# sensitive and is owner-only.
+
+_PL_TOP = 30                       # bound each ranked list (keeps payload small)
+
+
+def _error_signature(err: str) -> str:
+    """Collapse an error string to a stable signature for cross-session counting:
+    drop the leading ERROR marker, strip digits/hex/paths so '3 failed' and
+    '5 failed' fold together. Deterministic."""
+    s = re.sub(r"^ERROR[:\s]*", "", str(err or ""))
+    s = re.sub(r"0x[0-9a-fA-F]+|[0-9]+", "#", s)         # numbers/addrs → #
+    s = re.sub(r"\s+", " ", s).strip()
+    return s[:120]
+
+
+def _pattern_library(sessions, repo=None) -> dict:
+    """Aggregate tier-1 digests across *sessions* (optionally a single repo) into
+    a deterministic cross-session pattern library."""
+    from collections import Counter
+    files_w, files_r, tools = Counter(), Counter(), Counter()
+    cmds, errs = Counter(), Counter()
+    n = 0
+    for s in sessions:
+        if repo is not None and (s.get("repo") or "") != repo:
+            continue
+        try:
+            t = _extract_theme_tokens(s.get("history") or [])
+        except Exception:
+            continue          # one poisoned session can't sink the whole library
+        n += 1
+        files_w.update(t["files_written"])
+        files_r.update(t["files_read"])
+        for tool, c in t["tools_used"].items():
+            tools[tool] += c
+        # dedupe per session so the counts measure CROSS-session recurrence, not
+        # one session repeating a command 40× (intra-session noise)
+        cmds.update(set(t["commands"]))
+        errs.update({_error_signature(e) for e in t["errors"]})
+
+    def _top(counter):
+        # sort by count desc, then key asc — fully deterministic on ties
+        return [{"value": k, "count": c}
+                for k, c in sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))[:_PL_TOP]]
+
+    return {
+        "session_count": n,
+        "repo": repo,
+        "hot_files_written": _top(files_w),
+        "hot_files_read": _top(files_r),
+        "top_commands": _top(cmds),
+        "recurring_errors": _top(errs),
+        "tools_used": dict(sorted(tools.items(), key=lambda kv: (-kv[1], kv[0]))),
+    }
+
+
+def _md_code_safe(v) -> str:
+    """Neutralize backticks so a value can't break out of a Markdown code-span."""
+    return str(v).replace("`", "'")
+
+
+def _pattern_library_markdown(lib) -> str:
+    """Readable rendering of the tier-2 pattern library."""
+    scope = f" — repo `{_md_code_safe(lib['repo'])}`" if lib.get("repo") else ""
+    lines = [f"# Pattern library{scope}", "",
+             f"- sessions aggregated: {lib['session_count']}",
+             f"- tools: {', '.join(f'{_md_code_safe(k)}×{v}' for k, v in lib['tools_used'].items()) or '(none)'}"]
+    for title, key in [("hot files written", "hot_files_written"),
+                       ("hot files read", "hot_files_read"),
+                       ("recurring commands", "top_commands"),
+                       ("recurring errors", "recurring_errors")]:
+        rows = lib.get(key) or []
+        if rows:
+            lines += ["", f"## {title}"] + [f"- {r['count']}× `{_md_code_safe(r['value'])}`" for r in rows[:15]]
+    return "\n".join(lines).strip() + "\n"
 
 
 def _digest_markdown(s) -> str:
@@ -3822,6 +3934,29 @@ def session_digest(sid: str, format: str = "json", _: str = Depends(verify_user)
     with s["lock"]:
         tokens = _extract_theme_tokens(s.get("history", []))
     return {"id": s["id"], "title": s["title"], "tokens": tokens}
+
+
+@app.get("/api/memory/patterns")
+def memory_patterns(repo: str = "", format: str = "json",
+                    _: str = Depends(verify_owner)):
+    """Phase 2 (S3) — tier-2 curated pattern library: a deterministic
+    cross-session aggregate of the (scrubbed) tier-1 digests. Owner-only — it
+    rolls up every session's activity, the same scope as /api/usage. Optional
+    ?repo= narrows to one repo. No LLM. Free-text is best-effort secret-scrubbed
+    (deny-list); treat the export as sensitive — novel credential formats can
+    still slip through."""
+    repo_filter = repo if repo else None
+    # snapshot under each session's lock so a concurrent write can't tear history
+    snap = []
+    for s in list(SESSIONS.values()):
+        with s["lock"]:
+            snap.append({"repo": s.get("repo", ""),
+                         "history": list(s.get("history") or [])})
+    lib = _pattern_library(snap, repo=repo_filter)
+    if format == "md":
+        return PlainTextResponse(_pattern_library_markdown(lib),
+                                 media_type="text/markdown")
+    return lib
 
 
 @app.get("/api/usage")
