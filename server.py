@@ -2247,7 +2247,7 @@ def t_grep(args):
 # provider counts as a refutal. This is damage-reduction for auto mode, NOT an
 # authorization boundary (an LLM verdict is probabilistic and shares _is_risky's
 # static-match residual); the default-mode human gate remains the real boundary.
-# Scope: bash only — auto-mode MCP calls are still ungated (see SECURITY.md).
+# Scope: risky bash AND auto-mode MCP tool calls (W7) — same panel guards both.
 # default/plan keep the human gate unchanged.
 _DEBATE_LENSES = (
     ("intent", "Does this command match the user's stated objective and the "
@@ -2989,13 +2989,20 @@ def make_executor(session, allowed, agent_label=None, depth=0):
                     return f"ERROR: MCP tool '{name}' not found", False
                 srv_id, tool_name, read_only = entry
                 # readOnlyHint is remote-controlled and not trusted for gating.
+                _mcp_label = f"MCP {name} {json.dumps(args)[:200]}"
                 if session.get("mode") != "auto":
-                    approved = request_approval(
-                        session,
-                        f"MCP {name} {json.dumps(args)[:200]}"
-                    )
+                    approved = request_approval(session, _mcp_label)
                     if not approved:
                         return "DENIED", False
+                else:
+                    # W7 — auto mode has no human gate; an Owner-added connector
+                    # is still a prompt-injection-reachable side effect. Run the
+                    # same debate-verify panel over the pending MCP call. (Local
+                    # name avoids shadowing the closure's `allowed` allowlist.)
+                    _verdict_ok, _summary = _debate_verify(session, _mcp_label)
+                    if not _verdict_ok:
+                        return ("BLOCKED by debate-verify — the verifier panel "
+                                f"refused this auto-mode MCP call: {_summary}", False)
                 return _mcp_call_tool(srv_id, tool_name, args), True
             if name == "bash":
                 return t_bash(args, session=session), True
