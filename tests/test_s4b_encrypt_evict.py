@@ -183,6 +183,33 @@ def test_decrypt_fail_preserves_ciphertext_and_recovers(tmp_path, monkeypatch):
         "restoring the correct key must recover the encrypted API keys"
 
 
+def test_incidental_save_during_decrypt_fail_preserves_keys_via_bak(tmp_path, monkeypatch):
+    """RED-TEAM #58 R3: an owner save while decrypt has failed must NOT permanently
+    destroy the recoverable keys — the original ciphertext is preserved to .bak."""
+    mf = tmp_path / "model_config.json"
+    monkeypatch.setattr(server, "MODELS_FILE", str(mf))
+    monkeypatch.setattr(server, "CM_MASTER_KEY", "key-A-xxxxxxxxxxxx")
+    monkeypatch.setattr(server, "_DECRYPT_FAILED", False)
+    cfg = server._new_cfg()
+    cfg["providers"]["anthropic"]["key"] = "precious-api-key"
+    server.save_models(cfg)
+    orig = mf.read_bytes()
+
+    # Wrong key + decrypt-failed state, then an INCIDENTAL save (empty cfg).
+    monkeypatch.setattr(server, "CM_MASTER_KEY", "key-B-xxxxxxxxxxxx")
+    monkeypatch.setattr(server, "_DECRYPT_FAILED", True)
+    server.save_models(server._new_cfg())     # incidental clobber attempt
+
+    bak = tmp_path / "model_config.json.undecryptable.bak"
+    assert bak.exists(), "original ciphertext must be backed up before overwrite"
+    assert bak.read_bytes() == orig, "backup must hold the original ciphertext"
+    # And the original keys are recoverable from the .bak with key-A.
+    f = _make_fernet_from_key("key-A-xxxxxxxxxxxx")
+    import json as _j
+    recovered = _j.loads(f.decrypt(bak.read_bytes()[len(server._ENC_MAGIC):]).decode())
+    assert recovered["providers"]["anthropic"]["key"] == "precious-api-key"
+
+
 def test_model_config_fail_soft_missing_key(tmp_path, monkeypatch):
     """Encrypted file + CM_MASTER_KEY unset → fail soft, not crash."""
     monkeypatch.setattr(server, "CM_MASTER_KEY", "key-for-encryption-xx")

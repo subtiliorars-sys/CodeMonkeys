@@ -151,6 +151,13 @@ saved, so the app can't read the encrypted `model_config.json`.
 and the app itself — everything still works; you just have to re-enter your API keys.
 This is by design: model keys are re-enterable; the sign-in secret (Scenario A) is not.
 
+**Best fix first — you might not need to re-enter anything:** if you still have the
+old `CM_MASTER_KEY`, just put it back (Scenario A, Fix 1) and your saved keys come
+right back. The app also auto-protects you: while it can't decrypt, the original
+encrypted file is preserved as `model_config.json.undecryptable.bak` (and likewise
+for `mcp_tokens.json`) before any save — so even an accidental Settings change can't
+permanently lose your keys. Restore the old key and they're recoverable.
+
 **Fix:**
 1. Open the console → ⚙ Settings → **Models & keys**.
 2. Re-enter each API key (Anthropic, OpenAI, etc.) and save.

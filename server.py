@@ -589,6 +589,25 @@ def _write_enc_file(path: str, data, mode: int = 0o600,
         except OSError:
             pass
         raise
+    # Safety net (red-team #58 R3): if we're about to OVERWRITE a file we could
+    # NOT decrypt this session, preserve the original ciphertext to a .bak first,
+    # so an incidental owner save (e.g. toggling a setting while the "can't
+    # decrypt — re-enter keys" banner is up) can NEVER permanently destroy keys
+    # that restoring the correct CM_MASTER_KEY would recover. See docs/RECOVERY.md.
+    with _DECRYPT_FAILED_LOCK:
+        _df = _DECRYPT_FAILED
+    if _df and os.path.exists(path):
+        try:
+            with open(path, "rb") as _src:
+                _orig = _src.read()
+            if _orig.startswith(_ENC_MAGIC):
+                bfd, btmp = tempfile.mkstemp(dir=dir_, prefix=".enc_bak_")
+                os.fchmod(bfd, 0o600)
+                with os.fdopen(bfd, "wb") as _bf:
+                    _bf.write(_orig)
+                os.replace(btmp, path + ".undecryptable.bak")
+        except OSError:
+            pass
     os.replace(tmp, path)
     if clear_decrypt_failed:
         with _DECRYPT_FAILED_LOCK:
