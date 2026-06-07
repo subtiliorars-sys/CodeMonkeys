@@ -207,7 +207,7 @@ def test_call_model_benches_on_auth_error(monkeypatch):
     monkeypatch.setattr(server.time, "sleep", lambda s: None)
 
     def bad_key(*a, **kw):
-        raise server.ProviderAuthError("401 bad key")
+        raise server.ProviderAuthError("401 bad key", http_status=401)
     monkeypatch.setattr(server, "_call_provider", bad_key)
 
     provider = _provider(pid=pid)
@@ -215,10 +215,46 @@ def test_call_model_benches_on_auth_error(monkeypatch):
     monkeypatch.setattr(server.time, "time", lambda: fake_now)
     with pytest.raises(server.ProviderAuthError):
         server.call_model(provider, "sys", [], [])
-    # Must still be cooled well past the transient window.
+    # 401 must still be cooled well past the transient window.
     assert server._is_cooled(pid, _now=fake_now + server._COOLDOWN_TRANSIENT_S + 10)
     # And the auth window is longer.
     assert server._COOLDOWN_AUTH_S > server._COOLDOWN_TRANSIENT_S
+
+
+def test_403_benches_only_briefly(monkeypatch):
+    """N1 red-team F2: 403 is overloaded (WAF/geo/rate-limit), not a bad key —
+    bench it for the SHORT transient window, not the 5-min auth window."""
+    pid = "cm-bench-403"
+    _cleanup(pid)
+    monkeypatch.setattr(server.time, "sleep", lambda s: None)
+    monkeypatch.setattr(server, "_call_provider",
+                        lambda *a, **kw: (_ for _ in ()).throw(
+                            server.ProviderAuthError("403 blocked", http_status=403)))
+    fake_now = 3_300_000.0
+    monkeypatch.setattr(server.time, "time", lambda: fake_now)
+    with pytest.raises(server.ProviderAuthError):
+        server.call_model(_provider(pid=pid), "sys", [], [])
+    # cooled now, but NOT past the transient window (i.e. short bench, not auth)
+    assert server._is_cooled(pid, _now=fake_now + 5)
+    assert not server._is_cooled(pid, _now=fake_now + server._COOLDOWN_TRANSIENT_S + 1)
+
+
+def test_retry_after_capped(monkeypatch):
+    """N1 red-team F3: a hostile/huge Retry-After cannot bench for days."""
+    pid = "cm-bench-cap"
+    _cleanup(pid)
+    monkeypatch.setattr(server.time, "sleep", lambda s: None)
+    monkeypatch.setattr(server, "_call_provider",
+                        lambda *a, **kw: (_ for _ in ()).throw(
+                            server.TransientModelError("429", http_status=429,
+                                                       retry_after=999_999_999)))
+    fake_now = 3_400_000.0
+    monkeypatch.setattr(server.time, "time", lambda: fake_now)
+    with pytest.raises(server.TransientModelError):
+        server.call_model(_provider(pid=pid), "sys", [], [])
+    # not cooled beyond the hard ceiling
+    assert not server._is_cooled(pid, _now=fake_now + server._COOLDOWN_MAX_S + 1)
+    assert server._is_cooled(pid, _now=fake_now + server._COOLDOWN_MAX_S - 1)
     _cleanup(pid)
 
 
@@ -332,3 +368,37 @@ def test_cooldowns_delete_clears_entry(monkeypatch):
         assert not server._is_cooled(pid)
     finally:
         server.app.dependency_overrides.pop(server.verify_owner, None)
+
+
+# ---- N1 red-team F1: cooldown-degraded debate panel requires unanimous --------
+
+def test_debate_panel_degraded_by_cooldown_requires_unanimous(monkeypatch):
+    """When cooldown collapses the verifier panel to repeats of one model, a
+    single REFUTE must BLOCK (unanimous required) — not the normal 2/3 majority."""
+    monkeypatch.setattr(server, "load_models", lambda: {})
+    one = {"name": "p", "pid": "solo", "model": "m",
+           "input_cost_per_m": 0, "output_cost_per_m": 0}
+    monkeypatch.setattr(server, "_verifier_providers", lambda cfg: [one, one, one])
+    monkeypatch.setattr(server, "_cooldown_snapshot", lambda *a, **k: {"other": 30.0})
+    seq = iter(["ALLOW: ok", "ALLOW: ok", "REFUTE: nope"])   # 1 refute
+    monkeypatch.setattr(server, "call_model",
+                        lambda *a, **k: {"text": next(seq), "in_tokens": 0, "out_tokens": 0})
+    s = server.new_session(title="t")
+    allowed, summary = server._debate_verify(s, "rm -rf /tmp/x")
+    assert allowed is False, "degraded panel must require unanimous allow"
+    assert "degraded" in summary.lower()
+
+
+def test_debate_panel_majority_when_not_cooldown_degraded(monkeypatch):
+    """Same 1-refute panel but nothing cooled → normal majority still allows."""
+    monkeypatch.setattr(server, "load_models", lambda: {})
+    one = {"name": "p", "pid": "solo", "model": "m",
+           "input_cost_per_m": 0, "output_cost_per_m": 0}
+    monkeypatch.setattr(server, "_verifier_providers", lambda cfg: [one, one, one])
+    monkeypatch.setattr(server, "_cooldown_snapshot", lambda *a, **k: {})  # nothing cooled
+    seq = iter(["ALLOW: ok", "ALLOW: ok", "REFUTE: nope"])
+    monkeypatch.setattr(server, "call_model",
+                        lambda *a, **k: {"text": next(seq), "in_tokens": 0, "out_tokens": 0})
+    s = server.new_session(title="t")
+    allowed, _ = server._debate_verify(s, "ls -la")
+    assert allowed is True

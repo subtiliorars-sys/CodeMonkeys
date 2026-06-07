@@ -2490,7 +2490,12 @@ class TransientModelError(RuntimeError):
 
 
 class ProviderAuthError(RuntimeError):
-    """Bad/expired API key — not worth retrying; bench the provider longer."""
+    """Auth failure (401/403) — not worth retrying. 401 = bad/expired key (long
+    bench); 403 is overloaded (WAF/geo/moderation/proxy rate-limit) so the caller
+    benches it only briefly. Carries the status to distinguish them."""
+    def __init__(self, message, *, http_status=None):
+        super().__init__(message)
+        self.http_status = http_status
 
 
 def _chat_openai(provider, system, history, tools, max_tokens):
@@ -2530,7 +2535,8 @@ def _chat_openai(provider, system, history, tools, max_tokens):
         raise TransientModelError(f"{provider['name']} network error: {e}")
     if r.status_code in _AUTH_FAIL_STATUS:
         raise ProviderAuthError(
-            f"{provider['name']} HTTP {r.status_code}: {r.text[:200]}")
+            f"{provider['name']} HTTP {r.status_code}: {r.text[:200]}",
+            http_status=r.status_code)
     if r.status_code in _RETRYABLE_STATUS:
         retry_after = None
         try:
@@ -2614,8 +2620,9 @@ _COOLDOWN_LOCK = threading.Lock()
 _PROVIDER_COOLDOWNS: dict[str, float] = {}
 
 # Cooldown durations (seconds).  Constants so tests can monkeypatch them.
-_COOLDOWN_TRANSIENT_S = 60   # 429 / exhausted transient retries
-_COOLDOWN_AUTH_S = 300       # 401/403 bad-key — won't fix itself soon
+_COOLDOWN_TRANSIENT_S = 60   # 429 / exhausted transient retries / 403 (overloaded)
+_COOLDOWN_AUTH_S = 300       # 401 bad/expired key — won't fix itself soon
+_COOLDOWN_MAX_S = 3600       # F3: hard ceiling so a hostile/huge Retry-After can't bench for days
 
 
 def bench_provider(pid: str, seconds: float, *, _now=None) -> None:
@@ -2675,7 +2682,7 @@ def _call_provider(provider, system, history, tools, max_tokens):
             status = getattr(e, "status_code", None)
             # Surface anthropic SDK auth errors as ProviderAuthError.
             if status in _AUTH_FAIL_STATUS:
-                raise ProviderAuthError(str(e))
+                raise ProviderAuthError(str(e), http_status=status)
             # Surface anthropic SDK overload/rate-limit/5xx as retryable.
             if status in _RETRYABLE_STATUS:
                 retry_after = None
@@ -2713,10 +2720,13 @@ def call_model(provider, system, history, tools, max_tokens=8192):
         cooldown_s = _COOLDOWN_TRANSIENT_S
         if last and getattr(last, "retry_after", None):
             cooldown_s = max(cooldown_s, last.retry_after)
+        cooldown_s = min(cooldown_s, _COOLDOWN_MAX_S)   # F3: cap a hostile/huge Retry-After
         bench_provider(pid, cooldown_s)
         raise last
-    except ProviderAuthError:
-        bench_provider(pid, _COOLDOWN_AUTH_S)
+    except ProviderAuthError as e:
+        # F2: 401 = bad key (long bench); 403 is overloaded → brief bench only.
+        secs = _COOLDOWN_AUTH_S if getattr(e, "http_status", None) == 401 else _COOLDOWN_TRANSIENT_S
+        bench_provider(pid, secs)
         raise
 
 
@@ -2923,6 +2933,13 @@ def _debate_verify(session, cmd):
     providers = _verifier_providers(cfg)
     if not providers:
         return False, "no model provider available to verify — blocked"
+    # F1 (N1 red-team): if COOLDOWN shrank the distinct verifier set below the
+    # lens count, the panel collapses onto repeats of one model — its whole
+    # decorrelation rationale is gone. Don't silently weaken the gate: demand a
+    # UNANIMOUS allow in that degraded state. (A genuinely <3-provider config
+    # with no cooldown keeps the normal majority rule — that's a known posture.)
+    _distinct = len({p.get("pid") or p.get("name") for p in providers})
+    _degraded = _distinct < len(_DEBATE_LENSES) and bool(_cooldown_snapshot())
     tail = [h for h in session.get("history", [])
             if h.get("role") in ("user", "assistant")][-6:]
     context = "\n".join(f"[{h['role']}] {(h.get('text') or '')[:400]}"
@@ -2954,10 +2971,13 @@ def _debate_verify(session, cmd):
         if not verdict.upper().startswith("ALLOW"):
             refutes += 1                  # garbled/missing verdict = refute
         notes.append(f"{lens}: {verdict[:200] or 'REFUTE (no verdict)'}")
-    allowed = refutes <= 1
+    # degraded (cooldown-collapsed) panel → unanimous allow required
+    allowed = (refutes == 0) if _degraded else (refutes <= 1)
     summary = "; ".join(notes)
+    if _degraded:
+        summary = "[panel diversity degraded by provider cooldown — unanimous required] " + summary
     emit(session, "debate_verify", command=cmd[:300], allowed=allowed,
-         refutes=refutes, summary=summary[:600])
+         refutes=refutes, degraded=_degraded, summary=summary[:600])
     return allowed, summary
 
 
