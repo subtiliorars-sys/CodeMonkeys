@@ -22,6 +22,15 @@ primary_region = "dfw"
   auto_start_machines = true
   min_machines_running = 0     # scale-to-zero: ~$0.15/mo when idle
 
+  # Liveness probe hits the unauthenticated /healthz (W1) — leaks nothing
+  # (status/uptime/session-count only). grace_period covers cold boot.
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/healthz"
+
 [[vm]]
   memory = "512mb"
   cpu_kind = "shared"
