@@ -701,6 +701,45 @@ def _flat_options(data):
     return d.get("publicKey", d)  # tolerate either wrapped or flat shapes
 
 
+def _credential_id_hex(b64: str):
+    """Stable handle for a stored passkey: hex of its credential_id, or None if
+    the blob can't be parsed."""
+    try:
+        return AttestedCredentialData(base64.b64decode(b64)).credential_id.hex()
+    except Exception:
+        return None
+
+
+@app.get("/api/webauthn/credentials")
+def webauthn_credentials_list(username: str = Depends(verify_token)):
+    """List the caller's own registered passkeys (handles only — no key material)."""
+    user = load_users().get(username, {})
+    out = []
+    for i, b64 in enumerate(user.get("webauthn_credentials", [])):
+        cid = _credential_id_hex(b64)
+        out.append({"id": cid or f"unparsable-{i}", "index": i,
+                    "short": (cid[:12] if cid else "????")})
+    return {"credentials": out, "count": len(out)}
+
+
+@app.delete("/api/webauthn/credentials/{cred_id}")
+def webauthn_credentials_delete(cred_id: str, username: str = Depends(verify_token)):
+    """Revoke one of the caller's OWN passkeys by its credential_id hex handle.
+    PIN+TOTP remain, so removing every passkey never locks the account out."""
+    with _USERS_LOCK:
+        users = load_users()
+        entry = users.get(username)
+        if not entry:
+            raise HTTPException(404, "No such user")
+        creds = entry.get("webauthn_credentials", [])
+        kept = [b64 for b64 in creds if _credential_id_hex(b64) != cred_id]
+        if len(kept) == len(creds):
+            raise HTTPException(404, "No passkey with that id on your account")
+        entry["webauthn_credentials"] = kept
+        save_users(users)
+    return {"ok": True, "removed": cred_id, "remaining": len(kept)}
+
+
 @app.post("/api/webauthn/register/begin")
 def webauthn_register_begin(request: Request, username: str = Depends(verify_token)):
     server = _fido_server(request)
