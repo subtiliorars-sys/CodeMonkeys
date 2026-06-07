@@ -47,7 +47,31 @@ function showMain() {
   document.querySelectorAll(".owner-only").forEach((el) =>
     el.classList.toggle("hidden", state.role !== "Owner"));
   refreshSessions(); refreshSpecs(); refreshRepos(); listPasskeys();
+  if (state.role === "Owner") checkEncryptionBanner();
 }
+
+// Encryption-status banner: non-blocking warning when model keys are stored
+// unencrypted (CM_MASTER_KEY unset) or couldn't be decrypted (wrong key).
+async function checkEncryptionBanner() {
+  try {
+    const d = await api("/api/encryption-status");
+    let msg = "";
+    if (d.decrypt_failed) {
+      msg = "Could not decrypt saved model API keys (master key missing or changed). Re-enter your keys in ⚙ Settings > Models & keys.";
+    } else if (!d.encrypted) {
+      msg = "Model API keys are stored unencrypted. Set CM_MASTER_KEY to encrypt them at rest (see docs/RECOVERY.md).";
+    }
+    if (msg) {
+      $("enc-banner-msg").textContent = msg;
+      $("enc-banner").classList.remove("hidden");
+    } else {
+      $("enc-banner").classList.add("hidden");
+    }
+  } catch (_) {
+    // Non-critical — swallow errors silently (e.g. auth failure on non-owner)
+  }
+}
+$("enc-banner-close").onclick = () => $("enc-banner").classList.add("hidden");
 function logout() {
   ["cm_token", "cm_username", "cm_role"].forEach((k) => localStorage.removeItem(k));
   state.token = ""; stopPolling(); showLogin();

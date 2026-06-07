@@ -173,14 +173,11 @@ if len(FLEET_TOKEN) < 16:
     FLEET_TOKEN = ""
 FLEET_MAX_WORKERS = 200              # contract bound; payload stays ≪ 1 MB
 
-# ---- secret-hardening: CM_MASTER_KEY capture --------------------------------
-# Captured here at import time; evicted from os.environ after boot (see
+# ---- secret-hardening: CM_MASTER_KEY + GITHUB_TOKEN capture -----------------
+# Both captured here at import time; evicted from os.environ after boot (see
 # _evict_env_secrets() near the bottom of this module) so /proc/self/environ
-# no longer carries it after startup.
-# NOTE: GITHUB_TOKEN is intentionally NOT evicted — _auth_url() reads
-# os.environ.get("GITHUB_TOKEN") at call time (every git clone/push) and
-# child_env = {**os.environ, ...} spreads the full env to subprocesses, so
-# evicting it would silently break all authenticated git operations.
+# no longer carries them after startup.
+# _auth_url() now reads GITHUB_TOKEN_VAL (the constant below), not os.environ.
 # Residual: a same-uid ptrace of the server process can still read decrypted
 # secrets from in-memory variables; full closure requires the bash sandbox
 # described in docs/design/PER_USER_ISOLATION.md L4.
@@ -192,6 +189,12 @@ CM_MASTER_KEY: str = os.environ.get("CM_MASTER_KEY", "")       # Fernet at-rest 
 # to log in again. Remove the flag after. Setting Fly env vars already requires
 # owner-level access, so this adds no attacker capability. See docs/RECOVERY.md.
 CM_MASTER_KEY_RESET: bool = os.environ.get("CM_MASTER_KEY_RESET", "").lower() in ("1", "true", "yes")
+
+# GITHUB_TOKEN — captured at import time so _evict_env_secrets() can remove it
+# from os.environ without breaking _auth_url() or the git subprocess env (which
+# is built via _subprocess_env(), which already strips secret-named vars by name
+# and therefore strips GITHUB_TOKEN).  Consumers use GITHUB_TOKEN_VAL directly.
+GITHUB_TOKEN_VAL: str = os.environ.get("GITHUB_TOKEN", "")
 
 # Commands that pause the loop for human approval (CodeMonkeys design rule:
 # no silent pushes/deploys/destruction; git reset --hard has bitten us before)
@@ -484,6 +487,113 @@ def _make_fernet() -> "Fernet | None":
 # plaintext" — so a wrong/rotated key fails CLOSED instead of being mistaken for
 # plaintext and silently replacing the signing secret (red-team F1/F2).
 _ENC_MAGIC = b"CMENC1\n"
+
+# ---- fail-soft config-file encryption helpers --------------------------------
+# Unlike session_secret.key (fail-CLOSED), model_config.json and mcp_tokens.json
+# are fail-SOFT: wrong/missing key → empty config + UI banner, never a crash.
+# The owner can just re-enter their API keys in ⚙ Settings.
+
+# True when an encrypted config file couldn't be decrypted (wrong/missing key).
+# Surfaced via /api/encryption-status for the UI banner.  Set on read; cleared
+# when a successful write happens (key is now correct).
+_DECRYPT_FAILED: bool = False
+_DECRYPT_FAILED_LOCK = threading.Lock()
+
+
+def _read_enc_file(path: str, default):
+    """Read a JSON config file that may be Fernet-encrypted or legacy plaintext.
+
+    Returns (parsed_object, migrated: bool).
+
+    Fail-soft: if the file carries _ENC_MAGIC but we can't decrypt (missing or
+    wrong CM_MASTER_KEY), sets the module _DECRYPT_FAILED flag and returns
+    (default, False) — the caller keeps running with an empty config.
+
+    Migration: if the file is plaintext and CM_MASTER_KEY is set, the caller
+    should re-write it encrypted (pass the result through _write_enc_file).
+    """
+    global _DECRYPT_FAILED
+    if not os.path.exists(path):
+        return default, False
+    try:
+        with open(path, "rb") as f:
+            blob = f.read()
+    except OSError:
+        return default, False
+
+    if blob.startswith(_ENC_MAGIC):
+        fernet = _make_fernet()
+        if fernet is None:
+            # File is encrypted but key is gone — fail soft, set flag.
+            with _DECRYPT_FAILED_LOCK:
+                _DECRYPT_FAILED = True
+            _log.warning(
+                "Config file %s is encrypted but CM_MASTER_KEY is unset; "
+                "returning empty config — re-enter keys in ⚙ Settings.", path)
+            return default, False
+        try:
+            raw = fernet.decrypt(blob[len(_ENC_MAGIC):])
+        except _FernetInvalidToken:
+            with _DECRYPT_FAILED_LOCK:
+                _DECRYPT_FAILED = True
+            _log.warning(
+                "Config file %s could not be decrypted with the current "
+                "CM_MASTER_KEY (rotated?); returning empty config — re-enter "
+                "keys in ⚙ Settings.", path)
+            return default, False
+        try:
+            return json.loads(raw.decode()), False
+        except Exception:
+            return default, False
+
+    # Legacy plaintext JSON.
+    try:
+        data = json.loads(blob.decode())
+    except Exception:
+        return default, False
+    needs_migrate = bool(_make_fernet())   # key set → should encrypt on next write
+    return data, needs_migrate
+
+
+def _write_enc_file(path: str, data, mode: int = 0o600,
+                    clear_decrypt_failed: bool = False) -> None:
+    """Atomic write of a JSON config file, Fernet-encrypted when CM_MASTER_KEY
+    is set, otherwise plaintext.  Creates the file at the given mode with no
+    0644 window (uses os.open O_CREAT|O_TRUNC with explicit mode).
+
+    clear_decrypt_failed: set True when the caller knows the write represents a
+    fresh, valid config (e.g. the owner just re-entered their keys), so the UI
+    banner should disappear.  Leave False for internal migrations / default-init
+    writes so a prior decrypt failure remains visible.
+    """
+    global _DECRYPT_FAILED
+    payload = json.dumps(data, indent=2).encode()
+    fernet = _make_fernet()
+    if fernet is not None:
+        content = _ENC_MAGIC + fernet.encrypt(payload)
+    else:
+        content = payload
+
+    dir_ = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(dir=dir_, prefix=".enc_cfg_")
+    try:
+        # Apply the desired mode before writing any content.
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "wb") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    os.replace(tmp, path)
+    if clear_decrypt_failed:
+        with _DECRYPT_FAILED_LOCK:
+            _DECRYPT_FAILED = False
+
 
 # Module-level singleton — _session_secret() is called on every token
 # sign/verify, so we load once and cache.
@@ -1302,14 +1412,20 @@ def _migrate_old(cfg):
 
 def load_models():
     with _MODELS_LOCK:
-        cfg = _load_json(MODELS_FILE, None)
+        # _read_enc_file: fail-soft — encrypted + wrong/missing key → (None, False)
+        raw, needs_migrate = _read_enc_file(MODELS_FILE, None)
+        cfg = raw
         if cfg is None:
             cfg = _new_cfg()
-            _save_json(MODELS_FILE, cfg)
+            _write_enc_file(MODELS_FILE, cfg)
             return cfg
         if "providers" in cfg and isinstance(cfg["providers"], list):  # old shape
             cfg = _migrate_old(cfg)
-            _save_json(MODELS_FILE, cfg)
+            _write_enc_file(MODELS_FILE, cfg)
+            needs_migrate = False
+        if needs_migrate:
+            # Legacy plaintext + CM_MASTER_KEY now set → encrypt in place.
+            _write_enc_file(MODELS_FILE, cfg)
         # ensure built-ins exist (so new presets appear without wiping keys)
         for pid, base in DEFAULT_PROVIDERS.items():
             cfg["providers"].setdefault(pid, json.loads(json.dumps(base)))
@@ -1325,13 +1441,14 @@ def load_models():
                 p["base_url"] = DEFAULT_PROVIDERS[pid]["base_url"]
                 repaired = True
         if repaired:
-            _save_json(MODELS_FILE, cfg)
+            _write_enc_file(MODELS_FILE, cfg)
         return cfg
 
 
 def save_models(cfg):
     with _MODELS_LOCK:
-        _save_json(MODELS_FILE, cfg)
+        # Owner just saved keys → clear the decrypt-failed banner.
+        _write_enc_file(MODELS_FILE, cfg, clear_decrypt_failed=True)
     _bust_secret_cache()      # newly-added API keys must be redactable immediately
 
 
@@ -1549,31 +1666,27 @@ _MCP_TOKENS_LOCK = threading.Lock()
 
 
 def _load_mcp_tokens() -> dict:
-    """Load {server_id: {access_token, refresh_token, expires_at, scope, token_type}}."""
+    """Load {server_id: {access_token, refresh_token, expires_at, scope, token_type}}.
+
+    Fail-soft: encrypted + wrong/missing key → {} + _DECRYPT_FAILED flag.
+    """
     with _MCP_TOKENS_LOCK:
-        return _load_json(MCP_TOKENS_FILE, {})
+        data, needs_migrate = _read_enc_file(MCP_TOKENS_FILE, {})
+        if needs_migrate and data:
+            # Plaintext file + CM_MASTER_KEY now set → encrypt in place.
+            _write_enc_file(MCP_TOKENS_FILE, data, mode=0o600)
+        return data
 
 
 def _save_mcp_tokens(tokens: dict):
     """Write token store at mode 0600 — never accessible via any API endpoint.
 
-    Uses os.open(O_CREAT|O_TRUNC, 0o600) + unique tmp name so the file is
-    0600 from the instant of creation (no 0644 window) and concurrent savers
-    don't clobber each other's tmp file.
+    Encrypted when CM_MASTER_KEY is set, plaintext otherwise.  _write_enc_file
+    uses a mode-600 temp file so there is no 0644 window.
     """
     with _MCP_TOKENS_LOCK:
-        dir_ = os.path.dirname(MCP_TOKENS_FILE) or "."
-        # mkstemp creates the file 0600 (no umask window)
-        fd, tmp = tempfile.mkstemp(dir=dir_, prefix=".mcp_tokens_")
-        try:
-            with os.fdopen(fd, "w") as f:
-                json.dump(tokens, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-        except Exception:
-            os.unlink(tmp)
-            raise
-        os.replace(tmp, MCP_TOKENS_FILE)
+        # Token saves are always owner-initiated via OAuth flow → clear banner.
+        _write_enc_file(MCP_TOKENS_FILE, tokens, mode=0o600, clear_decrypt_failed=True)
 
 
 # Per-server-id refresh lock: serialises the check→refresh→save critical section so
@@ -3799,11 +3912,13 @@ _load_daily_spend()   # N2: boot from persisted today-total (rolls over at UTC m
 
 
 # ---- secret redaction --------------------------------------------------------
-# bash can read env/app files (the conceded kernel-sandbox gap); GITHUB_TOKEN is
-# the most sensitive item on the box. Scrub known secret VALUES out of anything
-# that flows back to the model, to the UI, or into the immutable JSONL event log
-# / history.json on /data. This does NOT affect execution (git still uses the
-# real env var) — only what gets echoed, displayed, and persisted.
+# bash can read env/app files (the conceded kernel-sandbox gap).  Scrub known
+# secret VALUES out of anything that flows back to the model, to the UI, or
+# into the immutable JSONL event log / history.json on /data.  This does NOT
+# affect execution (git auth uses the GITHUB_TOKEN_VAL constant embedded in the
+# URL by _auth_url()) — only what gets echoed, displayed, and persisted.
+# Note: GITHUB_TOKEN is now evicted from os.environ at boot, so it no longer
+# appears in the environment that the value-scanner below iterates.
 _SECRET_CACHE = None
 _SECRET_NAME_RE = re.compile(r"TOKEN|SECRET|KEY|PASSWORD|PASSWD|PAT|CREDENTIAL", re.I)
 
@@ -3813,9 +3928,12 @@ def _sensitive_values():
     if _SECRET_CACHE is not None:
         return _SECRET_CACHE
     vals = set()
-    for k, v in os.environ.items():           # GITHUB_TOKEN, SESSION_*, etc.
+    for k, v in os.environ.items():           # residual env secrets
         if v and len(v) >= 8 and _SECRET_NAME_RE.search(k):
             vals.add(v)
+    # GITHUB_TOKEN is evicted from os.environ at boot — add the constant directly.
+    if GITHUB_TOKEN_VAL and len(GITHUB_TOKEN_VAL) >= 8:
+        vals.add(GITHUB_TOKEN_VAL)
     try:
         vals.add(_session_secret().hex())     # HMAC signing secret
     except Exception:
@@ -5057,6 +5175,23 @@ def reset_daily_spend(_: str = Depends(verify_owner)):
     return {"date": today, "usd": 0.0, "note": "daily counter reset"}
 
 
+@app.get("/api/encryption-status")
+def encryption_status(_: str = Depends(verify_owner)):
+    """Owner-only: report whether at-rest encryption is active and whether config
+    files decrypted successfully.  Returns NO secret values — only booleans.
+
+    encrypted    true  → CM_MASTER_KEY is set; config files are encrypted on disk.
+                 false → no master key; config files are stored as plaintext JSON.
+    decrypt_failed true → an encrypted config file couldn't be decrypted with the
+                          current key (missing or rotated).  Owner should re-enter
+                          model API keys in ⚙ Settings.
+    """
+    return {
+        "encrypted": bool(CM_MASTER_KEY),
+        "decrypt_failed": _DECRYPT_FAILED,
+    }
+
+
 def _cap_message(text: str) -> str:
     """Bound a single user message so one request can't blow memory/context."""
     text = text or ""
@@ -5479,7 +5614,8 @@ class RepoClone(BaseModel):
 
 
 def _auth_url(url):
-    token = os.environ.get("GITHUB_TOKEN", "")
+    # Uses the module-level constant (captured at import, before eviction).
+    token = GITHUB_TOKEN_VAL
     if token and url.startswith("https://github.com/"):
         return url.replace("https://", f"https://x-access-token:{token}@", 1)
     return url
@@ -5594,22 +5730,21 @@ def root():
 
 # ---- secret-hardening: evict secret-named env vars after boot ----------------
 # All secrets listed below are already captured into module-level constants
-# (WEBHOOK_SECRET, CM_MASTER_KEY, and the session signing secret in the cache).
-# Deleting them from os.environ prevents a jailbroken bash child from reading
-# them via `printenv`, `cat /proc/self/environ`, or `env`.
+# (WEBHOOK_SECRET, CM_MASTER_KEY, GITHUB_TOKEN_VAL, and the session signing
+# secret in the cache).  Deleting them from os.environ prevents a jailbroken
+# bash child from reading them via `printenv`, `cat /proc/self/environ`, or `env`.
 #
 # EVICTED (safe — all consumers use the module-level constant):
 #   CM_MASTER_KEY     → captured above; only used by _make_fernet() at import
 #   WEBHOOK_SECRET    → module constant; _verify_github_sig() reads it directly
-#   WEBHOOK_ENABLED, WEBHOOK_ALLOWED_SENDERS, WEBHOOK_TRIGGER_LABEL → booleans/lists
+#   GITHUB_TOKEN      → captured as GITHUB_TOKEN_VAL above; _auth_url() now uses
+#                       the constant.  The bash/MCP child env goes through
+#                       _subprocess_env() which already strips secret-named vars
+#                       by name-pattern (GITHUB_TOKEN matches TOKEN), so git
+#                       subprocesses also lose it — they auth via _auth_url()
+#                       which embeds the token in the URL.
 #
-# NOT EVICTED (intentionally preserved):
-#   GITHUB_TOKEN      → _auth_url() reads os.environ at call time; removing it
-#                       silently breaks all authenticated git clone/push calls
-#                       because child_env = {**os.environ, ...} propagates the
-#                       whole env to git subprocesses.  Leave it and accept the
-#                       residual — a same-uid `printenv` can still read it.
-#                       Full closure requires the bash sandbox (PER_USER_ISOLATION.md L4).
+# NOT EVICTED:
 #   PORT, DATA_DIR, … → operational, non-secret config used throughout.
 #
 # Residual risk: a same-uid ptrace of the server process can still read any
@@ -5619,6 +5754,7 @@ def root():
 _SECRET_ENV_EVICT = {
     "CM_MASTER_KEY",
     "WEBHOOK_SECRET",
+    "GITHUB_TOKEN",
 }
 
 def _evict_env_secrets() -> None:
