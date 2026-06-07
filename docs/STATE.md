@@ -1,6 +1,7 @@
 # CodeMonkeys — Current State (jumping-off point)
 
-**Read this first when picking the project back up.** Last updated 2026-06-07.
+**Read this first when picking the project back up.** Last updated 2026-06-07
+(post Wave-4 merges).
 
 ## What it is
 Self-hosted web coding console (Claude Code-style agent). Single-file FastAPI
@@ -22,6 +23,9 @@ Daystrom agent corps in `corps/`. Full overview: `README.md` +
   W1–W12). `/healthz` (W1) is wired as the Fly liveness check (1 passing).
   Smoke-tested live: `/healthz` 200, `/api/usage` + `/api/kb` 401 fail-closed,
   `/` 200.
+- **Wave 4 (PRs #33/#34/#35/#36) is merged to `main` but NOT yet deployed** —
+  next deploy picks up fractal memory, vendored-Tailwind phase 1, connector
+  marketplace, and webhook→PR runs (inert until webhook secrets set).
 
 ## Shipped so far (v0.1)
 - Auth: 4-digit+ PIN (PBKDF2) + mandatory TOTP; HMAC tokens; fail-closed.
@@ -80,10 +84,34 @@ Daystrom agent corps in `corps/`. Full overview: `README.md` +
   single-process assumption) + atomic tmp+rename. Red-teamed GO-WITH-FIXES,
   all fixes applied; tests in `tests/test_blackboard.py`.
 
-## Next up (from docs/IDEATION.md)
-1. **Connector marketplace UI** (#9) — poll the MCP Registry, one-click add (now
-   that the MCP client exists). Plus **escalation-on-failure** (cheapest→pricier).
-2. **Debate-verify gate** (#7) on high-risk changes; **two-layer KB** (#10).
+## Shipped since (Wave 4 — 2026-06-07, merged to `main`, NOT yet deployed)
+- **Fractal/tiered memory phase 1** (#6, PR #33): deterministic theme-token
+  digest per session.
+- **Vendored Tailwind phase 1** (#3, PR #34): build pipeline + CI `css` job;
+  **CDN still active** — phase 2 (drop CDN + tighten CSP) is OWNER-GATED until
+  the owner confirms the vendored page renders.
+- **Connector marketplace** (#9, PR #35): curated catalog + MCP Registry fallback.
+- **Webhook → PR runs** (#5, PR #36): GitHub issue/webhook triggers a background
+  session that opens a PR. Fail-closed: OFF by default, HMAC sig, sender
+  allow-list, label + action gate, delivery dedup, body cap. **INERT until owner
+  sets WEBHOOK_ENABLED/WEBHOOK_SECRET/WEBHOOK_ALLOWED_SENDERS + adds the GitHub
+  webhook** (steps in PR #36 body).
+
+## Open PRs (owner-gated)
+- **#37 web terminal** — `/terminal` REPL + Owner-only `!cmd` exec behind DOUBLE
+  env gate (`TERMINAL_ENABLED` + `TERMINAL_EXEC_ENABLED`), both default OFF.
+  Red-teamed GO-WITH-FIXES (raw PTY mode = NO-GO). Design: `docs/TERMINAL_DESIGN.md`.
+
+## Next up
+1. **BUG:** provider entry with blank `base_url` reaches the runtime and errors
+   with `Invalid URL '/chat/completions'` before escalation rescues it (found in
+   2026-06-07 live smoke). Fix: fail-fast at model selection + config-load repair
+   backfilling known provider URLs.
+2. **Fleet Deck handoff:** `GET /fleet-status.json` read-only Bearer-auth ops
+   feed per `~/fleet/contracts/fleetdeck-codemonkeys.md` (build+PR; deploy
+   owner-gated).
+3. Fractal memory phase 2+; Tailwind phase 2 (owner-gated); OAuth
+   secrets-envelope (see IDEATION "Still open").
 
 ## MCP connectors (v1+v2, merged to main 2026-06-06)
 - Sync Streamable-HTTP JSON-RPC client over `requests` (no new deps, no SDK).
@@ -112,6 +140,14 @@ Daystrom agent corps in `corps/`. Full overview: `README.md` +
   then `DATA_DIR=./data ./.venv/bin/uvicorn server:app --reload --port 8080`.
 
 ## Known gaps / TODO
-- No remove-passkey UI; no per-user workspace isolation; no escalation-on-failure
-  (cost governor selects cheapest but doesn't yet retry up a tier on failure);
-  Tailwind + QR via CDN (vendor before multi-user); no login rate-limit.
+- No per-user workspace isolation (all members share workspace + GITHUB_TOKEN +
+  shell).
+- Tailwind CDN still active (vendored pipeline merged, phase-2 cutover
+  owner-gated); CSP tighten rides with it.
+- OAuth secrets-envelope: `client_secret`/`refresh_token` plaintext on `/data`,
+  readable by the unsandboxed `bash` tool.
+- Blank-base_url provider bug (see "Next up" #1).
+- Auto-mode MCP calls: debate-verify covers risky bash + MCP (W7), but MCP
+  coverage is heuristic — revisit if MCP usage grows.
+- *(Closed in Wave 3: remove-passkey UI ✓, escalation-on-failure ✓, login
+  throttle/ceilings ✓, local TOTP QR ✓.)*
