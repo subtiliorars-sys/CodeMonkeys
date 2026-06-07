@@ -116,3 +116,54 @@ def test_commander_prompt_includes_blackboard():
     session = {"id": "s1"}
     prompt = server._commander_system(session)
     assert "PERSISTENT BLACKBOARD" in prompt and "ship it" in prompt
+
+
+# ---- multi-AGENT half (subagent grants) -------------------------------------
+
+def _agent(tools):
+    return {"name": "x", "description": "", "tools": tools, "model": "haiku",
+            "model_tier": "", "body": ""}
+
+
+def test_every_subagent_gets_blackboard_read():
+    # even a read-only recon unit shares the board
+    tools = server.corps_tools(_agent(["Read", "Grep", "Glob"]))
+    assert "blackboard_read" in tools
+    assert "blackboard_write" not in tools          # not write-capable
+
+
+def test_write_capable_subagents_get_blackboard_write():
+    for fm in (["Read", "Edit"], ["Read", "Write"], ["Read", "Edit", "Write"]):
+        tools = server.corps_tools(_agent(fm))
+        assert "blackboard_write" in tools, fm
+    # Bash alone is not an Edit/Write grant
+    assert "blackboard_write" not in server.corps_tools(_agent(["Read", "Bash"]))
+
+
+def test_plan_mode_strips_subagent_blackboard_write():
+    # The read-only-end-to-end invariant: even a write-capable subagent spawned
+    # from a plan-mode session keeps blackboard_read but loses blackboard_write
+    # (and every other write affordance). Drives the live filter run_subagent uses.
+    tools = server.corps_tools(_agent(["Read", "Edit", "Write", "Bash"]))
+    filtered = server._plan_filter_subagent_tools(tools)
+    assert "blackboard_read" in filtered
+    for forbidden in ("blackboard_write", "write_file", "edit_file",
+                      "apply_patch", "bash", "save_spec"):
+        assert forbidden not in filtered, forbidden
+    # fail-safe, not fail-open: an empty grant list degrades to read-only tools
+    assert set(server._plan_filter_subagent_tools([])) == set(server._PLAN_READONLY_TOOLS)
+
+
+def test_concurrent_appends_lose_nothing():
+    import threading
+    n = 16
+    threads = [threading.Thread(
+        target=W, kwargs=dict(slug="race", section="FACTS", content=f"fact-{i}"))
+        for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    out = R("race")
+    for i in range(n):
+        assert f"fact-{i}" in out, f"lost update fact-{i}"

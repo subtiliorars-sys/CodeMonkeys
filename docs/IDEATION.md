@@ -19,7 +19,7 @@ human.** That loop is the thing to own.
 | ~~1~~ | ~~**MCP client**~~ ✅ **SHIPPED 2026-06-06** (v1: sync Streamable-HTTP JSON-RPC over `requests`, remote servers only, per-server bearer/PAT, Owner-only `/api/mcp`, ⚙ MCP panel). Red-teamed: readOnlyHint not trusted for gating, slowloris-capped, https-only, tool-count capped. See follow-ups #1a/#1b below. | M |
 | ~~2~~ | ~~**Self-heal loop**~~ ✅ **SHIPPED 2026-06-06** (auto-mode run→read-failure→patch→rerun-until-green doctrine in `MODE_GUIDANCE["auto"]`; caps 5 iters / repeat-signature=blocked / budget; guidance-only, model keeps tool-control). | M |
 | ~~3~~ | ~~**Spec-first plan mode**~~ ✅ **SHIPPED 2026-06-06** (plan mode writes Constitution/Spec/Plan/Tasks to `.codemonkeys/specs/<slug>/` via the jailed `save_spec` tool; each task carries a verify step. Red-teamed: closed a pre-existing hole where plan-mode `spawn_agent` could escalate to a write-capable subagent — plan is now read-only end to end). | S–M |
-| 4 | **Blackboard cross-session memory** ← **NEXT** | `.codemonkeys/blackboard-<task>.md` with FACTS/DECISIONS/NEXT that survives session resets. Owner's own corps pattern; near-zero infra. | S |
+| ~~4~~ | ~~**Blackboard cross-session memory**~~ ✅ **SHIPPED 2026-06-06/07** (cross-session half: `.codemonkeys/blackboard-<slug>.md` FACTS/DECISIONS/NEXT, jailed tools + commander-prompt injection, PR #14. Multi-AGENT half 2026-06-07: every Daystrom subagent gets `blackboard_read`, Edit/Write-capable units get `blackboard_write`, plan mode stays read-only end to end; write path serialized + atomic-rename; untrusted-DATA framing on prompt injection. Red-teamed GO-WITH-FIXES, fixes applied.) | S |
 | 5 | **Issue/webhook-triggered background runs** | Assign an issue / hit a webhook → background session opens a PR. Pair with notify-on-done (OmniVerse pattern). Cron via existing `/loop`. | M |
 | 6 | **Tiered / "fractal" memory + theme-token compaction** | Per-session raw → scrubbed working memory → curated pattern library; compact by extracting structured theme tokens, not lossy LLM summaries. (Owner's memory-engine spec.) | L |
 | 7 | **Debate-verify gate** on high-risk changes | 3 heterogeneous verifiers, majority-refute = don't-ship (~30% fewer errors). Use the existing corps; trigger only on auth/money/irreversible. | S |
@@ -49,11 +49,11 @@ verify against current Google/Microsoft remote-MCP docs.
 
 ## Recommended next session
 
-#1 (MCP client, +v2 stdio/OAuth/auto-connect) and #2 (self-heal) are **shipped &
-merged to main** (undeployed — owner runs `fly deploy`). Next: **#3 spec-first
-plan mode**, then **#4 blackboard memory** and **#8 apply_patch** (both S). For
-reference, #2 wires `ruff`/`tsc`/test output back
-into the loop and adds an iterate-until-green wrapper in auto mode.
+#1 (MCP client, +v2 stdio/OAuth/auto-connect), #2 (self-heal), #3 (spec-first
+plan mode), #4 (blackboard memory, incl. multi-agent half) and #8 (apply_patch)
+are **shipped & merged to main**. Next candidates: **#9 connector marketplace**,
+**#7 debate-verify gate**, **#10 two-layer KB**, plus escalation-on-failure in
+the cost governor (cheapest→pricier retry).
 
 ## Notes / caveats from the research
 
