@@ -104,7 +104,7 @@ def test_scan_clean_text_is_empty():
 def test_write_file_appends_warning_but_still_writes():
     p = "secrets_test_file.txt"
     content = "API_KEY = ghp_" + "z" * 36
-    out = server.t_write_file({"path": p, "content": content})
+    out, _diff = server.t_write_file({"path": p, "content": content})
     full = server._jail(p)
     try:
         assert "SECRET WARNING" in out and "GitHub token" in out
@@ -118,7 +118,7 @@ def test_write_file_appends_warning_but_still_writes():
 
 def test_write_file_clean_has_no_warning():
     p = "clean_test_file.txt"
-    out = server.t_write_file({"path": p, "content": "x = 1\n"})
+    out, _diff = server.t_write_file({"path": p, "content": "x = 1\n"})
     try:
         assert "SECRET WARNING" not in out and out.startswith("Wrote")
     finally:
@@ -137,9 +137,9 @@ def test_apply_patch_scans_added_lines_only(monkeypatch):
 
     secret = "sk-" + "q" * 40
     add_patch = ("--- a/f.py\n+++ b/f.py\n@@ -0,0 +1 @@\n+api = " + secret + "\n")
-    out = server.t_apply_patch({"patch": add_patch})
+    out, _diff = server.t_apply_patch({"patch": add_patch})
     assert "SECRET WARNING" in out and "OpenAI key" in out
 
     rem_patch = ("--- a/f.py\n+++ b/f.py\n@@ -1 +0,0 @@\n-api = " + secret + "\n")
-    out2 = server.t_apply_patch({"patch": rem_patch})
+    out2, _diff2 = server.t_apply_patch({"patch": rem_patch})
     assert "SECRET WARNING" not in out2

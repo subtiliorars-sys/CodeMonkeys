@@ -323,10 +323,23 @@ function renderEvent(e) {
       div.className = "ev-tool px-3";
       div.innerHTML = `${agentTag(e)}⚙ ${esc(e.name)} <span class="detail">${esc(e.detail)}</span>`;
       div.onclick = () => div.classList.toggle("open"); break;
-    case "tool_result":
+    case "tool_result": {
       div.className = "ev-tool px-3" + (e.ok ? "" : " text-red-400");
-      div.innerHTML = `${agentTag(e)}↳ ${e.ok ? "ok" : "FAIL"} <span class="detail">${esc(e.detail)}</span>`;
+      let trHtml = `${agentTag(e)}↳ ${e.ok ? "ok" : "FAIL"} <span class="detail">${esc(e.detail)}</span>`;
+      if (e.diff) {
+        // Render diff lines with +/- coloring in a collapsed monospace block.
+        const diffLines = e.diff.split("\n").map((ln) => {
+          const cls = ln.startsWith("+") && !ln.startsWith("+++")
+            ? "diff-add" : ln.startsWith("-") && !ln.startsWith("---")
+            ? "diff-del" : ln.startsWith("@@")
+            ? "diff-hunk" : "";
+          return `<span class="${cls}">${esc(ln)}</span>`;
+        }).join("\n");
+        trHtml += `<pre class="diff-block">${diffLines}</pre>`;
+      }
+      div.innerHTML = trHtml;
       div.onclick = () => div.classList.toggle("open"); break;
+    }
     case "agent_start":
       div.className = "ev-agent px-3 py-1";
       div.innerHTML = `🐒 deployed <b>${esc(e.agent)}</b> <span class="text-slate-500">[${esc(e.tier)} · ${esc(e.model)}]</span> — ${esc(e.task)}`;

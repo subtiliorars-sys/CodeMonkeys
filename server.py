@@ -15,6 +15,7 @@ Storage: JSON files under DATA_DIR (no database). Frontend: static/forge/.
 """
 
 import base64
+import difflib
 import fnmatch
 import hashlib
 import hmac
@@ -2686,11 +2687,21 @@ def t_read_file(args):
 
 def t_write_file(args):
     full = _jail(args["path"])
+    # Read old content before the write so we can produce a diff (N4).
+    try:
+        with open(full, "r", errors="replace") as f:
+            old_content = f.read()
+    except FileNotFoundError:
+        old_content = ""
     os.makedirs(os.path.dirname(full) or full, exist_ok=True)
+    new_content = args["content"]
     with open(full, "w") as f:
-        f.write(args["content"])
-    return (f"Wrote {len(args['content'])} chars to {args['path']}"
-            + _secret_warning(args["content"]))
+        f.write(new_content)
+    result = (f"Wrote {len(new_content)} chars to {args['path']}"
+              + _secret_warning(new_content))
+    # Attach diff as a separate return value; agent_loop unpacks it.
+    _diff = _diff_preview(old_content, new_content, args["path"])
+    return result, _diff
 
 
 # W6 — secret-scan write guard. Flag (do NOT block) obvious credentials being
@@ -2737,20 +2748,80 @@ def _secret_warning(text: str) -> str:
             "use an env var or /data secret instead.")
 
 
+# ---- unified-diff preview (N4) ----------------------------------------------
+# For write_file / edit_file: compute a unified diff of old vs new content so
+# the owner can see exactly what changed, not just "a write happened."
+# For apply_patch: the patch IS a diff — surface it cleaned/capped.
+# Diffs are capped (DIFF_LINE_CAP lines / DIFF_BYTE_CAP bytes) with a truncation
+# marker, then passed through _redact() so secrets never appear in the preview.
+DIFF_LINE_CAP = 200
+DIFF_BYTE_CAP = 8192  # ~8 KB
+
+
+def _diff_preview(old: str, new: str, path: str = "") -> str:
+    """Return a capped, redacted unified diff of old→new, or '' if unchanged."""
+    if old == new:
+        return ""
+    old_lines = old.splitlines(keepends=True)
+    new_lines = new.splitlines(keepends=True)
+    fname = path or "file"
+    lines = list(difflib.unified_diff(
+        old_lines, new_lines,
+        fromfile=f"a/{fname}", tofile=f"b/{fname}",
+        lineterm="",
+    ))
+    truncated = False
+    if len(lines) > DIFF_LINE_CAP:
+        lines = lines[:DIFF_LINE_CAP]
+        truncated = True
+    diff_text = "\n".join(lines)
+    if len(diff_text) > DIFF_BYTE_CAP:
+        diff_text = diff_text[:DIFF_BYTE_CAP]
+        truncated = True
+    if truncated:
+        diff_text += "\n...[diff truncated]"
+    # _redact is available later in the file; call it indirectly via the module
+    # so the helper can live here close to t_write/t_edit.
+    # NOTE: _redact is defined below — forward call is fine in Python.
+    return _redact(diff_text)
+
+
+def _patch_preview(patch: str) -> str:
+    """Surface a patch (already a diff) capped + redacted."""
+    if not patch:
+        return ""
+    lines = patch.splitlines()
+    truncated = False
+    if len(lines) > DIFF_LINE_CAP:
+        lines = lines[:DIFF_LINE_CAP]
+        truncated = True
+    text = "\n".join(lines)
+    if len(text) > DIFF_BYTE_CAP:
+        text = text[:DIFF_BYTE_CAP]
+        truncated = True
+    if truncated:
+        text += "\n...[diff truncated]"
+    return _redact(text)
+
+
 def t_edit_file(args):
     full = _jail(args["path"])
     with open(full, "r") as f:
-        text = f.read()
+        old_text = f.read()
     old = args["old_string"]
-    n = text.count(old)
+    n = old_text.count(old)
     if n == 0:
-        return "ERROR: old_string not found"
+        return "ERROR: old_string not found", ""
     if n > 1 and not args.get("replace_all"):
-        return f"ERROR: old_string occurs {n} times; pass replace_all=true or be more specific"
+        return (f"ERROR: old_string occurs {n} times; pass replace_all=true or be more specific",
+                "")
+    new_text = (old_text.replace(old, args["new_string"]) if args.get("replace_all")
+                else old_text.replace(old, args["new_string"], 1))
     with open(full, "w") as f:
-        f.write(text.replace(old, args["new_string"]) if args.get("replace_all")
-                else text.replace(old, args["new_string"], 1))
-    return "Edit applied" + _secret_warning(args["new_string"])
+        f.write(new_text)
+    result = "Edit applied" + _secret_warning(args["new_string"])
+    _diff = _diff_preview(old_text, new_text, args["path"])
+    return result, _diff
 
 
 def t_list_dir(args):
@@ -2920,9 +2991,9 @@ def t_apply_patch(args):
     """
     patch = args.get("patch", "")
     if not patch or not patch.strip():
-        return "ERROR: patch is empty"
+        return "ERROR: patch is empty", ""
     if len(patch) > _PATCH_SIZE_CAP:
-        return f"ERROR: patch exceeds size cap ({_PATCH_SIZE_CAP} bytes)"
+        return f"ERROR: patch exceeds size cap ({_PATCH_SIZE_CAP} bytes)", ""
 
     # --- Parse target paths from --- / +++ headers ---
     # Standard unified diff header lines look like:
@@ -2940,17 +3011,17 @@ def t_apply_patch(args):
             target_paths.add(clean)
 
     if not target_paths:
-        return "ERROR: no target file paths found in patch headers"
+        return "ERROR: no target file paths found in patch headers", ""
 
     # --- Jail-check every path before touching the filesystem ---
     for p in target_paths:
         # Absolute paths are an explicit escape attempt
         if os.path.isabs(p):
-            return f"ERROR: patch targets a path outside the workspace: {p}"
+            return f"ERROR: patch targets a path outside the workspace: {p}", ""
         try:
             _jail(p)
         except ValueError:
-            return f"ERROR: patch targets a path outside the workspace: {p}"
+            return f"ERROR: patch targets a path outside the workspace: {p}", ""
 
     # --- Apply with git apply (atomic, works even without a git repo) ---
     patch_bytes = patch.encode()
@@ -2963,20 +3034,23 @@ def t_apply_patch(args):
             timeout=60,
         )
     except subprocess.TimeoutExpired:
-        return "ERROR: git apply timed out after 60s"
+        return "ERROR: git apply timed out after 60s", ""
     except FileNotFoundError:
-        return "ERROR: git is not installed in this environment"
+        return "ERROR: git is not installed in this environment", ""
 
     if r.returncode != 0:
         stderr = (r.stderr or b"").decode(errors="replace").strip()
-        return ("ERROR: " + stderr)[:OUTPUT_CAP]
+        return ("ERROR: " + stderr)[:OUTPUT_CAP], ""
 
     n = len(target_paths)
     # Scan only the added (+) lines of the diff for secrets.
     added = "\n".join(ln[1:] for ln in patch.splitlines()
                       if ln.startswith("+") and not ln.startswith("+++"))
-    return (f"Patch applied to {n} file(s): {', '.join(sorted(target_paths))}"
-            + _secret_warning(added))
+    result = (f"Patch applied to {n} file(s): {', '.join(sorted(target_paths))}"
+              + _secret_warning(added))
+    # Surface the patch itself as the diff preview (it already is a unified diff).
+    _diff = _patch_preview(patch)
+    return result, _diff
 
 
 _SPEC_ARTIFACTS = ("constitution", "spec", "plan", "tasks")
@@ -3676,13 +3750,14 @@ def make_executor(session, allowed, agent_label=None, depth=0):
             if name == "read_file":
                 return t_read_file(args), True
             if name == "write_file":
-                return t_write_file(args), True
+                r, diff = t_write_file(args)
+                return r, True, diff
             if name == "edit_file":
-                r = t_edit_file(args)
-                return r, not r.startswith("ERROR")
+                r, diff = t_edit_file(args)
+                return r, not r.startswith("ERROR"), diff
             if name == "apply_patch":
-                r = t_apply_patch(args)
-                return r, not r.startswith("ERROR")
+                r, diff = t_apply_patch(args)
+                return r, not r.startswith("ERROR"), diff
             if name == "list_dir":
                 return t_list_dir(args), True
             if name == "glob_files":
@@ -3776,10 +3851,22 @@ def agent_loop(session, provider, system, history, tool_names, max_turns,
         for tc in resp["tool_calls"]:
             detail = json.dumps(tc["args"])[:300]
             emit(session, "tool", name=tc["name"], detail=detail, agent=agent_label)
-            result, ok = executor(tc)
+            raw = executor(tc)
+            # write_file / edit_file / apply_patch return (result, ok, diff);
+            # all other tools return (result, ok).
+            if len(raw) == 3:
+                result, ok, diff = raw
+            else:
+                result, ok = raw
+                diff = ""
             result = _redact(result)          # scrub tool output (e.g. `cat config`, `env`)
-            emit(session, "tool_result", name=tc["name"], ok=ok,
-                 detail=result[:600], agent=agent_label)
+            # diff was already redacted inside _diff_preview/_patch_preview; pass
+            # it as an optional field so the frontend can render it inline.
+            _emit_kw = {"name": tc["name"], "ok": ok, "detail": result[:600],
+                        "agent": agent_label}
+            if diff:
+                _emit_kw["diff"] = diff
+            emit(session, "tool_result", **_emit_kw)
             history.append({"role": "tool", "tool_call_id": tc["id"],
                             "name": tc["name"], "content": result})
     else:
