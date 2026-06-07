@@ -15,6 +15,15 @@ COPY corps/ corps/
 COPY static/ static/
 COPY scripts/ scripts/
 
+# Vendor Tailwind (Wave 4 #3): compile the utility CSS the frontend uses into a
+# static file (Node/npm already present for stdio MCP). This is what lets us drop
+# the runtime cdn.tailwindcss.com <script> and tighten the CSP. --minify keeps it
+# small; pinned version for reproducibility.
+COPY tailwind.config.js .
+RUN npx --yes tailwindcss@3.4.17 \
+      -i static/forge/tailwind.input.css \
+      -o static/forge/tailwind.css --minify
+
 ENV DATA_DIR=/data PORT=8080
 EXPOSE 8080
 # --proxy-headers + --forwarded-allow-ips=* let uvicorn trust the Fly proxy's
