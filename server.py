@@ -3616,6 +3616,67 @@ def blackboard_delete(slug: str, _: str = Depends(verify_owner)):
     return {"ok": True, "removed": _bb_slug(slug)}
 
 
+# Wave 4 #6 — fractal/tiered memory, phase 1: deterministic theme-token
+# extraction. NOT a lossy LLM summary — we walk the persisted history and pull
+# structured facts (files touched, tools used, commands run, errors seen) so a
+# session can be compacted/recalled without spending a model call or hallucinating.
+
+def _extract_theme_tokens(history) -> dict:
+    """Walk a session's history → a compact structured digest. Deterministic:
+    same history always yields the same tokens (no model, no randomness)."""
+    files_read, files_written, tools = set(), set(), {}
+    commands, errors = [], []
+    user_turns = assistant_turns = 0
+    for h in history or []:
+        role = h.get("role")
+        if role == "user":
+            user_turns += 1
+        elif role == "assistant":
+            assistant_turns += 1
+            for tc in h.get("tool_calls") or []:
+                name = tc.get("name", "")
+                tools[name] = tools.get(name, 0) + 1
+                args = tc.get("args") or {}
+                path = args.get("path")
+                if name in ("read_file", "list_dir", "glob_files", "grep") and path:
+                    files_read.add(path)
+                elif name in ("write_file", "edit_file") and path:
+                    files_written.add(path)
+                elif name == "bash":
+                    cmd = (args.get("command") or "").strip()
+                    if cmd:
+                        commands.append(cmd[:200])
+        elif role == "tool":
+            content = h.get("content") or ""
+            if isinstance(content, str) and content.startswith("ERROR"):
+                errors.append(content[:160])
+    return {
+        "user_turns": user_turns,
+        "assistant_turns": assistant_turns,
+        "files_read": sorted(files_read),
+        "files_written": sorted(files_written),
+        "tools_used": dict(sorted(tools.items(), key=lambda kv: -kv[1])),
+        "commands": commands[:40],
+        "errors": errors[:20],
+    }
+
+
+def _digest_markdown(s) -> str:
+    """A compact, human/agent-readable rendering of the theme tokens — the
+    'working memory' tier (tier 1) between raw history and a pattern library."""
+    t = _extract_theme_tokens(s.get("history", []))
+    lines = [f"# Digest — {s['title']}", "",
+             f"- turns: {t['user_turns']} user / {t['assistant_turns']} assistant",
+             f"- files written: {', '.join(t['files_written']) or '(none)'}",
+             f"- files read: {', '.join(t['files_read'][:20]) or '(none)'}",
+             f"- tools: {', '.join(f'{k}×{v}' for k, v in t['tools_used'].items()) or '(none)'}"]
+    if t["commands"]:
+        lines += ["", "## commands"] + [f"- `{c}`" for c in t["commands"][:15]]
+    if t["errors"]:
+        lines += ["", "## errors seen"] + [f"- {e}" for e in t["errors"][:10]]
+    return "\n".join(lines).strip() + "\n"
+
+
 def _render_transcript_md(s) -> str:
     """Render a session's history as readable Markdown (no secrets beyond what
     is already in the persisted, redacted history)."""
@@ -3662,6 +3723,20 @@ def session_export(sid: str, format: str = "md", _: str = Depends(verify_user)):
     return PlainTextResponse(
         md, media_type="text/markdown",
         headers={"Content-Disposition": f'attachment; filename="{sid}.md"'})
+
+
+@app.get("/api/sessions/{sid}/digest")
+def session_digest(sid: str, format: str = "json", _: str = Depends(verify_user)):
+    """Wave 4 #6 — deterministic theme-token digest of a session (tier-1
+    working memory). format=json (structured tokens) or md (readable)."""
+    s = SESSIONS.get(sid)
+    if not s:
+        raise HTTPException(404, "No such session")
+    if format == "md":
+        return PlainTextResponse(_digest_markdown(s), media_type="text/markdown")
+    with s["lock"]:
+        tokens = _extract_theme_tokens(s.get("history", []))
+    return {"id": s["id"], "title": s["title"], "tokens": tokens}
 
 
 @app.get("/api/usage")
