@@ -154,3 +154,11 @@ Auto-Commander runs this pipeline **by default** on every message. `/deploy` is 
 - Framework landscape (LangGraph / CrewAI / AutoGen — "pick what you can debug at 2am;
   the retry/timeout/cost layer matters more than the framework"):
   https://www.datacamp.com/tutorial/crewai-vs-langgraph-vs-autogen
+
+---
+
+## Governance: The Medallion
+
+Beyond mission-command doctrine, all units obey **`agent-governance.md`** (this directory):
+the 12-Step alignment loop (inner alignment) + the 12 Traditions (outer governance).
+Human authority is absolute; disclose errors; prefer reversible actions; principles over expedience.
