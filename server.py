@@ -114,6 +114,15 @@ MAX_UPLOAD_FILES = 20
 MAX_UPLOAD_BYTES = 10_000_000                                    # 10 MB written per file
 # base64 expands ~4/3; cap the ENCODED input so we never decode a huge blob into memory
 MAX_UPLOAD_B64 = MAX_UPLOAD_BYTES * 4 // 3 + 1024
+# Web terminal (docs/TERMINAL_DESIGN.md) — a Claude Code-style REPL fallback.
+# Double env gate, BOTH default OFF (404 when off — don't advertise):
+#   TERMINAL_ENABLED      → serves the /terminal page (REPL over existing,
+#                           already-auth-gated session APIs; no new capability)
+#   TERMINAL_EXEC_ENABLED → additionally arms the Owner-only !cmd one-shot exec
+TERMINAL_ENABLED = os.environ.get("TERMINAL_ENABLED", "").lower() in ("1", "true", "yes")
+TERMINAL_EXEC_ENABLED = os.environ.get("TERMINAL_EXEC_ENABLED", "").lower() in ("1", "true", "yes")
+TERMINAL_MAX_CONCURRENT = int(os.environ.get("TERMINAL_MAX_CONCURRENT", "1"))
+TERMINAL_CMD_MAX_CHARS = 8000        # bound a single !cmd before any processing
 
 # Commands that pause the loop for human approval (CodeMonkeys design rule:
 # no silent pushes/deploys/destruction; git reset --hard has bitten us before)
@@ -3945,6 +3954,85 @@ def session_delete(sid: str, _: str = Depends(verify_user)):
     return {"ok": True}
 
 
+# ---- web terminal (docs/TERMINAL_DESIGN.md) ----------------------------------
+# A Claude Code-style REPL fallback. The REPL page drives ONLY the existing
+# session endpoints above (no new capability); the one new capability is the
+# Owner-only !cmd one-shot exec below, which carries the layered fail-closed
+# gate stack (red-teamed in the design doc, verdict GO-WITH-FIXES F1–F5):
+#   0. TERMINAL_ENABLED + TERMINAL_EXEC_ENABLED both explicitly true (404 off)
+#   1. verify_owner — Members get 403 even when armed
+#   2. bound to an idle session — every attempt (incl. refused) leaves a
+#      receipt in that session's redacted JSONL event log
+#   3. _is_risky → needs_confirm round-trip (anti-footgun, not a boundary —
+#      the caller already holds an Owner token)
+#   4. command length cap, BASH_TIMEOUT, OUTPUT_CAP, global concurrency cap
+#   5. _redact() on the HTTP response as well as the emitted receipt
+_terminal_lock = threading.Lock()
+_active_terminal_execs = 0
+
+
+class TerminalExec(BaseModel):
+    sid: str
+    command: str
+    confirm: bool = False
+
+
+@app.post("/api/terminal/exec")
+def terminal_exec(req: TerminalExec, owner: str = Depends(verify_owner)):
+    global _active_terminal_execs
+    if not (TERMINAL_ENABLED and TERMINAL_EXEC_ENABLED):
+        raise HTTPException(404, "Not found")          # don't advertise when off
+    if len(req.command) > TERMINAL_CMD_MAX_CHARS:
+        raise HTTPException(413, f"command exceeds {TERMINAL_CMD_MAX_CHARS} chars")
+    cmd = req.command.strip()
+    if not cmd:
+        raise HTTPException(400, "empty command")
+    s = SESSIONS.get(req.sid)
+    if not s:
+        raise HTTPException(404, "No such session")
+    if s["status"] != "idle":                          # F5: no mid-run interleave
+        raise HTTPException(409, "Session is busy — stop the run first")
+    if _is_risky(cmd) and not req.confirm:
+        # F2: refused/unconfirmed attempts leave a receipt too
+        emit(s, "terminal_exec", by=owner, command=cmd, status="needs_confirm")
+        return {"ok": False, "needs_confirm": True,
+                "message": "risky command — re-send with confirm:true to run it"}
+    with _terminal_lock:
+        if _active_terminal_execs >= TERMINAL_MAX_CONCURRENT:
+            raise HTTPException(429, "terminal exec capacity reached")
+        _active_terminal_execs += 1
+    try:
+        emit(s, "terminal_exec", by=owner, command=cmd, status="run")
+        try:
+            r = subprocess.run(["bash", "-c", cmd], cwd=WORKSPACE_DIR,
+                               env=dict(os.environ), capture_output=True,
+                               text=True, timeout=BASH_TIMEOUT)
+            out = (r.stdout or "")
+            if r.stderr:
+                out += "\n[stderr]\n" + r.stderr
+            out = out.strip() or f"(no output, exit {r.returncode})"
+            exit_code = r.returncode
+        except subprocess.TimeoutExpired:
+            out, exit_code = f"ERROR: command timed out after {BASH_TIMEOUT}s", -1
+        out = out[:OUTPUT_CAP]
+        emit(s, "terminal_exec_result", command=cmd, exit_code=exit_code, output=out)
+        # F3: redact the response body, not just the persisted/streamed receipt
+        return {"ok": True, "exit_code": exit_code, "output": _redact(out)}
+    finally:
+        with _terminal_lock:
+            _active_terminal_execs -= 1
+
+
+@app.get("/terminal")
+def terminal_page():
+    if not TERMINAL_ENABLED:
+        raise HTTPException(404, "Not found")          # don't advertise when off
+    return FileResponse(
+        os.path.join(BASE_DIR, "static", "forge", "terminal.html"),
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
 # ----------------------------------------------------------------- repos
 
 class RepoClone(BaseModel):
@@ -4037,7 +4125,16 @@ def swarm_state(_: str = Depends(verify_user)):
 
 class NoCacheStaticFiles(StaticFiles):
     """Serve static files with Cache-Control: no-cache so browsers revalidate
-    (ETag/304 — cheap) instead of running stale JS after a deploy."""
+    (ETag/304 — cheap) instead of running stale JS after a deploy.
+
+    Also enforces the terminal env gate on the static mount: /terminal returns
+    404 when TERMINAL_ENABLED is off, so its assets must not be fingerprintable
+    via /static/forge/terminal.* either (docs/TERMINAL_DESIGN.md R11)."""
+
+    async def get_response(self, path, scope):
+        if not TERMINAL_ENABLED and os.path.basename(path).startswith("terminal."):
+            return PlainTextResponse("Not Found", status_code=404)
+        return await super().get_response(path, scope)
 
     def file_response(self, *args, **kwargs):
         resp = super().file_response(*args, **kwargs)
