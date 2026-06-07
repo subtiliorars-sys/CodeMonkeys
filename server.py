@@ -59,6 +59,14 @@ try:
 except ImportError:       # falls back to manual-entry (never to an external CDN)
     segno = None
 
+try:
+    from cryptography.fernet import Fernet, InvalidToken as _FernetInvalidToken
+    _FERNET_AVAILABLE = True
+except ImportError:
+    Fernet = None  # type: ignore[assignment,misc]
+    _FernetInvalidToken = Exception  # type: ignore[assignment,misc]
+    _FERNET_AVAILABLE = False
+
 # ----------------------------------------------------------------- config
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -153,6 +161,19 @@ FLEET_TOKEN = os.environ.get("FLEET_TOKEN", "").strip()
 if len(FLEET_TOKEN) < 16:
     FLEET_TOKEN = ""
 FLEET_MAX_WORKERS = 200              # contract bound; payload stays ≪ 1 MB
+
+# ---- secret-hardening: CM_MASTER_KEY capture --------------------------------
+# Captured here at import time; evicted from os.environ after boot (see
+# _evict_env_secrets() near the bottom of this module) so /proc/self/environ
+# no longer carries it after startup.
+# NOTE: GITHUB_TOKEN is intentionally NOT evicted — _auth_url() reads
+# os.environ.get("GITHUB_TOKEN") at call time (every git clone/push) and
+# child_env = {**os.environ, ...} spreads the full env to subprocesses, so
+# evicting it would silently break all authenticated git operations.
+# Residual: a same-uid ptrace of the server process can still read decrypted
+# secrets from in-memory variables; full closure requires the bash sandbox
+# described in docs/design/PER_USER_ISOLATION.md L4.
+CM_MASTER_KEY: str = os.environ.get("CM_MASTER_KEY", "")       # Fernet at-rest encryption key
 
 # Commands that pause the loop for human approval (CodeMonkeys design rule:
 # no silent pushes/deploys/destruction; git reset --hard has bitten us before)
@@ -296,13 +317,138 @@ def _save_json(path, data):
 
 # ----------------------------------------------------------------- auth
 
-def _session_secret():
-    if not os.path.exists(SECRET_FILE):
-        with open(SECRET_FILE, "wb") as f:
-            f.write(secrets.token_bytes(32))
-        os.chmod(SECRET_FILE, 0o600)
-    with open(SECRET_FILE, "rb") as f:
-        return f.read()
+def _make_fernet() -> "Fernet | None":
+    """Return a Fernet instance derived from CM_MASTER_KEY, or None if it's unset.
+
+    CM_MASTER_KEY is KDF'd SHA-256 → urlsafe-b64 → Fernet key. A single SHA-256 is
+    NOT a password-stretching KDF, so **CM_MASTER_KEY must be a high-entropy random
+    value** (≥32 bytes, e.g. `python -c "import secrets;print(secrets.token_urlsafe(32))"`),
+    NOT a human-chosen passphrase — otherwise an attacker holding the on-disk
+    ciphertext could brute-force it offline. (Caller fail-closes if the key is set
+    but cryptography is unavailable.)
+    """
+    if not CM_MASTER_KEY:
+        return None
+    digest = hashlib.sha256(CM_MASTER_KEY.encode()).digest()
+    fkey = base64.urlsafe_b64encode(digest)
+    return Fernet(fkey)
+
+
+# Versioned header marking a Fernet-encrypted secret file. Its presence/absence
+# is what disambiguates "encrypted-under-this-or-another-key" from "legacy
+# plaintext" — so a wrong/rotated key fails CLOSED instead of being mistaken for
+# plaintext and silently replacing the signing secret (red-team F1/F2).
+_ENC_MAGIC = b"CMENC1\n"
+
+# Module-level singleton — _session_secret() is called on every token
+# sign/verify, so we load once and cache.
+_SESSION_SECRET_CACHE: bytes | None = None
+_SESSION_SECRET_LOCK = threading.Lock()
+
+
+def _session_secret() -> bytes:
+    """Return the 32-byte HMAC signing secret (the auth root of trust), loading or
+    generating it on first call, then caching.
+
+    File format: an encrypted file is `_ENC_MAGIC + Fernet(secret)`; a legacy file
+    is bare plaintext bytes (no header).
+
+    With CM_MASTER_KEY set (+ cryptography available):
+      - first boot → generate 32 random bytes, write encrypted (header + ciphertext).
+      - encrypted file present → decrypt. **Wrong/rotated key → RAISE (fail closed)**:
+        we never regenerate or treat ciphertext as plaintext, because that would
+        substitute a disk-leaked value for the signing secret and permanently
+        entrench a compromise (red-team F1).
+      - legacy plaintext file present → migrate once (re-write encrypted).
+
+    With CM_MASTER_KEY UNSET: original plaintext behaviour (one-time warning), so
+    existing deploys are unchanged — EXCEPT an already-encrypted file with no key
+    RAISES (red-team F2) rather than reading ciphertext as the secret.
+    """
+    global _SESSION_SECRET_CACHE
+    if _SESSION_SECRET_CACHE is not None:
+        return _SESSION_SECRET_CACHE
+    with _SESSION_SECRET_LOCK:
+        if _SESSION_SECRET_CACHE is not None:   # double-checked under lock
+            return _SESSION_SECRET_CACHE
+        import logging as _logging
+
+        # Operator set a key but crypto is missing → fail closed, never degrade to
+        # reading the file as plaintext/ciphertext (red-team F3).
+        if CM_MASTER_KEY and not _FERNET_AVAILABLE:
+            raise RuntimeError(
+                "CM_MASTER_KEY is set but the 'cryptography' package is unavailable; "
+                "refusing to boot rather than mishandle the encrypted session secret.")
+        if CM_MASTER_KEY and len(CM_MASTER_KEY) < 16:
+            # enforce, don't warn — a too-short key must not reach production silently
+            raise RuntimeError(
+                "CM_MASTER_KEY is too short (<16 chars); use a 32+ byte random value "
+                "(e.g. python -c \"import secrets;print(secrets.token_urlsafe(32))\").")
+
+        fernet = _make_fernet()            # None iff CM_MASTER_KEY unset
+        exists = os.path.exists(SECRET_FILE)
+        blob = b""
+        if exists:
+            with open(SECRET_FILE, "rb") as f:
+                blob = f.read()
+        is_encrypted = blob.startswith(_ENC_MAGIC)
+
+        def _persist(raw_bytes: bytes, encrypt: bool):
+            data = (_ENC_MAGIC + fernet.encrypt(raw_bytes)) if encrypt else raw_bytes
+            fd, tmp = tempfile.mkstemp(dir=os.path.dirname(SECRET_FILE) or ".",
+                                       prefix=".session_secret_")
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    f.write(data)
+            except Exception:
+                os.unlink(tmp)
+                raise
+            os.replace(tmp, SECRET_FILE)
+            os.chmod(SECRET_FILE, 0o600)
+
+        if fernet is None:
+            # Plaintext mode (no key). An encrypted file with no key = fail closed.
+            if is_encrypted:
+                raise RuntimeError(
+                    "session_secret.key is encrypted but CM_MASTER_KEY is unset; set the "
+                    "key to boot (refusing to regenerate or read ciphertext as the secret).")
+            if not exists:
+                raw = secrets.token_bytes(32)
+                _persist(raw, encrypt=False)
+            else:
+                raw = blob
+                if len(raw) != 32:
+                    raise RuntimeError(
+                        "session_secret.key is corrupt (expected 32 plaintext bytes); "
+                        "refusing to boot.")
+            _logging.warning(
+                "session_secret.key stored UNENCRYPTED; set CM_MASTER_KEY to encrypt at rest")
+            _SESSION_SECRET_CACHE = raw
+            return raw
+
+        # Key set + crypto available.
+        if not exists:
+            raw = secrets.token_bytes(32)
+            _persist(raw, encrypt=True)
+        elif is_encrypted:
+            try:
+                raw = fernet.decrypt(blob[len(_ENC_MAGIC):])
+            except _FernetInvalidToken:
+                raise RuntimeError(
+                    "cannot decrypt session_secret.key with the current CM_MASTER_KEY "
+                    "(rotated or wrong key?). Refusing to boot — restore the correct key, "
+                    "or delete the file to start fresh (this invalidates all sessions).")
+        else:
+            # Legacy plaintext + key now set → migrate ONCE to encrypted.
+            raw = blob
+            if len(raw) != 32:
+                raise RuntimeError(
+                    "session_secret.key is corrupt (expected 32 plaintext bytes); "
+                    "refusing to migrate/boot.")
+            _persist(raw, encrypt=True)
+            _logging.info("session_secret.key migrated from plaintext to Fernet-encrypted")
+        _SESSION_SECRET_CACHE = raw
+        return raw
 
 
 def hash_pin(pin: str, salt: str) -> str:
@@ -4196,7 +4342,7 @@ def _save_uploads(sid: str, files) -> list:
 
 
 @app.post("/api/sessions/{sid}/message")
-def session_message(sid: str, req: MessageRequest, _: str = Depends(verify_user)):
+def session_message(sid: str, req: MessageRequest, username: str = Depends(verify_user)):
     s = SESSIONS.get(sid)
     if not s:
         raise HTTPException(404, "No such session")
@@ -4210,7 +4356,12 @@ def session_message(sid: str, req: MessageRequest, _: str = Depends(verify_user)
             raise HTTPException(409, "Session is busy")
         s["status"] = "running"
     try:
-        s["mode"] = req.mode if req.mode in ("plan", "default", "auto") else "default"
+        # auto mode skips the human approval gate — Owner only (injection hardening).
+        # Members requesting auto silently fall back to default so the API stays
+        # forward-compatible without leaking role information.
+        user_role = load_users().get(username, {}).get("role")
+        allowed_modes = ("plan", "default", "auto") if user_role == "Owner" else ("plan", "default")
+        s["mode"] = req.mode if req.mode in allowed_modes else "default"
         text = _cap_message(req.text)
         names = _save_uploads(sid, req.files)
         if names:
@@ -4668,6 +4819,44 @@ def root():
         os.path.join(BASE_DIR, "static", "forge", "index.html"),
         headers={"Cache-Control": "no-cache"},
     )
+
+
+# ---- secret-hardening: evict secret-named env vars after boot ----------------
+# All secrets listed below are already captured into module-level constants
+# (WEBHOOK_SECRET, CM_MASTER_KEY, and the session signing secret in the cache).
+# Deleting them from os.environ prevents a jailbroken bash child from reading
+# them via `printenv`, `cat /proc/self/environ`, or `env`.
+#
+# EVICTED (safe — all consumers use the module-level constant):
+#   CM_MASTER_KEY     → captured above; only used by _make_fernet() at import
+#   WEBHOOK_SECRET    → module constant; _verify_github_sig() reads it directly
+#   WEBHOOK_ENABLED, WEBHOOK_ALLOWED_SENDERS, WEBHOOK_TRIGGER_LABEL → booleans/lists
+#
+# NOT EVICTED (intentionally preserved):
+#   GITHUB_TOKEN      → _auth_url() reads os.environ at call time; removing it
+#                       silently breaks all authenticated git clone/push calls
+#                       because child_env = {**os.environ, ...} propagates the
+#                       whole env to git subprocesses.  Leave it and accept the
+#                       residual — a same-uid `printenv` can still read it.
+#                       Full closure requires the bash sandbox (PER_USER_ISOLATION.md L4).
+#   PORT, DATA_DIR, … → operational, non-secret config used throughout.
+#
+# Residual risk: a same-uid ptrace of the server process can still read any
+# decrypted secret from in-memory Python objects (e.g. the Fernet key, the
+# signing secret cache).  Only a process-isolation sandbox (separate UID + seccomp)
+# closes that gap.
+_SECRET_ENV_EVICT = {
+    "CM_MASTER_KEY",
+    "WEBHOOK_SECRET",
+}
+
+def _evict_env_secrets() -> None:
+    """Delete captured secret vars from os.environ after all module constants are set."""
+    for _k in _SECRET_ENV_EVICT:
+        os.environ.pop(_k, None)
+
+
+_evict_env_secrets()
 
 
 if __name__ == "__main__":
