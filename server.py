@@ -122,6 +122,17 @@ RISKY_PATTERNS = [
     r"\bgit\s+clean\b",
     r"\bgh\s+repo\s+delete\b",
     r"\bsudo\b",
+    # W5 — more irreversible / system-level verbs the gate should not miss
+    r"\bdd\b",                       # raw block writes (dd of=/dev/…)
+    r"\bmkfs(?:\.\w+)?\b",           # filesystem format
+    r"\bchmod\s+-R\b",              # recursive perm change
+    r"\bchown\s+-R\b",             # recursive owner change
+    r"\btruncate\b",               # truncate -s 0 file
+    r">\s*/dev/",                   # redirect into a device node
+    r"\b(?:curl|wget)\b[^|]*\|\s*(?:sudo\s+)?(?:ba)?sh\b",  # pipe net → shell
+    r"\b(?:shutdown|reboot|halt|poweroff|telinit)\b",  # NOT bare `init` (git/npm init are benign)
+    r"\bgit\s+push\b.*--force\b|\bgit\s+push\b.*\s-f\b",    # explicit force-push
+    r"\bgit\s+branch\s+-D\b",       # force-delete branch
 ]
 
 
@@ -2181,7 +2192,42 @@ def t_write_file(args):
     os.makedirs(os.path.dirname(full) or full, exist_ok=True)
     with open(full, "w") as f:
         f.write(args["content"])
-    return f"Wrote {len(args['content'])} chars to {args['path']}"
+    return (f"Wrote {len(args['content'])} chars to {args['path']}"
+            + _secret_warning(args["content"]))
+
+
+# W6 — secret-scan write guard. Flag (do NOT block) obvious credentials being
+# persisted into the workspace, so a leak is visible in the tool result + audit
+# log rather than silently committed. Conservative patterns to avoid crying
+# wolf; non-blocking because legit files (.env.example, fixtures) carry shaped
+# tokens too — the warning is the deterrent, the human/model decides.
+_SECRET_PATTERNS = [
+    ("AWS access key id", r"\bAKIA[0-9A-Z]{16}\b"),
+    ("GitHub token", r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
+    ("OpenAI key", r"\bsk-[A-Za-z0-9]{20,}\b"),
+    ("Slack token", r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
+    ("Google API key", r"\bAIza[0-9A-Za-z_\-]{35}\b"),
+    ("private key block", r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----"),
+    ("AWS secret access key", r"\baws_secret_access_key\s*[=:]\s*\S{20,}"),
+]
+_SECRET_RE = [(kind, re.compile(rx)) for kind, rx in _SECRET_PATTERNS]
+
+
+def _scan_secrets(text: str) -> list:
+    """Return a sorted list of distinct secret KINDS found in *text* (no values)."""
+    if not text:
+        return []
+    found = {kind for kind, rx in _SECRET_RE if rx.search(text)}
+    return sorted(found)
+
+
+def _secret_warning(text: str) -> str:
+    kinds = _scan_secrets(text)
+    if not kinds:
+        return ""
+    return ("\n⚠ SECRET WARNING: this write appears to contain "
+            f"{', '.join(kinds)}. If that is a real credential, do NOT commit it — "
+            "use an env var or /data secret instead.")
 
 
 def t_edit_file(args):
@@ -2197,7 +2243,7 @@ def t_edit_file(args):
     with open(full, "w") as f:
         f.write(text.replace(old, args["new_string"]) if args.get("replace_all")
                 else text.replace(old, args["new_string"], 1))
-    return "Edit applied"
+    return "Edit applied" + _secret_warning(args["new_string"])
 
 
 def t_list_dir(args):
@@ -2325,7 +2371,11 @@ def t_apply_patch(args):
         return ("ERROR: " + stderr)[:OUTPUT_CAP]
 
     n = len(target_paths)
-    return f"Patch applied to {n} file(s): {', '.join(sorted(target_paths))}"
+    # Scan only the added (+) lines of the diff for secrets.
+    added = "\n".join(ln[1:] for ln in patch.splitlines()
+                      if ln.startswith("+") and not ln.startswith("+++"))
+    return (f"Patch applied to {n} file(s): {', '.join(sorted(target_paths))}"
+            + _secret_warning(added))
 
 
 _SPEC_ARTIFACTS = ("constitution", "spec", "plan", "tasks")
