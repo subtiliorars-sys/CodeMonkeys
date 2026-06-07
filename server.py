@@ -123,6 +123,14 @@ WEBHOOK_TRIGGER_LABEL = os.environ.get("WEBHOOK_TRIGGER_LABEL", "codemonkeys").l
 WEBHOOK_MAX_CONCURRENT = int(os.environ.get("WEBHOOK_MAX_CONCURRENT", "2"))
 WEBHOOK_MAX_BODY_BYTES = 1_000_000   # cap webhook payload before hashing/parsing
 WEBHOOK_SEEN_MAX = 500               # bounded dedup memory (FIFO eviction)
+# Notify-on-done (S5): outbound ping when a session run finishes. OFF until the
+# owner sets NOTIFY_WEBHOOK_URL (e.g. a self-hosted ntfy endpoint). Best-effort,
+# ops-metadata only (never prompts/code/secrets). NOTIFY_ON: "all" (default) or
+# "error" (only failed/errored runs). Optional HMAC via NOTIFY_WEBHOOK_SECRET.
+NOTIFY_WEBHOOK_URL = os.environ.get("NOTIFY_WEBHOOK_URL", "").strip()
+NOTIFY_WEBHOOK_SECRET = os.environ.get("NOTIFY_WEBHOOK_SECRET", "")
+NOTIFY_ON = os.environ.get("NOTIFY_ON", "all").strip().lower()
+NOTIFY_TIMEOUT_S = 5
 MAX_UPLOAD_FILES = 20
 MAX_UPLOAD_BYTES = 10_000_000                                    # 10 MB written per file
 # base64 expands ~4/3; cap the ENCODED input so we never decode a huge blob into memory
@@ -3465,9 +3473,21 @@ def agent_loop(session, provider, system, history, tool_names, max_turns,
     tools = [_combined[t] for t in tool_names if t in _combined]
     executor = make_executor(session, tool_names, agent_label, depth)
     final_text = ""
+    # record the run's terminal outcome so notify-on-done (S5) reflects reality —
+    # agent_loop swallows failures as emitted events + normal return, so a caller
+    # can't tell ok from budget/model-error/max-turns by the return value alone.
+    # Only the top-level run (depth 0) owns this field; subagents don't touch it.
+    if depth == 0:
+        session["_run_outcome"] = "ok"
+
+    def _set_outcome(reason):
+        if depth == 0:
+            session["_run_outcome"] = reason
+
     for _ in range(max_turns):
         if session["stop_flag"].is_set():
             emit(session, "error", message="Stopped by user", agent=agent_label)
+            _set_outcome("stopped")
             break
         _budget = session_budget(session)
         if session["spent_usd"] >= _budget:
@@ -3475,6 +3495,7 @@ def agent_loop(session, provider, system, history, tool_names, max_turns,
                  message=f"Session budget ${_budget:.2f} reached "
                          f"(spent ${session['spent_usd']:.2f}). Start a new session "
                          "or raise the budget.")
+            _set_outcome("budget")
             break
         try:
             resp = call_model(provider, system, history, tools)
@@ -3493,9 +3514,11 @@ def agent_loop(session, provider, system, history, tool_names, max_turns,
                 except Exception as e2:
                     emit(session, "error", agent=agent_label,
                          message=f"Model call failed after escalation: {e2}")
+                    _set_outcome("model_error")
                     break
             else:
                 emit(session, "error", message=f"Model call failed: {e}", agent=agent_label)
+                _set_outcome("model_error")
                 break
         usd = call_cost(provider, resp["in_tokens"], resp["out_tokens"])
         session["spent_usd"] += usd
@@ -3520,6 +3543,7 @@ def agent_loop(session, provider, system, history, tool_names, max_turns,
                             "name": tc["name"], "content": result})
     else:
         emit(session, "error", message="Max turns reached", agent=agent_label)
+        _set_outcome("max_turns")
     return final_text
 
 
@@ -3635,6 +3659,61 @@ FULL_TOOLS = ["read_file", "write_file", "edit_file", "apply_patch", "list_dir",
               "blackboard_read", "blackboard_write"]
 
 
+# ---- notify-on-done (S5) -----------------------------------------------------
+
+def _notify_label(text: str, cap: int) -> str:
+    """Ops label safe to send off-box: redact known secrets, withhold if a
+    credential pattern remains (titles/repos are user-supplied)."""
+    text = _redact(str(text or ""))
+    if _scan_secrets(text):
+        return "(withheld)"
+    return text[:cap]
+
+
+def _notify_done(session, errored: bool, outcome: str = "ok"):
+    """Fire a best-effort outbound ping when a run finishes. OFF unless the owner
+    set NOTIFY_WEBHOOK_URL.
+
+    Ops metadata only, but title/repo are USER-SUPPLIED (a member sets them, and
+    the GitHub-webhook trigger #36 sets title from an issue title) — so they are
+    BEST-EFFORT scrubbed (`_notify_label`), not guaranteed secret-free, and the
+    notify text is externally influenceable (treat it as untrusted on the
+    receiving end). Set NOTIFY_WEBHOOK_SECRET so the receiver can authenticate
+    the ping. Runs in a daemon thread; any failure is swallowed."""
+    if not NOTIFY_WEBHOOK_URL:
+        return
+    if NOTIFY_ON == "error" and not errored:
+        return
+    try:
+        with session["lock"]:
+            payload = {
+                "source": "codemonkeys",
+                "event": "session_done",
+                "session": session["id"],
+                "title": _notify_label(session.get("title"), 200),
+                "repo": _notify_label(session.get("repo"), 120),
+                "status": "error" if errored else "ok",
+                "outcome": outcome,          # ok|stopped|budget|model_error|max_turns
+                "spent_usd": round(session.get("spent_usd", 0.0), 4),
+                "ts": int(time.time()),
+            }
+    except Exception:
+        return
+    body = json.dumps(payload).encode()
+    headers = {"Content-Type": "application/json"}
+    if NOTIFY_WEBHOOK_SECRET:
+        headers["X-CodeMonkeys-Signature"] = "sha256=" + hmac.new(
+            NOTIFY_WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
+
+    def _post():
+        try:
+            requests.post(NOTIFY_WEBHOOK_URL, data=body, headers=headers,
+                          timeout=NOTIFY_TIMEOUT_S, allow_redirects=False)
+        except Exception:
+            pass        # best-effort; a down notifier never breaks a run
+    threading.Thread(target=_post, daemon=True).start()
+
+
 def run_session_message(session, text):
     cfg = load_models()
     provider = main_provider(cfg)
@@ -3642,6 +3721,7 @@ def run_session_message(session, text):
         emit(session, "error", message="No enabled model provider — add an API key in Models settings.")
         emit(session, "done")
         session["status"] = "idle"
+        _notify_done(session, errored=True, outcome="no_provider")
         return
     session["status"] = "running"
     session["stop_flag"].clear()
@@ -3656,13 +3736,22 @@ def run_session_message(session, text):
     else:
         tool_names = FULL_TOOLS + _mcp_all
     system = _commander_system(session) + MODE_GUIDANCE.get(mode, "")
+    raised = False
     try:
         agent_loop(session, provider, system,
                    session["history"], tool_names, MAX_TURNS)
+    except Exception:
+        raised = True
+        raise
     finally:
+        # a clean user-initiated stop is NOT a failure; budget/model_error/
+        # max_turns and any raised exception ARE.
+        outcome = "raised" if raised else session.get("_run_outcome", "ok")
+        errored = outcome not in ("ok", "stopped")
         session["status"] = "idle"
         emit(session, "done")
         persist_history(session)
+        _notify_done(session, errored=errored, outcome=outcome)
 
 
 # ----------------------------------------------------------------- session API

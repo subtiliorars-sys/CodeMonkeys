@@ -65,6 +65,18 @@ keep that radius away from everything else.
   nosniff`, `Referrer-Policy: no-referrer`. CSP is kept minimal (no `script-src`)
   so it doesn't break the Tailwind CDN; a stricter `script-src` pairs with
   vendoring Tailwind (see Known limitations).
+- **Notify-on-done (outbound egress).** When a run finishes, the server can POST
+  a completion ping to an owner-configured `NOTIFY_WEBHOOK_URL` (e.g. self-hosted
+  ntfy). **OFF unless the URL is set.** Destination is env-only (no user/model
+  influence on where it goes); payload is JSON **body** only (no CRLF/header
+  injection), `allow_redirects=False`, 5 s timeout, best-effort in a daemon
+  thread (a down notifier never affects the run). Payload is ops-metadata
+  (`session/title/repo/status/outcome/spent_usd/ts`) with title/repo
+  **best-effort** scrubbed — but they are user-supplied (and an issue title via
+  the GitHub webhook is *external*), so treat the notify text as untrusted on the
+  receiving end and set `NOTIFY_WEBHOOK_SECRET` (HMAC-SHA256, `X-CodeMonkeys-
+  Signature`) so the receiver can authenticate it. Not a guarantee of zero
+  secrets — `_scan_secrets` is a best-effort blocklist.
 - **Secret-scan write guard.** `write_file`, `edit_file`, and `apply_patch`
   scan the content they persist (for `apply_patch`, only the added `+` lines)
   for obvious credential shapes — AWS access-key id, GitHub `ghp_`/`gho_`…,
