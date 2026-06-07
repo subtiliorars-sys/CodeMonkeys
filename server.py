@@ -136,6 +136,15 @@ TERMINAL_ENABLED = os.environ.get("TERMINAL_ENABLED", "").lower() in ("1", "true
 TERMINAL_EXEC_ENABLED = os.environ.get("TERMINAL_EXEC_ENABLED", "").lower() in ("1", "true", "yes")
 TERMINAL_MAX_CONCURRENT = int(os.environ.get("TERMINAL_MAX_CONCURRENT", "1"))
 TERMINAL_CMD_MAX_CHARS = 8000        # bound a single !cmd before any processing
+# Fleet Deck feed (~/fleet/contracts/fleetdeck-codemonkeys.md): read-only ops
+# metadata for the local fleet dashboard. OFF until the owner sets the
+# FLEET_TOKEN Fly secret — unset/too-weak token = the route isn't registered
+# at all (true 404 for every method; nothing to fingerprint). A token <16 chars
+# is treated as unset so a stray/whitespace value can't open the feed weakly.
+FLEET_TOKEN = os.environ.get("FLEET_TOKEN", "").strip()
+if len(FLEET_TOKEN) < 16:
+    FLEET_TOKEN = ""
+FLEET_MAX_WORKERS = 200              # contract bound; payload stays ≪ 1 MB
 
 # Commands that pause the loop for human approval (CodeMonkeys design rule:
 # no silent pushes/deploys/destruction; git reset --hard has bitten us before)
@@ -4256,6 +4265,81 @@ def session_delete(sid: str, _: str = Depends(verify_user)):
         except OSError:
             pass
     return {"ok": True}
+
+
+# ---- Fleet Deck status feed (~/fleet/contracts/fleetdeck-codemonkeys.md) ------
+# Read-only ops metadata for the local fleet dashboard: each session maps to one
+# `worker`. STRICT allowlist of fields — no prompts, code, keys, or user content
+# beyond the session title (the dashboard's "objective" label). Fail-closed:
+# FLEET_TOKEN unset → 404 (endpoint doesn't exist); bad/missing bearer → 401.
+
+_FLEET_STATE = {"running": "WORKING", "waiting_approval": "BLOCKED",
+                "error": "ERROR", "done": "DONE", "idle": "IDLE",
+                "connected": "IDLE"}
+
+
+def _fleet_ops_label(text: str, cap: int) -> str:
+    """An ops label safe to publish: redact the server's own secrets, and if a
+    user pasted an obvious *third-party* credential into a session title/repo,
+    drop the whole field rather than ship it (the feed crosses into the
+    FLEET_TOKEN principal, outside per-user auth)."""
+    text = str(text or "")
+    if _scan_secrets(text):
+        return "(withheld: possible secret in label)"
+    return _redact(text)[:cap]
+
+
+def fleet_status(request: Request):
+    if not FLEET_TOKEN:                # runtime guard (route also unregistered when off)
+        raise HTTPException(404, "Not Found")
+    auth = request.headers.get("authorization", "")
+    supplied = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    if not supplied or not hmac.compare_digest(supplied.encode(), FLEET_TOKEN.encode()):
+        raise HTTPException(401, "bad fleet token")
+    # Snapshot under the registry lock so a concurrent create/delete can't race
+    # the view (correctness no longer rides on the GIL). Cheap: in-memory only.
+    with _SESSIONS_LOCK:
+        snapshot = list(SESSIONS.values())[::-1]
+    snapshot.sort(key=lambda s: -s.get("created", 0))   # newest first, ties → newest insert
+    total = len(snapshot)
+    workers, stop_flags = [], []
+    for s in snapshot[:FLEET_MAX_WORKERS]:
+        try:
+            with s["lock"]:
+                last = s["events"][-1] if s.get("events") else None
+                last_ts = last.get("ts") if last else None
+                last_type = str(last.get("type", "")) if last else ""
+            state = _FLEET_STATE.get(s.get("status"), "IDLE")
+            w = {"name": f"session-{s['id']}", "state": state,
+                 "objective": _fleet_ops_label(s.get("title"), 200),
+                 "heartbeat_ts": int(last_ts if last_ts else s.get("created") or 0)}
+            if s.get("repo"):
+                w["branch"] = _fleet_ops_label(s.get("repo"), 120)
+            if state == "WORKING" and last_type:
+                w["now"] = [last_type[:80]]      # event TYPE only, never payloads
+            if state == "BLOCKED":
+                w["questions"] = ["awaiting in-UI approval"]
+            workers.append(w)
+            if s.get("stop_flag") is not None and s["stop_flag"].is_set():
+                stop_flags.append({"name": w["name"], "reason": "stop requested"})
+        except Exception:
+            continue        # one poisoned session never denies the whole feed
+    out = {"source": "codemonkeys",
+           "generated": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+           "workers": workers}
+    if stop_flags:
+        out["stop_flags"] = stop_flags
+    if total > FLEET_MAX_WORKERS:
+        out["notes"] = f"truncated to newest {FLEET_MAX_WORKERS} of {total} sessions"
+    return out
+
+
+# Register the route ONLY when a token is configured — when off there is no
+# route at all, so every method (GET/POST/OPTIONS) returns a real 404 and the
+# endpoint can't be fingerprinted (red-team R4). Toggling needs a restart,
+# which env-secret config already implies.
+if FLEET_TOKEN:
+    app.get("/fleet-status.json")(fleet_status)
 
 
 # ---- web terminal (docs/TERMINAL_DESIGN.md) ----------------------------------
