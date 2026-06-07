@@ -1758,6 +1758,69 @@ def _validate_https_url(url: str, label: str):
         raise HTTPException(400, f"{label} must use https://")
 
 
+# Wave 4 #9 — connector marketplace. A curated catalog of well-known MCP servers
+# (always available, no network) optionally augmented from the public MCP
+# Registry. Each entry carries exactly the fields the ⚙ MCP "add" form needs, so
+# the UI can one-click pre-fill it. Discovery only — adding still goes through the
+# owner-gated, validated POST /api/mcp (https-only, etc.).
+_CONNECTOR_CATALOG = [
+    {"name": "GitHub", "transport": "http",
+     "url": "https://api.githubcopilot.com/mcp/", "auth": "bearer",
+     "description": "Repos, issues, PRs, code search via the GitHub MCP server.",
+     "needs": "A GitHub PAT (fine-grained, least-privilege)."},
+    {"name": "Filesystem", "transport": "stdio",
+     "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
+     "description": "Read/write files under a chosen directory (local stdio server).",
+     "needs": "Nothing — runs npx in the workspace."},
+    {"name": "Fetch", "transport": "stdio",
+     "command": "npx", "args": ["-y", "@modelcontextprotocol/server-fetch"],
+     "description": "Fetch and convert web pages to markdown for the agent.",
+     "needs": "Nothing."},
+    {"name": "Google Drive", "transport": "http",
+     "url": "https://www.googleapis.com/", "auth": "oauth",
+     "description": "Search and read Drive files (OAuth 2.1 + PKCE).",
+     "needs": "A Google OAuth app (client_id); see SECURITY.md → MCP OAuth."},
+]
+
+
+def _fetch_registry_connectors(timeout=4) -> list:
+    """Best-effort augment from the public MCP Registry. Returns [] on ANY
+    failure (network, parse, shape) — the curated catalog is the baseline so the
+    marketplace never depends on an external service being up."""
+    try:
+        r = requests.get("https://registry.modelcontextprotocol.io/v0/servers",
+                         timeout=timeout)
+        if r.status_code != 200:
+            return []
+        data = r.json()
+        out = []
+        for s in (data.get("servers") or [])[:50]:
+            name = (s.get("name") or "").strip()
+            if not name:
+                continue
+            out.append({"name": name, "transport": "http",
+                        "description": (s.get("description") or "")[:200],
+                        "registry": True})
+        return out
+    except Exception:
+        return []
+
+
+@app.get("/api/connectors")
+def connectors_catalog(include_registry: bool = False,
+                       _: str = Depends(verify_owner)):
+    """Marketplace catalog: curated connectors, optionally + live registry."""
+    catalog = [dict(c) for c in _CONNECTOR_CATALOG]
+    source = "curated"
+    if include_registry:
+        reg = _fetch_registry_connectors()
+        if reg:
+            have = {c["name"].lower() for c in catalog}
+            catalog += [r for r in reg if r["name"].lower() not in have]
+            source = "curated+registry"
+    return {"connectors": catalog, "source": source}
+
+
 @app.get("/api/mcp")
 def mcp_list(_: str = Depends(verify_owner)):
     servers = _load_mcp_config()

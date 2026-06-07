@@ -621,8 +621,37 @@ $("pv-save").onclick = async () => {
 
 /* ---------------- MCP modal ---------------- */
 
-$("btn-mcp").onclick = () => { $("modal-mcp").classList.remove("hidden"); loadMcpServers(); };
+$("btn-mcp").onclick = () => { $("modal-mcp").classList.remove("hidden"); loadMcpServers(); loadConnectorCatalog(); };
 $("mcp-close").onclick = () => $("modal-mcp").classList.add("hidden");
+
+// Wave 4 #9 — connector marketplace: list catalog entries; click pre-fills the
+// add-form. Defensive: never throws if a field/element is absent.
+async function loadConnectorCatalog() {
+  const box = $("mcp-catalog");
+  if (!box) return;
+  try {
+    const r = await api("/api/connectors", "GET");
+    box.innerHTML = (r.connectors || []).map((c, i) =>
+      `<button data-i="${i}" class="mcp-cat text-left gold-border rounded px-2 py-1 hover:bg-yellow-900/10">`
+      + `<span class="text-[var(--gold-bright)]">${esc(c.name)}</span> `
+      + `<span class="text-slate-600">${esc(c.transport)}</span>`
+      + `<div class="text-slate-500 text-[.6rem]">${esc(c.description || "")}</div></button>`).join("");
+    box.querySelectorAll(".mcp-cat").forEach((b) => {
+      b.onclick = () => prefillConnector(r.connectors[b.dataset.i]);
+    });
+  } catch (_) { /* not owner / offline */ }
+}
+
+function prefillConnector(c) {
+  if (!c) return;
+  const set = (id, v) => { const el = $(id); if (el != null && v != null) el.value = v; };
+  set("mcp-name", c.name);
+  const tsel = $("mcp-transport");
+  if (tsel) { tsel.value = c.transport; tsel.dispatchEvent(new Event("change")); }
+  if (c.transport === "http") set("mcp-url", c.url);
+  else { set("mcp-command", c.command); set("mcp-args", (c.args || []).join(" ")); }
+  if (c.needs) { const m = $("mcp-msg"); if (m) m.textContent = "ℹ " + c.needs; }
+}
 
 function mcpStatusDot(s) {
   if (s.enabled === false) return '<span class="dot" style="background:#475569" title="disabled"></span>';
