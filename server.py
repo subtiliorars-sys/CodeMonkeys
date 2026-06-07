@@ -114,6 +114,12 @@ MAX_UPLOAD_B64 = MAX_UPLOAD_BYTES * 4 // 3 + 1024
 
 # Commands that pause the loop for human approval (CodeMonkeys design rule:
 # no silent pushes/deploys/destruction; git reset --hard has bitten us before)
+# _CMD_START anchors a verb to a command position (line start or just after a
+# separator) so dictionary words in commit messages / grep targets / filenames
+# (`grep shutdown`, `git commit -m "graceful shutdown"`, `cat x.dd`) don't trip
+# the gate. (Shlex-normalized candidate is rejoined with spaces, so the verb
+# stays at its command position.)
+_CMD_START = r"(?:^|[\n;|&]\s*)"
 RISKY_PATTERNS = [
     r"\bgit\s+push\b",
     r"\bfly(?:ctl)?\s+\w+",          # `fly` and the real binary name `flyctl`
@@ -123,18 +129,27 @@ RISKY_PATTERNS = [
     r"\bgh\s+repo\s+delete\b",
     r"\bsudo\b",
     # W5 — more irreversible / system-level verbs the gate should not miss
-    r"\bdd\b",                       # raw block writes (dd of=/dev/…)
+    # (red-team R2/R4 hardening, 2026-06-07).
+    _CMD_START + r"dd\b",            # raw block writes (dd of=/dev/…)
     r"\bmkfs(?:\.\w+)?\b",           # filesystem format
-    r"\bchmod\s+-R\b",              # recursive perm change
-    r"\bchown\s+-R\b",             # recursive owner change
-    r"\btruncate\b",               # truncate -s 0 file
+    # recursive chmod/chown in ANY flag form: -R, -fR, -Rf, --recursive.
+    # (A rare filename like `my-Report` may also prompt — an extra click on a
+    # destructive verb, never a missed action.)
+    r"\bchmod\b.*(?:-[A-Za-z]*R[A-Za-z]*|--recursive)\b",
+    r"\bchown\b.*(?:-[A-Za-z]*R[A-Za-z]*|--recursive)\b",
+    _CMD_START + r"truncate\b",      # truncate -s 0 file
     # redirect into a BLOCK device (disk wipe) — NOT /dev/null|stderr|stdout|tty
     # which appear in almost every command (`2>/dev/null`, `>/dev/null 2>&1`).
-    r">\s*/dev/(?:sd|nvme|hd|vd|mmcblk|disk|loop|mapper|ram|zram)",
-    r"\b(?:curl|wget)\b[^|]*\|\s*(?:sudo\s+)?(?:ba)?sh\b",  # pipe net → shell
-    r"\b(?:shutdown|reboot|halt|poweroff|telinit)\b",  # NOT bare `init` (git/npm init are benign)
-    r"\bgit\s+push\b.*--force\b|\bgit\s+push\b.*\s-f\b",    # explicit force-push
-    r"\bgit\s+branch\s+-D\b",       # force-delete branch
+    r">\s*/dev/(?:sd|nvme|hd|vd|xvd|mmcblk|disk|dm-|sg|sr|loop|mapper|ram|zram)",
+    # pipe a network fetch → ANY interpreter (sh/bash/zsh/python/perl/ruby/node),
+    # tolerating intermediate pipes.
+    r"\b(?:curl|wget|fetch)\b.*\|\s*(?:sudo\s+)?(?:sh|bash|zsh|ksh|dash|python\d?|perl|ruby|node)\b",
+    # NOT bare `init` (git/npm/terraform init are benign); anchored to cmd start
+    # so the words don't false-positive in prose/filenames.
+    _CMD_START + r"(?:shutdown|reboot|halt|poweroff)\b",
+    r"\btelinit\b",
+    r"\bgit\s+push\b.*(?:--force\b|\s-f\b)",                # explicit force-push
+    r"\bgit\s+branch\b.*(?:-D\b|--delete\b.*--force\b|--force\b.*--delete\b)",
 ]
 
 

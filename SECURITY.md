@@ -64,8 +64,9 @@ keep that radius away from everything else.
 - **Approval-gate matching is quote/escape-resistant.** Risky commands
   (`git push` incl. `--force`/`-f`, `fly`/`flyctl`, `rm -rf`, `git reset
   --hard`, `git clean`, `git branch -D`, `gh repo delete`, `sudo`, plus
-  system-level/irreversible verbs `dd`, `mkfs`, `chmod -R`, `chown -R`,
-  `truncate`, redirect-into-`/dev/`, net-pipe-to-shell (`curl … | sh`), and
+  system-level/irreversible verbs `dd`, `mkfs`, recursive `chmod`/`chown` (any
+  flag form — `-R`/`-fR`/`--recursive`), `truncate`, redirect-into-a-block-
+  `/dev/` node, net-pipe-to-interpreter (`curl … | sh|bash|zsh|python|…`), and
   `shutdown`/`reboot`/`halt`/`poweroff`/`telinit`) are detected by `_is_risky`,
   which matches
   `RISKY_PATTERNS` against **both** the raw command and a shlex-normalized form.
