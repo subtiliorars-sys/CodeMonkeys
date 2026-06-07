@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+#
+# pre-push.d/10-deploy-gate — BLOCKING (agent-corps git-guards kit).
+# M-3 protected default branch. Some repos auto-deploy on a push to a "deploy
+# branch" (e.g. master -> Fly). This makes a push to that branch a DELIBERATE act
+# and refuses it when another instance has pushed since you last synced.
+#
+# OPT-IN per repo: a file `.githooks/deploy-branch` naming the branch that
+# auto-deploys (one line, e.g. `master`). No file => quiet no-op.
+#
+# Deliberate deploy push:
+#   git pull --rebase origin <deploy-branch>
+#   ALLOW_DEPLOY_PUSH=1 git push                  # (ALLOW_MASTER_PUSH=1 also accepted)
+#
+set -uo pipefail
+remote="${1:-origin}"
+
+hooks_dir="$(git rev-parse --show-toplevel 2>/dev/null)/.githooks"
+deploy_branch=""
+[ -f "$hooks_dir/deploy-branch" ] && deploy_branch="$(tr -d ' \t\r\n' < "$hooks_dir/deploy-branch")"
+[ -n "$deploy_branch" ] || exit 0
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$remote_ref" = "refs/heads/$deploy_branch" ] || continue
+
+  # 1) deploy-branch pushes must be explicit — they ship the live site.
+  if [ "${ALLOW_DEPLOY_PUSH:-${ALLOW_MASTER_PUSH:-}}" != "1" ]; then
+    cat >&2 <<MSG
+
+🚫  PUSH TO $deploy_branch BLOCKED — this branch auto-deploys (the live site).
+
+    Working on a task? Push a branch instead:
+        git switch -c work/<topic> && git push -u origin work/<topic>
+
+    Genuinely deploying now?
+        git pull --rebase origin $deploy_branch    # pick up other instances' work
+        ALLOW_DEPLOY_PUSH=1 git push
+
+MSG
+    exit 1
+  fi
+
+  # 2) refuse if the remote moved past us (another instance pushed).
+  git fetch -q "$remote" "$deploy_branch" 2>/dev/null || true
+  if [ "$remote_sha" != "0000000000000000000000000000000000000000" ] \
+     && ! git merge-base --is-ancestor "$remote_sha" "$local_sha" 2>/dev/null; then
+    cat >&2 <<MSG
+
+🚫  $deploy_branch MOVED — another instance pushed since you last synced.
+    Rebase onto their work first, re-test, then push:
+        git pull --rebase origin $deploy_branch
+        ALLOW_DEPLOY_PUSH=1 git push
+
+MSG
+    exit 1
+  fi
+done
+exit 0

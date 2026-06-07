@@ -1,0 +1,24 @@
+# git-guards T-4 brand-string lint wordlist — CodeMonkeys (Tier A/B/D).
+# Matched WHOLE-WORD and CASE-INSENSITIVE against public-surface files
+# (default scan path: static/ — see pre-push.d/20-brand-lint).
+# One pattern per line; lines starting with '#' are ignored. Patterns are
+# extended regex but plain strings work fine.
+#
+# Goal (Constitution T-4): CodeMonkeys' public surfaces must NOT cross-promote a
+# sibling brand. CM is an agentic coding console (Tier A/B/D), NOT recovery-
+# adjacent (no Tier C), so the AA / 12-step program-affiliation terms from the
+# default wordlist are PRUNED here: "Alcoholics Anonymous" carries near-zero risk
+# on a developer tool and "the program" would false-positive constantly in coding
+# copy. Re-add them only if CM ever ships recovery-adjacent surfaces.
+#
+# CM's OWN brand ("CodeMonkeys") is intentionally ABSENT — it is the product name
+# and appears throughout static/ by design; listing it would self-block every push.
+#
+# --- cross-portfolio brand names (keep brands separate; do NOT cross-promote) ---
+MeniscusMaximus
+Meniscus Maximus
+Cairn
+OmniTender
+omni-herald
+infinite-banking
+Ilerioluwa
