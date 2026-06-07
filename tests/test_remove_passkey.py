@@ -86,3 +86,43 @@ def test_delete_all_passkeys_is_allowed(user_with_passkeys):
 def test_endpoints_require_auth():
     assert client.get("/api/webauthn/credentials").status_code in (401, 403)
     assert client.delete("/api/webauthn/credentials/x").status_code in (401, 403)
+
+
+def test_no_idor_across_users(monkeypatch):
+    # Two real users; Bob (authed) tries to delete Alice's passkey by its hex.
+    # The handler only indexes users[caller], so Alice's creds are untouched.
+    alice_blob = _cred_blob(b"ALICE001")
+    bob_blob = _cred_blob(b"BOBB0001")
+    users = {"alice": {"webauthn_credentials": [alice_blob]},
+             "bob": {"webauthn_credentials": [bob_blob]}}
+    monkeypatch.setattr(server, "load_users", lambda: users)
+    monkeypatch.setattr(server, "save_users", lambda u: users.update(u))
+    server.app.dependency_overrides[server.verify_token] = lambda: "bob"
+    try:
+        alice_id = b"ALICE001".hex()
+        body = client.get("/api/webauthn/credentials").json()
+        assert [c["id"] for c in body["credentials"]] == [b"BOBB0001".hex()]
+        r = client.delete(f"/api/webauthn/credentials/{alice_id}")
+        assert r.status_code == 404
+        assert users["alice"]["webauthn_credentials"] == [alice_blob]
+        assert users["bob"]["webauthn_credentials"] == [bob_blob]
+    finally:
+        server.app.dependency_overrides.pop(server.verify_token, None)
+
+
+def test_unparsable_blob_is_prunable(monkeypatch):
+    # A corrupt stored blob lists as unparsable-<i> and must be removable by
+    # that handle (red-team R5) — otherwise garbage creds can never be cleaned.
+    good = _cred_blob(b"GOOD0001")
+    users = {"alice": {"webauthn_credentials": ["!!not-base64!!", good]}}
+    monkeypatch.setattr(server, "load_users", lambda: users)
+    monkeypatch.setattr(server, "save_users", lambda u: users.update(u))
+    server.app.dependency_overrides[server.verify_token] = lambda: "alice"
+    try:
+        listing = client.get("/api/webauthn/credentials").json()["credentials"]
+        bad = [c for c in listing if c["id"].startswith("unparsable-")][0]
+        r = client.delete(f"/api/webauthn/credentials/{bad['id']}")
+        assert r.status_code == 200
+        assert users["alice"]["webauthn_credentials"] == [good]
+    finally:
+        server.app.dependency_overrides.pop(server.verify_token, None)

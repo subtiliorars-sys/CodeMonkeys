@@ -732,7 +732,11 @@ def webauthn_credentials_delete(cred_id: str, username: str = Depends(verify_tok
         if not entry:
             raise HTTPException(404, "No such user")
         creds = entry.get("webauthn_credentials", [])
-        kept = [b64 for b64 in creds if _credential_id_hex(b64) != cred_id]
+        # Handle per credential mirrors the list endpoint: parsed hex, or the
+        # `unparsable-<i>` fallback — so a corrupt/garbage blob is still prunable
+        # (red-team R5). Match on either form.
+        kept = [b64 for i, b64 in enumerate(creds)
+                if (_credential_id_hex(b64) or f"unparsable-{i}") != cred_id]
         if len(kept) == len(creds):
             raise HTTPException(404, "No passkey with that id on your account")
         entry["webauthn_credentials"] = kept
