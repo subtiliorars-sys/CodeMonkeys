@@ -61,8 +61,9 @@ def test_session_secret_encrypted_roundtrip(tmp_path, monkeypatch):
     assert on_disk != secret1, "file on disk must be ciphertext, not plaintext"
 
     # Decrypt the on-disk blob independently and confirm it matches.
+    assert on_disk.startswith(server._ENC_MAGIC), "encrypted file must carry the version header"
     f = _make_fernet_from_key("test-master-passphrase")
-    decrypted = f.decrypt(on_disk)
+    decrypted = f.decrypt(on_disk[len(server._ENC_MAGIC):])
     assert decrypted == secret1
 
     # Re-read from disk (simulate restart) — same secret returned.
@@ -136,8 +137,10 @@ def test_session_secret_migration_plaintext_to_encrypted(tmp_path, monkeypatch, 
     on_disk = secret_file.read_bytes()
     assert on_disk != raw_original, "file must now be encrypted after migration"
 
+    assert on_disk.startswith(server._ENC_MAGIC), "migrated file must carry the version header"
     f = _make_fernet_from_key("newly-set-master-key")
-    assert f.decrypt(on_disk) == raw_original, "migrated ciphertext must decrypt correctly"
+    assert f.decrypt(on_disk[len(server._ENC_MAGIC):]) == raw_original, \
+        "migrated ciphertext must decrypt correctly"
 
     # Log must mention migration.
     assert "migrated" in caplog.text.lower() or "encrypted" in caplog.text.lower()
@@ -146,6 +149,78 @@ def test_session_secret_migration_plaintext_to_encrypted(tmp_path, monkeypatch, 
     _reset_secret_cache()
     second_read = server._session_secret()
     assert second_read == raw_original
+
+
+# ---------------------------------------------------------------------------
+# (1d) FAIL-CLOSED on wrong/missing key (red-team F1/F2/F3) — the coverage gap
+# ---------------------------------------------------------------------------
+
+def test_rotation_fails_closed(tmp_path, monkeypatch):
+    """Rotating CM_MASTER_KEY must NOT silently regenerate/substitute the signing
+    secret with the on-disk ciphertext (red-team F1). It must raise, and leave the
+    file untouched, so the original key can be restored."""
+    sf = tmp_path / "session_secret.key"
+    monkeypatch.setattr(server, "SECRET_FILE", str(sf))
+
+    monkeypatch.setattr(server, "CM_MASTER_KEY", "KEY-AAAAAAAAAAAAAAAA")
+    _reset_secret_cache()
+    original = server._session_secret()
+    blob_before = sf.read_bytes()
+
+    # rotate to a different key
+    monkeypatch.setattr(server, "CM_MASTER_KEY", "KEY-BBBBBBBBBBBBBBBB")
+    _reset_secret_cache()
+    with pytest.raises(RuntimeError, match="decrypt"):
+        server._session_secret()
+    assert sf.read_bytes() == blob_before, "file must be left intact on wrong key"
+
+    # restoring the correct key recovers the ORIGINAL secret (proves it wasn't destroyed)
+    monkeypatch.setattr(server, "CM_MASTER_KEY", "KEY-AAAAAAAAAAAAAAAA")
+    _reset_secret_cache()
+    assert server._session_secret() == original
+
+
+def test_unset_after_encrypted_fails_closed(tmp_path, monkeypatch):
+    """An encrypted file with CM_MASTER_KEY now unset must raise, not read the
+    ciphertext as the secret / regenerate (red-team F2)."""
+    sf = tmp_path / "session_secret.key"
+    monkeypatch.setattr(server, "SECRET_FILE", str(sf))
+    monkeypatch.setattr(server, "CM_MASTER_KEY", "KEY-CCCCCCCCCCCCCCCC")
+    _reset_secret_cache()
+    server._session_secret()
+
+    monkeypatch.setattr(server, "CM_MASTER_KEY", "")
+    _reset_secret_cache()
+    with pytest.raises(RuntimeError, match="encrypted"):
+        server._session_secret()
+
+
+def test_key_set_but_crypto_unavailable_fails_closed(tmp_path, monkeypatch):
+    """CM_MASTER_KEY set but cryptography unavailable must fail closed, not degrade
+    to reading the file as plaintext (red-team F3)."""
+    sf = tmp_path / "session_secret.key"
+    monkeypatch.setattr(server, "SECRET_FILE", str(sf))
+    monkeypatch.setattr(server, "CM_MASTER_KEY", "KEY-DDDDDDDDDDDDDDDD")
+    monkeypatch.setattr(server, "_FERNET_AVAILABLE", False)
+    _reset_secret_cache()
+    with pytest.raises(RuntimeError, match="cryptography"):
+        server._session_secret()
+
+
+def test_correct_key_reread_no_spurious_migration(tmp_path, monkeypatch):
+    """Re-reading with the SAME key returns the same secret and does not rewrite."""
+    sf = tmp_path / "session_secret.key"
+    monkeypatch.setattr(server, "SECRET_FILE", str(sf))
+    monkeypatch.setattr(server, "CM_MASTER_KEY", "KEY-EEEEEEEEEEEEEEEE")
+    _reset_secret_cache()
+    s1 = server._session_secret()
+    blob1 = sf.read_bytes()
+    _reset_secret_cache()
+    s2 = server._session_secret()
+    assert s2 == s1
+    # ciphertext is non-deterministic, but the SECRET is stable and a clean decrypt
+    # path doesn't rewrite the file
+    assert sf.read_bytes() == blob1, "a clean decrypt must not rewrite the file"
 
 
 # ---------------------------------------------------------------------------
