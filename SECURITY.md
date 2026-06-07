@@ -39,6 +39,12 @@ keep that radius away from everything else.
   (MFA not yet enrolled) — the throttle is their sole barrier and is deliberately
   not cleared until `/api/account/setup` completes. See "Known limitations" for
   tunables and residuals.
+- Passkeys are self-service revocable: `GET /api/webauthn/credentials` lists the
+  caller's own passkeys (handles only — no key material) and `DELETE
+  /api/webauthn/credentials/{cred_id}` removes one. The filter only ever touches
+  the **caller's own** credential list (no IDOR — a known foreign `cred_id` finds
+  no match → 404). Removing every passkey is allowed: PIN+TOTP remain, so it can
+  never lock the account out.
 - Lockout recovery only via `fly ssh console` (`scripts/reset_access.py`)
 
 ## Sandboxing & limits

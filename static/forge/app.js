@@ -45,7 +45,7 @@ function showMain() {
   // Owner-only controls hidden for invited Members
   document.querySelectorAll(".owner-only").forEach((el) =>
     el.classList.toggle("hidden", state.role !== "Owner"));
-  refreshSessions(); refreshRepos();
+  refreshSessions(); refreshRepos(); listPasskeys();
 }
 function logout() {
   ["cm_token", "cm_username", "cm_role"].forEach((k) => localStorage.removeItem(k));
@@ -193,8 +193,30 @@ $("btn-passkey").onclick = async () => {
       },
     });
     msg.textContent = "✓ " + (r.message || "Passkey added.");
+    listPasskeys();
   } catch (e) { msg.textContent = "✗ " + e.message; }
 };
+
+// W12 — list + remove registered passkeys
+async function listPasskeys() {
+  const box = $("passkey-list");
+  if (!box) return;
+  try {
+    const r = await api("/api/webauthn/credentials", "GET");
+    if (!r.credentials.length) { box.innerHTML = ""; return; }
+    box.innerHTML = r.credentials.map((c) =>
+      `<div class="flex items-center justify-between text-[.65rem] text-slate-500">`
+      + `<span>🔑 ${c.short}…</span>`
+      + `<button data-cid="${c.id}" class="pk-rm text-red-400 hover:text-red-300">remove</button>`
+      + `</div>`).join("");
+    box.querySelectorAll(".pk-rm").forEach((b) => {
+      b.onclick = async () => {
+        try { await api("/api/webauthn/credentials/" + b.dataset.cid, "DELETE"); listPasskeys(); }
+        catch (e) { $("passkey-msg").textContent = "✗ " + e.message; }
+      };
+    });
+  } catch (_) { /* not logged in / no passkeys */ }
+}
 
 /* ---------------- sessions / repos ---------------- */
 
