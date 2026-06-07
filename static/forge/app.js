@@ -9,7 +9,8 @@ const state = {
   token: localStorage.getItem("cm_token") || "",
   username: localStorage.getItem("cm_username") || "",
   role: localStorage.getItem("cm_role") || "",
-  sid: null, after: -1, status: "idle", timer: null, files: [], registering: false,
+  sid: null, after: -1, status: "idle", timer: null, pollMs: 0,
+  files: [], registering: false,
   mode: localStorage.getItem("cm_mode") || "default",
 };
 
@@ -364,8 +365,12 @@ function renderEvent(e) {
   return div;
 }
 
+let _pollInflight = false;
 async function poll() {
-  if (!state.sid) return;
+  // In-flight guard: an overlapping tick would re-fetch the same `after`
+  // cursor and render every returned event a second time.
+  if (!state.sid || _pollInflight) return;
+  _pollInflight = true;
   try {
     const d = await api(`/api/sessions/${state.sid}/events?after=${state.after}`);
     const stream = $("stream");
@@ -383,16 +388,29 @@ async function poll() {
     const sess = document.querySelector(`[data-sid="${state.sid}"]`);
     $("hdr-title").textContent = sess ? sess.textContent.split("$")[0].trim() : state.sid;
     $("btn-stop").classList.toggle("hidden", d.status === "idle");
-    startPolling(d.status !== "idle");
-  } catch (e) { /* transient */ }
+    setPollSpeed(d.status !== "idle");   // cadence only — must NOT fork a poll
+  } catch (e) { /* transient */
+  } finally { _pollInflight = false; }
 }
 
-function startPolling(fast) {
+// THE DUPLICATE-SEND-DISPLAY BUG LIVED HERE: poll() used to end by calling
+// startPolling, whose immediate poll() call made every chain
+// self-perpetuating — and stopPolling() only clears the interval, never an
+// in-flight chain. So each send()/openSession() forked one more immortal
+// poller; after N sends, N concurrent pollers fetched the same `after`
+// cursor and each rendered the new events → the Nth message (and its
+// model/tool/cost events) appeared N times. Now there is exactly one
+// interval, re-created only when the cadence changes, and poll() never
+// schedules itself.
+function setPollSpeed(fast) {
+  const ms = fast ? 1500 : 6000;
+  if (state.timer && state.pollMs === ms) return;
   stopPolling();
-  state.timer = setInterval(poll, fast ? 1500 : 6000);
-  poll();
+  state.pollMs = ms;
+  state.timer = setInterval(poll, ms);
 }
-function stopPolling() { if (state.timer) clearInterval(state.timer); state.timer = null; }
+function startPolling(fast) { setPollSpeed(fast); poll(); }
+function stopPolling() { if (state.timer) clearInterval(state.timer); state.timer = null; state.pollMs = 0; }
 
 /* ---------------- composer ---------------- */
 
@@ -450,19 +468,27 @@ _composer.addEventListener("drop", (e) => {
   for (const f of (e.dataTransfer || {}).files || []) addFile(f);
 });
 
+let _sendInflight = false;
 async function send() {
+  // In-flight submit guard (defense in depth): one submission at a time —
+  // Enter mashing / double-clicks can't fire a second POST (= a second real
+  // model call) while the first is on the wire.
+  if (_sendInflight) return;
   const text = $("msg").value.trim();
   if (!text) return;
-  if (!state.sid) {
-    const d = await api("/api/sessions", "POST", { title: text.slice(0, 40) });
-    state.sid = d.id; state.after = -1; $("stream").innerHTML = ""; refreshSessions();
-  }
+  _sendInflight = true;
+  $("btn-send").disabled = true;
   try {
+    if (!state.sid) {
+      const d = await api("/api/sessions", "POST", { title: text.slice(0, 40) });
+      state.sid = d.id; state.after = -1; $("stream").innerHTML = ""; refreshSessions();
+    }
     await api(`/api/sessions/${state.sid}/message`, "POST",
       { text, files: state.files, mode: state.mode });
     $("msg").value = ""; state.files = []; renderChips();
     startPolling(true);
-  } catch (e) { alert(e.message); }
+  } catch (e) { alert(e.message);
+  } finally { _sendInflight = false; $("btn-send").disabled = false; }
 }
 
 /* ---------------- mode selector ---------------- */

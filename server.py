@@ -980,6 +980,19 @@ def load_models():
         # ensure built-ins exist (so new presets appear without wiping keys)
         for pid, base in DEFAULT_PROVIDERS.items():
             cfg["providers"].setdefault(pid, json.loads(json.dumps(base)))
+        # repair: an openai-kind entry with a blank base_url is uncallable
+        # ("Invalid URL '/chat/completions'") — backfill built-ins from the
+        # known defaults. (Covers pre-guard configs / hand-edits; the upsert
+        # API now rejects this shape, custom ids are skipped at selection.)
+        repaired = False
+        for pid, p in cfg["providers"].items():
+            if (p.get("kind") == "openai"
+                    and not str(p.get("base_url") or "").strip()
+                    and DEFAULT_PROVIDERS.get(pid, {}).get("base_url")):
+                p["base_url"] = DEFAULT_PROVIDERS[pid]["base_url"]
+                repaired = True
+        if repaired:
+            _save_json(MODELS_FILE, cfg)
         return cfg
 
 
@@ -997,9 +1010,19 @@ def _resolve(prov):
             "input_cost_per_m": prov.get("in", 0), "output_cost_per_m": prov.get("out", 0)}
 
 
+def _callable_provider(p):
+    """The chat layer can actually call this entry: has a key, and openai-kind
+    needs a base_url — blank would hit `requests.post("/chat/completions")`
+    (Invalid URL) and burn the full transient-retry backoff before escalation."""
+    if not p.get("key"):
+        return False
+    return p.get("kind") != "openai" or bool(str(p.get("base_url") or "").strip())
+
+
 def _usable(cfg):
-    """Providers with a key, sorted cheapest-first by selected-model output cost."""
-    items = [(pid, p) for pid, p in cfg["providers"].items() if p.get("key")]
+    """Callable providers, sorted cheapest-first by selected-model output cost."""
+    items = [(pid, p) for pid, p in cfg["providers"].items()
+             if _callable_provider(p)]
     return sorted(items, key=lambda kv: kv[1].get("out", 1e9))
 
 
@@ -1010,7 +1033,7 @@ def main_provider(cfg):
     sel = cfg.get("selected", "auto")
     if sel != "auto" and not cfg.get("auto_cheapest"):
         prov = cfg["providers"].get(sel)
-        if prov and prov.get("key"):
+        if prov and _callable_provider(prov):
             return _resolve(prov)
     # auto / auto_cheapest: cheapest provider flagged for the cascade, else cheapest
     auto = [p for pid, p in usable if p.get("auto")]
@@ -2223,6 +2246,12 @@ class TransientModelError(RuntimeError):
 
 
 def _chat_openai(provider, system, history, tools, max_tokens):
+    base_url = str(provider.get("base_url") or "").strip()
+    if not base_url:
+        # Fail fast and NON-transient: a blank base_url can never succeed, so
+        # don't burn the retry backoff — let escalation move on immediately.
+        raise RuntimeError(f"{provider.get('name', '?')}: blank base_url — set the "
+                           "provider endpoint in ⚙ Models")
     messages = [{"role": "system", "content": system}]
     for h in history:
         if h["role"] == "user":
@@ -2245,7 +2274,7 @@ def _chat_openai(provider, system, history, tools, max_tokens):
                               "parameters": t["parameters"]}} for t in tools]
     try:
         r = requests.post(
-            provider["base_url"].rstrip("/") + "/chat/completions",
+            base_url.rstrip("/") + "/chat/completions",
             headers={"Authorization": f"Bearer {provider['api_key']}",
                      "Content-Type": "application/json"},
             json=payload, timeout=300)
@@ -3898,15 +3927,26 @@ def session_message(sid: str, req: MessageRequest, _: str = Depends(verify_user)
     s = SESSIONS.get(sid)
     if not s:
         raise HTTPException(404, "No such session")
-    if s["status"] != "idle":
-        raise HTTPException(409, "Session is busy")
-    s["mode"] = req.mode if req.mode in ("plan", "default", "auto") else "default"
-    text = _cap_message(req.text)
-    names = _save_uploads(sid, req.files)
-    if names:
-        text += "\n\n[Attached files saved in workspace: " + ", ".join(names) + "]"
-    emit(s, "user", text=text)
-    threading.Thread(target=run_session_message, args=(s, text), daemon=True).start()
+    # Check-and-claim atomically: the worker thread only flips status to
+    # "running" once it gets scheduled, so two rapid-fire duplicate POSTs
+    # (double-click / double-Enter / client retry) could BOTH pass a bare
+    # status check and each spawn a real model run. Claim under the session
+    # lock; the loser of the race gets the same 409 a busy session always got.
+    with s["lock"]:
+        if s["status"] != "idle":
+            raise HTTPException(409, "Session is busy")
+        s["status"] = "running"
+    try:
+        s["mode"] = req.mode if req.mode in ("plan", "default", "auto") else "default"
+        text = _cap_message(req.text)
+        names = _save_uploads(sid, req.files)
+        if names:
+            text += "\n\n[Attached files saved in workspace: " + ", ".join(names) + "]"
+        emit(s, "user", text=text)
+        threading.Thread(target=run_session_message, args=(s, text), daemon=True).start()
+    except BaseException:
+        s["status"] = "idle"      # never brick the session on a failed accept
+        raise
     return {"ok": True}
 
 
