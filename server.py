@@ -3416,6 +3416,54 @@ def session_list(_: str = Depends(verify_user)):
         for s in SESSIONS.values()], key=lambda x: -x["created"])}
 
 
+# W8 — blackboard management (Owner-only). The agent reads/writes boards via
+# the jailed blackboard_read/blackboard_write tools; this lets the Owner see and
+# prune them from the UI. All paths go through _jail_blackboard (no traversal).
+
+def _bb_list_slugs() -> list:
+    root = os.path.realpath(os.path.join(WORKSPACE_DIR, ".codemonkeys"))
+    out = []
+    try:
+        for fn in sorted(os.listdir(root)):
+            if fn.startswith("blackboard-") and fn.endswith(".md"):
+                slug = fn[len("blackboard-"):-len(".md")]
+                try:
+                    size = os.path.getsize(os.path.join(root, fn))
+                except OSError:
+                    size = 0
+                out.append({"slug": slug, "bytes": size})
+    except OSError:
+        pass
+    return out
+
+
+@app.get("/api/blackboard")
+def blackboard_list(_: str = Depends(verify_owner)):
+    return {"blackboards": _bb_list_slugs()}
+
+
+@app.get("/api/blackboard/{slug}")
+def blackboard_get(slug: str, _: str = Depends(verify_owner)):
+    body = t_blackboard_read({"slug": slug})
+    return {"slug": _bb_slug(slug), "content": body}
+
+
+@app.delete("/api/blackboard/{slug}")
+def blackboard_delete(slug: str, _: str = Depends(verify_owner)):
+    try:
+        full = _jail_blackboard(_bb_slug(slug))
+    except ValueError:
+        raise HTTPException(400, "Invalid slug")
+    if not os.path.exists(full):
+        raise HTTPException(404, "No such blackboard")
+    with _BB_LOCK:
+        try:
+            os.remove(full)
+        except OSError as e:
+            raise HTTPException(500, f"Could not delete: {e}")
+    return {"ok": True, "removed": _bb_slug(slug)}
+
+
 def _render_transcript_md(s) -> str:
     """Render a session's history as readable Markdown (no secrets beyond what
     is already in the persisted, redacted history)."""

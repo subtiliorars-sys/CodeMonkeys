@@ -112,6 +112,32 @@ $("su-submit").onclick = async () => {
 };
 $("su-done").onclick = () => showMain();
 
+/* ---------------- memory boards (Owner) ---------------- */
+
+const _mb = $("btn-memory");
+if (_mb) _mb.onclick = listBlackboards;
+
+async function listBlackboards() {
+  const box = $("memory-list");
+  if (!box) return;
+  try {
+    const r = await api("/api/blackboard", "GET");
+    if (!r.blackboards.length) { box.innerHTML = `<div class="text-[.6rem] text-slate-600 pl-2">no boards yet</div>`; return; }
+    box.innerHTML = r.blackboards.map((b) =>
+      `<div class="flex items-center justify-between text-[.65rem] text-slate-500 pl-2">`
+      + `<span>📋 ${esc(b.slug)} <span class="text-slate-700">${b.bytes}b</span></span>`
+      + `<button data-slug="${esc(b.slug)}" class="mb-rm text-red-400 hover:text-red-300">delete</button>`
+      + `</div>`).join("");
+    box.querySelectorAll(".mb-rm").forEach((btn) => {
+      btn.onclick = async () => {
+        if (!confirm(`Delete memory board "${btn.dataset.slug}"?`)) return;
+        try { await api("/api/blackboard/" + encodeURIComponent(btn.dataset.slug), "DELETE"); listBlackboards(); }
+        catch (e) { alert(e.message); }
+      };
+    });
+  } catch (_) { /* not owner / none */ }
+}
+
 /* ---------------- invite developers (Owner) ---------------- */
 
 $("btn-invite").onclick = () => { $("modal-invite").classList.remove("hidden"); loadUsers(); };
