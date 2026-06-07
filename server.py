@@ -121,6 +121,10 @@ _raw_daily_cap = os.environ.get("SPEND_DAILY_CAP_USD", "")
 SPEND_DAILY_CAP_USD: float = float(_raw_daily_cap) if _raw_daily_cap else 0.0
 MAX_TURNS = int(os.environ.get("MAX_TURNS", "60"))
 SUBAGENT_MAX_TURNS = int(os.environ.get("SUBAGENT_MAX_TURNS", "25"))
+# N9 — tool-error-repeat guard. Nudge the model after N_NUDGE identical failures;
+# abort the run after N_STOP identical failures to stop budget burn on stuck loops.
+N_NUDGE = int(os.environ.get("N_NUDGE", "2"))
+N_STOP  = int(os.environ.get("N_STOP",  "4"))
 MAX_SUBAGENTS = 8          # Campaign cap from CORPS_COMMANDER.md
 BASH_TIMEOUT = 180
 OUTPUT_CAP = 16000         # chars of tool output fed back to the model
@@ -4037,10 +4041,19 @@ def agent_loop(session, provider, system, history, tool_names, max_turns,
     # Only the top-level run (depth 0) owns this field; subagents don't touch it.
     if depth == 0:
         session["_run_outcome"] = "ok"
+        # N9: reset per-run failure-repeat tracker (keyed by failure signature).
+        session["_tool_fail_counts"] = {}
 
     def _set_outcome(reason):
         if depth == 0:
             session["_run_outcome"] = reason
+
+    # N9: failure-signature helper — stable key for a specific failing call.
+    def _fail_sig(name: str, args: dict, error: str) -> str:
+        args_hash = hashlib.sha256(
+            json.dumps(args, sort_keys=True, default=str).encode()
+        ).hexdigest()[:8]
+        return f"{name}:{args_hash}:{_error_signature(error)}"
 
     for _ in range(max_turns):
         if session["stop_flag"].is_set():
@@ -4123,6 +4136,44 @@ def agent_loop(session, provider, system, history, tool_names, max_turns,
             emit(session, "tool_result", **_emit_kw)
             history.append({"role": "tool", "tool_call_id": tc["id"],
                             "name": tc["name"], "content": result})
+            # N9: tool-error-repeat guard — track identical failing calls to
+            # nudge the model then abort if it keeps burning turns on the same error.
+            _fail_counts = session.get("_tool_fail_counts")
+            _aborted = False
+            if _fail_counts is not None:
+                sig = _fail_sig(tc["name"], tc["args"], result)
+                if not ok:
+                    _fail_counts[sig] = _fail_counts.get(sig, 0) + 1
+                    n_seen = _fail_counts[sig]
+                    if n_seen >= N_STOP:
+                        # Hard stop: emit abort event and exit the loop.
+                        msg = (f"aborted: tool '{tc['name']}' failed {n_seen} times "
+                               f"with the same error — loop stopped to prevent budget burn. "
+                               f"Error signature: {_error_signature(result)!r}")
+                        emit(session, "error", message=msg, agent=agent_label)
+                        _set_outcome("stuck")
+                        _aborted = True
+                    elif n_seen >= N_NUDGE:
+                        # Soft nudge: append diagnostic hint to the tool-result
+                        # entry the model will see on the next context window.
+                        nudge = (
+                            f"\n\n[SYSTEM NOTE — tool-repeat guard] This exact "
+                            f"'{tc['name']}' call has failed {n_seen} time(s) with the "
+                            f"same error: {_error_signature(result)!r}. "
+                            f"Do NOT repeat it verbatim — diagnose the root cause or "
+                            f"try a different approach."
+                        )
+                        history[-1]["content"] = history[-1]["content"] + nudge
+                else:
+                    # Successful call resets this signature's counter.
+                    _fail_counts.pop(sig, None)
+            if _aborted:
+                break
+        else:
+            # Inner for-loop completed without a break — proceed to next turn.
+            continue
+        # Inner for-loop broke (N9 abort) — exit the outer turn loop too.
+        break
     else:
         emit(session, "error", message="Max turns reached", agent=agent_label)
         _set_outcome("max_turns")
