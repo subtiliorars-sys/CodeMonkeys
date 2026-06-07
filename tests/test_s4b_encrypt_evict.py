@@ -149,6 +149,40 @@ def test_model_config_fail_soft_wrong_key(tmp_path, monkeypatch):
     assert server._DECRYPT_FAILED is True, "_DECRYPT_FAILED must be True after decrypt failure"
 
 
+def test_decrypt_fail_preserves_ciphertext_and_recovers(tmp_path, monkeypatch):
+    """RED-TEAM #58 F1 (was NO-GO): a decrypt-fail load must NOT overwrite the
+    on-disk encrypted file. Restoring the correct key must fully recover the keys."""
+    mf = tmp_path / "model_config.json"
+    monkeypatch.setattr(server, "MODELS_FILE", str(mf))
+    monkeypatch.setattr(server, "CM_MASTER_KEY", "key-A-xxxxxxxxxxxx")
+    monkeypatch.setattr(server, "_DECRYPT_FAILED", False)
+
+    cfg = server._new_cfg()
+    cfg["providers"]["anthropic"]["key"] = "my-secret-api-key"
+    server.save_models(cfg)
+    blob_before = mf.read_bytes()
+    assert blob_before.startswith(server._ENC_MAGIC)
+
+    # Wrong key → fail-soft load (fires unattended at startup / first redaction).
+    monkeypatch.setattr(server, "CM_MASTER_KEY", "key-B-xxxxxxxxxxxx")
+    monkeypatch.setattr(server, "_DECRYPT_FAILED", False)
+    server.load_models()
+    assert mf.read_bytes() == blob_before, "decrypt-fail must NOT overwrite the ciphertext (data loss!)"
+
+    # Missing key too → still must not clobber.
+    monkeypatch.setattr(server, "CM_MASTER_KEY", "")
+    monkeypatch.setattr(server, "_DECRYPT_FAILED", False)
+    server.load_models()
+    assert mf.read_bytes() == blob_before, "missing-key load must NOT overwrite the ciphertext"
+
+    # Restore the correct key → keys fully recovered.
+    monkeypatch.setattr(server, "CM_MASTER_KEY", "key-A-xxxxxxxxxxxx")
+    monkeypatch.setattr(server, "_DECRYPT_FAILED", False)
+    recovered = server.load_models()
+    assert recovered["providers"]["anthropic"]["key"] == "my-secret-api-key", \
+        "restoring the correct key must recover the encrypted API keys"
+
+
 def test_model_config_fail_soft_missing_key(tmp_path, monkeypatch):
     """Encrypted file + CM_MASTER_KEY unset → fail soft, not crash."""
     monkeypatch.setattr(server, "CM_MASTER_KEY", "key-for-encryption-xx")

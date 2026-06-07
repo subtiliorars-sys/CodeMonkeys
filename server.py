@@ -1417,7 +1417,15 @@ def load_models():
         cfg = raw
         if cfg is None:
             cfg = _new_cfg()
-            _write_enc_file(MODELS_FILE, cfg)
+            # CRITICAL (red-team #58 F1): only create a fresh file when NONE
+            # exists. If the file exists but we got None (decrypt failed / wrong
+            # or missing CM_MASTER_KEY / unreadable), DO NOT overwrite it — that
+            # would permanently destroy the still-encrypted keys that restoring
+            # the correct key would otherwise recover. Run on an in-memory
+            # default this boot; the banner tells the owner to restore the key
+            # or re-enter keys (an owner re-save is the only thing that rewrites).
+            if not os.path.exists(MODELS_FILE):
+                _write_enc_file(MODELS_FILE, cfg)
             return cfg
         if "providers" in cfg and isinstance(cfg["providers"], list):  # old shape
             cfg = _migrate_old(cfg)
