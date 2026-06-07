@@ -23,9 +23,10 @@ Daystrom agent corps in `corps/`. Full overview: `README.md` +
   W1–W12). `/healthz` (W1) is wired as the Fly liveness check (1 passing).
   Smoke-tested live: `/healthz` 200, `/api/usage` + `/api/kb` 401 fail-closed,
   `/` 200.
-- **Wave 4 (PRs #33/#34/#35/#36) is merged to `main` but NOT yet deployed** —
-  next deploy picks up fractal memory, vendored-Tailwind phase 1, connector
-  marketplace, and webhook→PR runs (inert until webhook secrets set).
+- **Wave 4 (PRs #33/#34/#35/#36) + the web terminal (#37) are merged to `main`
+  but NOT yet deployed** — next deploy picks up fractal memory, vendored-Tailwind
+  phase 1, connector marketplace, webhook→PR runs (inert until webhook secrets
+  set), and the terminal (inert until both TERMINAL env gates set).
 
 ## Shipped so far (v0.1)
 - Auth: 4-digit+ PIN (PBKDF2) + mandatory TOTP; HMAC tokens; fail-closed.
@@ -97,16 +98,15 @@ Daystrom agent corps in `corps/`. Full overview: `README.md` +
   sets WEBHOOK_ENABLED/WEBHOOK_SECRET/WEBHOOK_ALLOWED_SENDERS + adds the GitHub
   webhook** (steps in PR #36 body).
 
-## Open PRs (owner-gated)
-- **#37 web terminal** — `/terminal` REPL + Owner-only `!cmd` exec behind DOUBLE
-  env gate (`TERMINAL_ENABLED` + `TERMINAL_EXEC_ENABLED`), both default OFF.
-  Red-teamed GO-WITH-FIXES (raw PTY mode = NO-GO). Design: `docs/TERMINAL_DESIGN.md`.
+- **Web terminal** (PR #37, merged 2026-06-07): `/terminal` REPL + Owner-only
+  `!cmd` exec behind DOUBLE env gate (`TERMINAL_ENABLED` + `TERMINAL_EXEC_ENABLED`),
+  both default OFF → 404 everywhere. Red-teamed GO-WITH-FIXES (raw PTY mode =
+  NO-GO). Design: `docs/TERMINAL_DESIGN.md`. **Stays OFF until owner sets both
+  gates post-deploy.**
 
 ## Next up
-1. **BUG:** provider entry with blank `base_url` reaches the runtime and errors
-   with `Invalid URL '/chat/completions'` before escalation rescues it (found in
-   2026-06-07 live smoke). Fix: fail-fast at model selection + config-load repair
-   backfilling known provider URLs.
+1. ~~BUG: blank base_url~~ → fixed in PR #39 (config-load repair + selection
+   fail-fast + non-transient call guard; 11 tests).
 2. **Fleet Deck handoff:** `GET /fleet-status.json` read-only Bearer-auth ops
    feed per `~/fleet/contracts/fleetdeck-codemonkeys.md` (build+PR; deploy
    owner-gated).

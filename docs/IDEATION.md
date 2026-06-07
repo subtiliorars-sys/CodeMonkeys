@@ -38,14 +38,14 @@ W10 per-session budget · W11 two-layer KB · W12 remove-passkey (red-teamed).
 
 #6 fractal memory phase 1 · #3 vendored Tailwind phase 1 (CDN still active,
 phase-2 cutover OWNER-GATED) · #9 connector marketplace · #5 webhook→PR runs
-(inert until webhook secrets). Separate workstream: **PR #37 web terminal**
-(open, owner-gated, double env gate).
+(inert until webhook secrets). Separate workstream: **#37 web terminal** — also
+MERGED 2026-06-07 (stays OFF: double env gate, owner enables post-deploy).
 
 ## Standing list (current — pick from here, one wave per PR)
 
 | # | Item | Why | Risk |
 |---|------|-----|------|
-| S1 | **BUG: blank-base_url provider** — fail-fast at model selection + config-load repair backfilling known provider URLs (defaults near `server.py:876`). Found in 2026-06-07 live smoke (`Invalid URL '/chat/completions'`). | correctness | low |
+| ~~S1~~ | ~~**BUG: blank-base_url provider**~~ ✅ **PR #39** (config-load repair + selection fail-fast + non-transient call guard; 11 tests). | correctness | low |
 | S2 | **Fleet Deck `GET /fleet-status.json`** — read-only Bearer-auth ops feed per `~/fleet/contracts/fleetdeck-codemonkeys.md` (maps #21 blackboard registry → `workers[]`; `hmac.compare_digest` on `FLEET_TOKEN`; no prompts/code/keys). Build+PR; deploy owner-gated. | fleet integration | med — red-team |
 | S3 | **Fractal memory phase 2** — scrubbed working-memory tier + curated pattern library on top of the #33 digest. | memory | low |
 | S4 | **OAuth secrets-envelope** — encrypt `client_secret`/`refresh_token` at rest on `/data` (today plaintext, readable by unsandboxed bash). | security | med — red-team |
