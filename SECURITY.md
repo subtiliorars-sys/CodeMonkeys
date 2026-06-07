@@ -57,9 +57,24 @@ keep that radius away from everything else.
   nosniff`, `Referrer-Policy: no-referrer`. CSP is kept minimal (no `script-src`)
   so it doesn't break the Tailwind CDN; a stricter `script-src` pairs with
   vendoring Tailwind (see Known limitations).
+- **Secret-scan write guard.** `write_file`, `edit_file`, and `apply_patch`
+  scan the content they persist (for `apply_patch`, only the added `+` lines)
+  for obvious credential shapes — AWS access-key id, GitHub `ghp_`/`gho_`…,
+  OpenAI `sk-`, Slack `xox*`, Google `AIza…`, PEM private-key blocks. A match
+  appends a `⚠ SECRET WARNING` (naming the *kind*, never the value) to the tool
+  result and into the audit log. **Non-blocking by design:** legit files
+  (`.env.example`, fixtures) carry shaped tokens too, so the warning is a
+  visible deterrent, not a hard stop — it surfaces a leak in the result + log
+  instead of letting it commit silently. Conservative patterns to avoid crying
+  wolf; not a DLP system.
 - **Approval-gate matching is quote/escape-resistant.** Risky commands
-  (`git push`, `fly`/`flyctl`, `rm -rf`, `git reset --hard`, `git clean`,
-  `gh repo delete`, `sudo`) are detected by `_is_risky`, which matches
+  (`git push` incl. `--force`/`-f`, `fly`/`flyctl`, `rm -rf`, `git reset
+  --hard`, `git clean`, `git branch -D`, `gh repo delete`, `sudo`, plus
+  system-level/irreversible verbs `dd`, `mkfs`, recursive `chmod`/`chown` (any
+  flag form — `-R`/`-fR`/`--recursive`), `truncate`, redirect-into-a-block-
+  `/dev/` node, net-pipe-to-interpreter (`curl … | sh|bash|zsh|python|…`), and
+  `shutdown`/`reboot`/`halt`/`poweroff`/`telinit`) are detected by `_is_risky`,
+  which matches
   `RISKY_PATTERNS` against **both** the raw command and a shlex-normalized form.
   Normalizing first means shell quoting/escaping (`git "push"`, `g''it push`,
   `git\ push`, `"git" push`) can no longer hide a risky verb from the gate; a

@@ -117,6 +117,12 @@ MAX_UPLOAD_B64 = MAX_UPLOAD_BYTES * 4 // 3 + 1024
 
 # Commands that pause the loop for human approval (CodeMonkeys design rule:
 # no silent pushes/deploys/destruction; git reset --hard has bitten us before)
+# _CMD_START anchors a verb to a command position (line start or just after a
+# separator) so dictionary words in commit messages / grep targets / filenames
+# (`grep shutdown`, `git commit -m "graceful shutdown"`, `cat x.dd`) don't trip
+# the gate. (Shlex-normalized candidate is rejoined with spaces, so the verb
+# stays at its command position.)
+_CMD_START = r"(?:^|[\n;|&]\s*)"
 RISKY_PATTERNS = [
     r"\bgit\s+push\b",
     r"\bfly(?:ctl)?\s+\w+",          # `fly` and the real binary name `flyctl`
@@ -125,6 +131,28 @@ RISKY_PATTERNS = [
     r"\bgit\s+clean\b",
     r"\bgh\s+repo\s+delete\b",
     r"\bsudo\b",
+    # W5 — more irreversible / system-level verbs the gate should not miss
+    # (red-team R2/R4 hardening, 2026-06-07).
+    _CMD_START + r"dd\b",            # raw block writes (dd of=/dev/…)
+    r"\bmkfs(?:\.\w+)?\b",           # filesystem format
+    # recursive chmod/chown in ANY flag form: -R, -fR, -Rf, --recursive.
+    # (A rare filename like `my-Report` may also prompt — an extra click on a
+    # destructive verb, never a missed action.)
+    r"\bchmod\b.*(?:-[A-Za-z]*R[A-Za-z]*|--recursive)\b",
+    r"\bchown\b.*(?:-[A-Za-z]*R[A-Za-z]*|--recursive)\b",
+    _CMD_START + r"truncate\b",      # truncate -s 0 file
+    # redirect into a BLOCK device (disk wipe) — NOT /dev/null|stderr|stdout|tty
+    # which appear in almost every command (`2>/dev/null`, `>/dev/null 2>&1`).
+    r">\s*/dev/(?:sd|nvme|hd|vd|xvd|mmcblk|disk|dm-|sg|sr|loop|mapper|ram|zram)",
+    # pipe a network fetch → ANY interpreter (sh/bash/zsh/python/perl/ruby/node),
+    # tolerating intermediate pipes.
+    r"\b(?:curl|wget|fetch)\b.*\|\s*(?:sudo\s+)?(?:sh|bash|zsh|ksh|dash|python\d?|perl|ruby|node)\b",
+    # NOT bare `init` (git/npm/terraform init are benign); anchored to cmd start
+    # so the words don't false-positive in prose/filenames.
+    _CMD_START + r"(?:shutdown|reboot|halt|poweroff)\b",
+    r"\btelinit\b",
+    r"\bgit\s+push\b.*(?:--force\b|\s-f\b)",                # explicit force-push
+    r"\bgit\s+branch\b.*(?:-D\b|--delete\b.*--force\b|--force\b.*--delete\b)",
 ]
 
 
@@ -2286,7 +2314,42 @@ def t_write_file(args):
     os.makedirs(os.path.dirname(full) or full, exist_ok=True)
     with open(full, "w") as f:
         f.write(args["content"])
-    return f"Wrote {len(args['content'])} chars to {args['path']}"
+    return (f"Wrote {len(args['content'])} chars to {args['path']}"
+            + _secret_warning(args["content"]))
+
+
+# W6 — secret-scan write guard. Flag (do NOT block) obvious credentials being
+# persisted into the workspace, so a leak is visible in the tool result + audit
+# log rather than silently committed. Conservative patterns to avoid crying
+# wolf; non-blocking because legit files (.env.example, fixtures) carry shaped
+# tokens too — the warning is the deterrent, the human/model decides.
+_SECRET_PATTERNS = [
+    ("AWS access key id", r"\bAKIA[0-9A-Z]{16}\b"),
+    ("GitHub token", r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
+    ("OpenAI key", r"\bsk-[A-Za-z0-9]{20,}\b"),
+    ("Slack token", r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
+    ("Google API key", r"\bAIza[0-9A-Za-z_\-]{35}\b"),
+    ("private key block", r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----"),
+    ("AWS secret access key", r"\baws_secret_access_key\s*[=:]\s*\S{20,}"),
+]
+_SECRET_RE = [(kind, re.compile(rx)) for kind, rx in _SECRET_PATTERNS]
+
+
+def _scan_secrets(text: str) -> list:
+    """Return a sorted list of distinct secret KINDS found in *text* (no values)."""
+    if not text:
+        return []
+    found = {kind for kind, rx in _SECRET_RE if rx.search(text)}
+    return sorted(found)
+
+
+def _secret_warning(text: str) -> str:
+    kinds = _scan_secrets(text)
+    if not kinds:
+        return ""
+    return ("\n⚠ SECRET WARNING: this write appears to contain "
+            f"{', '.join(kinds)}. If that is a real credential, do NOT commit it — "
+            "use an env var or /data secret instead.")
 
 
 def t_edit_file(args):
@@ -2302,7 +2365,7 @@ def t_edit_file(args):
     with open(full, "w") as f:
         f.write(text.replace(old, args["new_string"]) if args.get("replace_all")
                 else text.replace(old, args["new_string"], 1))
-    return "Edit applied"
+    return "Edit applied" + _secret_warning(args["new_string"])
 
 
 def t_list_dir(args):
@@ -2524,7 +2587,11 @@ def t_apply_patch(args):
         return ("ERROR: " + stderr)[:OUTPUT_CAP]
 
     n = len(target_paths)
-    return f"Patch applied to {n} file(s): {', '.join(sorted(target_paths))}"
+    # Scan only the added (+) lines of the diff for secrets.
+    added = "\n".join(ln[1:] for ln in patch.splitlines()
+                      if ln.startswith("+") and not ln.startswith("+++"))
+    return (f"Patch applied to {n} file(s): {', '.join(sorted(target_paths))}"
+            + _secret_warning(added))
 
 
 _SPEC_ARTIFACTS = ("constitution", "spec", "plan", "tasks")
