@@ -4307,9 +4307,14 @@ def memory_patterns(repo: str = "", format: str = "json",
 
 @app.get("/api/usage")
 def usage_summary(_: str = Depends(verify_owner)):
-    """Owner-only ledger rollup: per-session and total USD + token counts,
-    derived from the persisted `cost` events. No keys or prompt content."""
+    """Owner-only ledger rollup: per-session, by-day, by-model, and total USD +
+    token counts, derived from the persisted `cost` events. No keys or prompt
+    content."""
+    import datetime as _dt
     per_session, tot_usd, tot_in, tot_out = [], 0.0, 0, 0
+    day_usd: dict = {}    # "YYYY-MM-DD" -> float
+    model_usd: dict = {}  # model_name -> float
+    model_calls: dict = {}
     for s in SESSIONS.values():
         with s["lock"]:
             costs = [e for e in s["events"] if e.get("type") == "cost"]
@@ -4322,9 +4327,27 @@ def usage_summary(_: str = Depends(verify_owner)):
         per_session.append({
             "id": s["id"], "title": s["title"], "calls": len(costs),
             "usd": round(usd, 6), "in_tokens": in_tok, "out_tokens": out_tok})
+        for e in costs:
+            # by-day rollup (UTC date from unix ts)
+            ts = e.get("ts")
+            if ts:
+                day = _dt.datetime.utcfromtimestamp(ts).strftime("%Y-%m-%d")
+                day_usd[day] = day_usd.get(day, 0.0) + e.get("usd", 0)
+            # by-model rollup
+            mdl = e.get("model") or "unknown"
+            model_usd[mdl] = model_usd.get(mdl, 0.0) + e.get("usd", 0)
+            model_calls[mdl] = model_calls.get(mdl, 0) + 1
     per_session.sort(key=lambda x: -x["usd"])
+    by_day = sorted(
+        [{"day": d, "usd": round(v, 6)} for d, v in day_usd.items()],
+        key=lambda x: x["day"])
+    by_model = sorted(
+        [{"model": m, "usd": round(model_usd[m], 6), "calls": model_calls[m]}
+         for m in model_usd],
+        key=lambda x: -x["usd"])
     return {"total": {"usd": round(tot_usd, 6), "in_tokens": tot_in,
                       "out_tokens": tot_out, "sessions": len(per_session)},
+            "by_day": by_day, "by_model": by_model,
             "sessions": per_session}
 
 

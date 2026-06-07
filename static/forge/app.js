@@ -139,6 +139,109 @@ async function listBlackboards() {
   } catch (_) { /* not owner / none */ }
 }
 
+/* ---------------- cost dashboard (Owner) ---------------- */
+
+const _cd = $("btn-cost-dashboard");
+if (_cd) _cd.onclick = openCostDashboard;
+
+$("cost-close").onclick = () => $("modal-cost").classList.add("hidden");
+
+function fmtUsd(v) { return "$" + Number(v || 0).toFixed(4); }
+function fmtK(n) { return n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n || 0); }
+
+async function openCostDashboard() {
+  $("modal-cost").classList.remove("hidden");
+  $("cd-err").classList.add("hidden");
+  // reset displays
+  ["cd-total-usd", "cd-total-sessions", "cd-total-tokens"].forEach(
+    (id) => { $(id).textContent = "…"; });
+  ["cd-by-day", "cd-by-model", "cd-sessions"].forEach(
+    (id) => { $(id).innerHTML = `<p class="text-slate-600 text-xs">Loading…</p>`; });
+
+  let data;
+  try {
+    data = await api("/api/usage");
+  } catch (e) {
+    $("cd-err").textContent = e.message || "Failed to load usage data";
+    $("cd-err").classList.remove("hidden");
+    ["cd-total-usd", "cd-total-sessions", "cd-total-tokens"].forEach(
+      (id) => { $(id).textContent = "—"; });
+    ["cd-by-day", "cd-by-model", "cd-sessions"].forEach(
+      (id) => { $(id).innerHTML = `<p class="text-slate-600 text-xs">No data</p>`; });
+    return;
+  }
+
+  const tot = data.total || {};
+  $("cd-total-usd").textContent = fmtUsd(tot.usd);
+  $("cd-total-sessions").textContent = tot.sessions ?? 0;
+  $("cd-total-tokens").textContent = fmtK(tot.in_tokens) + " / " + fmtK(tot.out_tokens);
+
+  // spend-by-day bars
+  const days = data.by_day || [];
+  if (!days.length) {
+    $("cd-by-day").innerHTML = `<p class="text-slate-600 text-xs">No cost events yet</p>`;
+  } else {
+    const maxUsd = Math.max(...days.map((d) => d.usd), 0.000001);
+    $("cd-by-day").innerHTML = days.map((d) => {
+      const pct = Math.max(2, Math.round((d.usd / maxUsd) * 100));
+      return `<div class="flex items-center gap-2 text-xs">`
+        + `<span class="text-slate-400 w-24 shrink-0">${esc(d.day)}</span>`
+        + `<div class="flex-1 bg-slate-800 rounded h-3 overflow-hidden">`
+        + `<div class="bg-[var(--gold)] h-3 rounded" style="width:${pct}%"></div></div>`
+        + `<span class="text-[var(--gold-bright)] w-16 text-right shrink-0">${fmtUsd(d.usd)}</span>`
+        + `</div>`;
+    }).join("");
+  }
+
+  // spend-by-model
+  const models = data.by_model || [];
+  if (!models.length) {
+    $("cd-by-model").innerHTML = `<p class="text-slate-600 text-xs">No cost events yet</p>`;
+  } else {
+    const maxM = Math.max(...models.map((m) => m.usd), 0.000001);
+    $("cd-by-model").innerHTML = models.map((m) => {
+      const pct = Math.max(2, Math.round((m.usd / maxM) * 100));
+      return `<div class="flex items-center gap-2 text-xs">`
+        + `<span class="text-slate-400 truncate w-40 shrink-0">${esc(m.model)}</span>`
+        + `<div class="flex-1 bg-slate-800 rounded h-3 overflow-hidden">`
+        + `<div class="bg-[var(--cyan)] h-3 rounded" style="width:${pct}%"></div></div>`
+        + `<span class="text-[var(--cyan-soft)] w-16 text-right shrink-0">${fmtUsd(m.usd)}</span>`
+        + `<span class="text-slate-600 w-10 text-right shrink-0">${m.calls}×</span>`
+        + `</div>`;
+    }).join("");
+  }
+
+  // per-session table
+  const sessions = data.sessions || [];
+  if (!sessions.length) {
+    $("cd-sessions").innerHTML = `<p class="text-slate-600 text-xs">No sessions</p>`;
+  } else {
+    $("cd-sessions").innerHTML = `<table class="w-full text-xs border-collapse">`
+      + `<thead><tr class="text-slate-500 text-left border-b border-slate-800">`
+      + `<th class="pb-1 pr-2 font-normal">Session</th>`
+      + `<th class="pb-1 pr-2 font-normal text-right">Calls</th>`
+      + `<th class="pb-1 pr-2 font-normal text-right">In tok</th>`
+      + `<th class="pb-1 font-normal text-right">Spend</th></tr></thead>`
+      + `<tbody>`
+      + sessions.map((s) =>
+        `<tr class="border-b border-slate-800/50">`
+        + `<td class="py-1 pr-2 truncate max-w-[10rem] text-slate-300">${esc(s.title)}</td>`
+        + `<td class="py-1 pr-2 text-right text-slate-400">${s.calls}</td>`
+        + `<td class="py-1 pr-2 text-right text-slate-400">${fmtK(s.in_tokens)}</td>`
+        + `<td class="py-1 text-right text-[var(--gold-bright)]">${fmtUsd(s.usd)}</td>`
+        + `</tr>`).join("")
+      + `</tbody></table>`;
+  }
+
+  // gracefully attempt today's spend from /api/spend/today (may be absent)
+  try {
+    const td = await api("/api/spend/today");
+    if (td && typeof td.spend_today_usd === "number") {
+      $("cd-total-usd").title = `Today: ${fmtUsd(td.spend_today_usd)}`;
+    }
+  } catch (_) { /* endpoint absent — degrade gracefully */ }
+}
+
 /* ---------------- invite developers (Owner) ---------------- */
 
 $("btn-invite").onclick = () => { $("modal-invite").classList.remove("hidden"); loadUsers(); };
