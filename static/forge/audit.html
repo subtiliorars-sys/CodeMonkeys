@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CodeMonkeys — Audit Log</title>
+<!-- Plain CSS only — no CDN, same pattern as terminal.html -->
+<style>
+  :root { --gold: #d4af37; --gold-bright: #f0c75e; --bg: #050507; --bg2: #17130a;
+          --cyan: #22d3ee; --red: #f87171; --slate: #94a3b8; --dim: #475569; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: #e2e8f0; display: flex; flex-direction: column;
+         font: 13px/1.5 ui-monospace, "Cascadia Code", "Source Code Pro", monospace; }
+  header { display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+           border-bottom: 1px solid rgba(212,175,55,.3); flex-shrink: 0; }
+  header h1 { margin: 0; font-size: 1rem; color: var(--gold); }
+  a.back { color: var(--dim); font-size: .8rem; text-decoration: none; }
+  a.back:hover { color: var(--slate); }
+  .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+              padding: 8px 16px; border-bottom: 1px solid rgba(212,175,55,.15);
+              flex-shrink: 0; }
+  .controls label { color: var(--dim); font-size: .78rem; }
+  select, input[type=text], input[type=number] {
+    background: #0a0a0f; border: 1px solid rgba(212,175,55,.3); color: #e2e8f0;
+    border-radius: 4px; padding: 3px 7px; font: inherit; font-size: .78rem;
+  }
+  select:focus, input:focus { outline: none; border-color: var(--gold); }
+  button { background: linear-gradient(180deg, var(--gold-bright), #a67c12);
+           color: #17130a; font-weight: 700; border: none; border-radius: 4px;
+           padding: 4px 14px; cursor: pointer; font: inherit; font-size: .78rem; }
+  button:hover { filter: brightness(1.1); }
+  #msg { color: var(--dim); font-size: .78rem; padding: 6px 16px;
+         border-bottom: 1px solid rgba(212,175,55,.10); flex-shrink: 0; min-height: 24px; }
+  #msg.err { color: var(--red); }
+  #tbl-wrap { flex: 1; overflow-y: auto; padding: 0 16px 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+  thead th { color: var(--gold); text-align: left; padding: 6px 8px 4px;
+             border-bottom: 1px solid rgba(212,175,55,.4); position: sticky; top: 0;
+             background: var(--bg); z-index: 1; white-space: nowrap; }
+  tbody tr { border-bottom: 1px solid rgba(255,255,255,.04); }
+  tbody tr:hover { background: rgba(212,175,55,.04); }
+  td { padding: 5px 8px; vertical-align: top; }
+  .ts   { color: var(--dim); white-space: nowrap; }
+  .sid  { color: var(--dim); font-size: .72rem; }
+  .type-approval       { color: var(--gold); }
+  .type-approval_result { color: var(--gold-bright); }
+  .type-terminal_exec  { color: var(--cyan); }
+  .type-terminal_exec_result { color: #67e8f9; }
+  .type-debate_verify  { color: #a78bfa; }
+  .type-error          { color: var(--red); }
+  .detail { color: var(--slate); white-space: pre-wrap; overflow-wrap: anywhere;
+            max-height: 6rem; overflow-y: auto; }
+  .bool-t { color: #39d353; } .bool-f { color: var(--red); }
+  #empty { color: var(--dim); text-align: center; padding: 40px 0; }
+</style>
+</head>
+<body>
+<header>
+  <a class="back" href="/">&#x2190; console</a>
+  <h1>Audit Log</h1>
+  <span id="hdr-count" style="color:var(--dim);font-size:.78rem"></span>
+</header>
+<div class="controls">
+  <label>type
+    <select id="f-type">
+      <option value="">all</option>
+      <option value="approval">approval</option>
+      <option value="approval_result">approval_result</option>
+      <option value="terminal_exec">terminal_exec</option>
+      <option value="terminal_exec_result">terminal_exec_result</option>
+      <option value="debate_verify">debate_verify</option>
+      <option value="error">error</option>
+    </select>
+  </label>
+  <label>session <input id="f-session" type="text" placeholder="sid…" style="width:120px"></label>
+  <label>limit <input id="f-limit" type="number" value="200" min="1" max="1000" style="width:60px"></label>
+  <button id="btn-refresh">Refresh</button>
+</div>
+<div id="msg"></div>
+<div id="tbl-wrap">
+  <table id="tbl">
+    <thead><tr>
+      <th>time</th><th>type</th><th>session</th><th>detail</th>
+    </tr></thead>
+    <tbody id="tbody"></tbody>
+  </table>
+  <div id="empty" style="display:none">No security events found.</div>
+</div>
+<script src="/static/forge/audit.js"></script>
+</body>
+</html>

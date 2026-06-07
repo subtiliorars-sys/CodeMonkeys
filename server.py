@@ -4057,6 +4057,109 @@ def blackboard_delete(slug: str, _: str = Depends(verify_owner)):
     return {"ok": True, "removed": _bb_slug(slug)}
 
 
+# ----------------------------------------------------------------- N11 audit log
+
+# Security-relevant event types only — everything else is filtered out before the
+# payload leaves the server.  text/tool/tool_result/cost/user events are excluded;
+# they carry prompts, tool args, and model output which may contain PII or secrets.
+#
+# Fields exposed per event: session id, timestamp, type, agent label, and a small
+# number of boolean/int/short-string fields that are already redacted by emit().
+# "command" is truncated at 300 chars (same as debate_verify) and never includes
+# raw tool args or full prompt context.
+#
+# This surface is owner-only and should get a red-team pass before any multi-user
+# expansion.
+
+_AUDIT_SAFELIST: frozenset[str] = frozenset({
+    "approval",          # human-gate request (command field, approval_id)
+    "approval_result",   # human decision (approved bool)
+    "terminal_exec",     # owner-typed shell command (status + command)
+    "terminal_exec_result",  # shell exit code (no raw output — omitted below)
+    "debate_verify",     # risky-command verifier result (allowed, refutes, summary)
+    "error",             # agent/model errors (message, agent)
+})
+
+# Per-type safe fields: only these keys are forwarded; everything else is dropped.
+# "i", "ts", "type" are always included (added by emit()).
+_AUDIT_SAFE_FIELDS: dict[str, frozenset[str]] = {
+    "approval":          frozenset({"approval_id", "command"}),
+    "approval_result":   frozenset({"approval_id", "approved"}),
+    "terminal_exec":     frozenset({"by", "command", "status"}),
+    "terminal_exec_result": frozenset({"command", "exit_code"}),
+    "debate_verify":     frozenset({"command", "allowed", "refutes", "summary"}),
+    "error":             frozenset({"message", "agent"}),
+}
+
+_AUDIT_LIMIT_DEFAULT = 200
+_AUDIT_LIMIT_CAP     = 1000
+
+
+def _audit_filter_event(sid: str, evt: dict) -> dict | None:
+    """Return a safe projection of evt if it is in the safelist, else None."""
+    etype = evt.get("type")
+    if etype not in _AUDIT_SAFELIST:
+        return None
+    safe = frozenset(_AUDIT_SAFE_FIELDS.get(etype, frozenset()))
+    proj: dict = {"sid": sid, "i": evt.get("i"), "ts": evt.get("ts"), "type": etype}
+    for k in safe:
+        if k in evt:
+            v = evt[k]
+            # Strings already went through _redact() inside emit(); truncate defensively.
+            if isinstance(v, str):
+                v = v[:600]
+            proj[k] = v
+    return proj
+
+
+@app.get("/api/audit")
+def audit_log(
+    limit: int = _AUDIT_LIMIT_DEFAULT,
+    type: str = "",
+    session: str = "",
+    _: str = Depends(verify_owner),
+):
+    """N11 — owner-only security-event aggregator.
+
+    Aggregates events from in-memory SESSIONS (already redacted by emit()).
+    Returns only safelisted event types; strips prompt/PII fields.
+    Query params: limit (≤1000), type (filter to one safelisted type),
+    session (filter to one sid). Results are newest-first.
+    """
+    limit = min(max(1, limit), _AUDIT_LIMIT_CAP)
+    type_filter  = type.strip() or ""
+    sid_filter   = session.strip() or ""
+
+    # Type filter must be in safelist (fail-closed: unknown type → empty result)
+    if type_filter and type_filter not in _AUDIT_SAFELIST:
+        return {"events": [], "total": 0,
+                "note": f"type '{type_filter}' is not in the audit safelist"}
+
+    collected: list[dict] = []
+    with _SESSIONS_LOCK:
+        sids = list(SESSIONS.keys())
+
+    for sid in sids:
+        if sid_filter and sid != sid_filter:
+            continue
+        s = SESSIONS.get(sid)
+        if s is None:
+            continue
+        with s["lock"]:
+            raw_events = list(s["events"])
+        for evt in raw_events:
+            if type_filter and evt.get("type") != type_filter:
+                continue
+            proj = _audit_filter_event(sid, evt)
+            if proj is not None:
+                collected.append(proj)
+
+    # Newest-first, then apply limit
+    collected.sort(key=lambda e: (e.get("ts") or 0, e.get("i") or 0), reverse=True)
+    collected = collected[:limit]
+    return {"events": collected, "total": len(collected)}
+
+
 # Wave 4 #6 — fractal/tiered memory, phase 1: deterministic theme-token
 # extraction. NOT a lossy LLM summary — we walk the persisted history and pull
 # structured facts (files touched, tools used, commands run, errors seen) so a
@@ -4729,6 +4832,16 @@ def terminal_page():
         raise HTTPException(404, "Not found")          # don't advertise when off
     return FileResponse(
         os.path.join(BASE_DIR, "static", "forge", "terminal.html"),
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@app.get("/audit")
+def audit_page():
+    """N11 — owner-only audit-log viewer UI (served as a static page; auth is
+    enforced by the /api/audit endpoint the page calls, not by this route)."""
+    return FileResponse(
+        os.path.join(BASE_DIR, "static", "forge", "audit.html"),
         headers={"Cache-Control": "no-cache"},
     )
 
