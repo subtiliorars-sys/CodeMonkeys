@@ -4,11 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CodeMonkeys</title>
-<!-- Vendored Tailwind (Wave 4 #3), built into the image at /static/forge/tailwind.css.
-     The CDN <script> below stays the active styler until the vendored CSS is
-     visually confirmed; then it's removed and the CSP is tightened (phase 2). -->
+<!-- Vendored Tailwind (Wave 4 #3 phase 2), built into the image at
+     /static/forge/tailwind.css. Owner confirmed it renders correctly in prod,
+     so the runtime Tailwind CDN tag is gone and CSP script-src is 'self'. -->
 <link rel="stylesheet" href="/static/forge/tailwind.css">
-<script src="https://cdn.tailwindcss.com"></script>
 <style>
   :root {
     --gold: #d4af37; --gold-bright: #f0c75e; --gold-dark: #a67c12;

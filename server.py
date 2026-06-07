@@ -225,16 +225,17 @@ def healthz():
 async def _security_headers(request, call_next):
     """Baseline browser-hardening for an auth-gated console that fronts a shell.
     Anti-clickjacking (no cross-origin framing of the login/console), no MIME
-    sniffing, no referrer leakage. CSP is intentionally limited to frame-ancestors
-    / object-src / base-uri so it does NOT block the Tailwind CDN or app.js —
-    tightening script-src is a follow-up that pairs with vendoring Tailwind."""
+    sniffing, no referrer leakage. script-src 'self' (Tailwind phase 2): all JS
+    is same-origin files — the Tailwind CDN <script> is gone (vendored CSS) and
+    no page may carry inline <script> (swarm's moved to swarm.js for this)."""
     resp = await call_next(request)
     resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("Referrer-Policy", "no-referrer")
     resp.headers.setdefault(
         "Content-Security-Policy",
-        "frame-ancestors 'self'; object-src 'none'; base-uri 'self'")
+        "script-src 'self'; frame-ancestors 'self'; object-src 'none'; "
+        "base-uri 'self'")
     return resp
 
 
