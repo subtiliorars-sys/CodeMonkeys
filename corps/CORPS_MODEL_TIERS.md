@@ -32,6 +32,43 @@ Prefs override slug picks: `~/.config/agent-corps/model-prefs.env` (see `model-p
 
 ---
 
+## 2a. Difficulty-first classification (no LLM call)
+
+**Precedence:** §2a sets Command's starting HYPOTHESIS only; unit defaults (§2) and
+never-start-heavy (§1) win on conflict; the RISKY plan-gate's cheap plan is exempt
+(the plan is throwaway).
+
+Before picking a tier, run a cheap keyword + length heuristic to decide the starting rung:
+
+| Signals | Starting tier |
+|---------|---------------|
+| Length < 200 tokens AND no keywords below | **T0** |
+| Keywords: `auth`, `payment`, `secret`, `migration`, `race`, `isolation` | **T1** |
+| Keywords: `deploy` (only when paired with a target: prod/Fly/push/release) | **T1** |
+| Keywords: `audit`, `refactor >3 files`, `debug`, `multi-service`, `correctness` | **T1** |
+| Any above + `concurrent`, `adversarial`, `irreversible` | **T1** (keywords alone never start heavy) |
+| Task failed at T1 once | **T2** |
+| Planner/red-team role regardless of signal | **T3** (hard floor) |
+
+This classification uses only pattern matching — **no LLM call, no extra spawn**. Command
+applies it at triage in the same turn.
+
+---
+
+## 2b. Self-escalation (`[[ESCALATE]]`)
+
+A unit that determines mid-task that its current tier is insufficient for the actual
+complexity encountered signals this by emitting the marker `[[ESCALATE: T1→T2 — reason]]`
+as a **re-spawn request**: the emitting unit is DONE when it returns the marker; Command
+re-spawns a fresh unit at +1 tier (once) or denies the request and re-triages. Rules:
+
+- **One self-escalation per unit per task.** A second `[[ESCALATE]]` is invalid — the unit
+  must return `BLOCKED` instead and let Command re-triage.
+- **Never silent.** The marker must be the first line of the return, visible to Command.
+- **Command decides.** The marker is a request, not an auto-grant — Command re-spawns or denies.
+
+---
+
 ## 3. Model escalation scoring (within a task)
 
 Start at the unit's default tier. Add:

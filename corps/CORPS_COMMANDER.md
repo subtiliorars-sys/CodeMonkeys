@@ -38,7 +38,7 @@ Start at **0** (Skirmish). Add signals; cap each category as noted.
 | User explicitly says full corps / campaign / deploy everything | +3 | once |
 | User mentions **credits, cost, budget, cheap** | **−3** | once |
 
-**RISKY tag** — when triage hits the +2 high-risk-surface signal (irreversible AND outward: money, auth reset, prod deploy), annotate the echelon line RISKY. Nothing tagged RISKY auto-executes in the same turn: Command states the action, stops, and waits for an explicit human signal.
+**RISKY tag** — when triage hits the +2 high-risk-surface signal (irreversible AND outward: money, auth reset, prod deploy), annotate the echelon line RISKY. Nothing tagged RISKY auto-executes in the same turn. Instead: Command generates a **3–7 step plan in-thread with ZERO tool calls (no reads, no spawns) — cheap by construction** — pure reasoning from what is already in context. Surface that plan and stop. Execution begins only on an explicit human signal ("go", "proceed", or equivalent). If the plan itself reveals new risk, re-tag and resurface before any step runs.
 
 **Thresholds**
 - **0–1 → Skirmish** — Command solo. **0 subagents.**
@@ -77,6 +77,7 @@ Start at **0** (Skirmish). Add signals; cap each category as noted.
 - **One writer converges** — the main thread merges results; never have N agents co-edit one artifact.
 - **Subagent hold** — any subagent that identifies an irreversible/outward action must HALT and
   return a `HOLD:` line before executing — Command approves or redirects before the next wave.
+  If the action is also RISKY, the human gate governs — Command may not approve on the human's behalf.
 - **Convergence rule** — at synthesis, process unit AARs one at a time; tag each finding
   `confirmed` / `refuted` / `uncertain` — uncertain recirculates, refuted is discarded.
   One-at-a-time isolation is mandatory only at Campaign with ≥4 concurrent units.
@@ -127,6 +128,16 @@ Escalate **one level** only when:
 - Operation → Campaign: **≥3 strands** still open OR user expands to repo-wide audit/migration.
 
 Do **not** escalate for: slow typing, one extra file, or "could use more thoroughness."
+
+---
+
+## 4a. Named operation types
+
+- **`consistency-sweep`** — mandatory before shipping any doc corpus touching >10 files: one
+  pass verifying naming, cross-references, and voice are coherent across the whole set. Run as a
+  Skirmish (solo) or Operation recon wave; never skip to save turns on a large doc push.
+- **`runsheet`** — any dated go-live / launch / event → instantiate `templates/RUNSHEET_TEMPLATE.md`
+  and drive execution from it.
 
 ---
 
