@@ -4292,6 +4292,148 @@ def blackboard_delete(slug: str, _: str = Depends(verify_owner)):
     return {"ok": True, "removed": _bb_slug(slug)}
 
 
+# ---- N7: Plan→Execute handoff -----------------------------------------------
+# Plan-mode sessions write Constitution/Spec/Plan/Tasks artifacts to
+# .codemonkeys/specs/<slug>/ via the jailed save_spec tool.  These two
+# endpoints let users LIST those saved plans and EXECUTE one by creating a
+# default-mode session seeded with the plan+tasks content so the agent carries
+# out what was specified.  All path access goes through _jail_specs / a tighter
+# slug-scoped scan so the jail invariant is never weakened.
+
+def _specs_root() -> str:
+    """Absolute path of <WORKSPACE>/.codemonkeys/specs/ (may not exist yet)."""
+    return os.path.join(WORKSPACE_DIR, ".codemonkeys", "specs")
+
+
+def _list_spec_slugs() -> list:
+    """Return a list of {slug, title, artifacts} dicts for every saved plan.
+
+    Title is the first non-empty, non-heading line of plan.md (cheap heuristic;
+    falls back to the slug).  All paths are resolved via os.realpath to rule out
+    symlink escapes before we even open a file.
+    """
+    root = os.path.realpath(_specs_root())
+    out = []
+    try:
+        entries = sorted(os.scandir(root), key=lambda e: e.name)
+    except OSError:
+        return out
+    for entry in entries:
+        if not entry.is_dir(follow_symlinks=False):
+            continue
+        # Confirm the dir itself is inside the root (symlink guard)
+        if not os.path.realpath(entry.path).startswith(root + os.sep):
+            continue
+        slug = entry.name
+        artifacts = []
+        title = slug
+        for art in _SPEC_ARTIFACTS:
+            art_path = os.path.join(entry.path, art + ".md")
+            if os.path.isfile(art_path):
+                artifacts.append(art)
+                if art == "plan" and title == slug:
+                    # Peek at first meaningful line for a human-readable title
+                    try:
+                        with open(art_path, "r", errors="replace") as f:
+                            for line in f:
+                                line = line.strip()
+                                if line and not line.startswith("#"):
+                                    title = line[:80]
+                                    break
+                    except OSError:
+                        pass
+        out.append({"slug": slug, "title": title, "artifacts": artifacts})
+    return out
+
+
+def _read_spec_for_execution(slug: str) -> str:
+    """Read plan.md + tasks.md (if present) for the given slug and return them
+    concatenated as the seeded message.  Both files go through _jail_specs.
+    Capped at MAX_MSG_CHARS so the seed cannot blow the context window."""
+    parts = []
+    for art in ("plan", "tasks"):
+        try:
+            full = _jail_specs(slug, art)
+        except ValueError:
+            continue
+        try:
+            with open(full, "r", errors="replace") as f:
+                text = f.read(READ_CAP + 1)
+            if len(text) > READ_CAP:
+                text = text[:READ_CAP] + "\n...[truncated]"
+            if text.strip():
+                parts.append(f"## {art}.md\n\n{text}")
+        except OSError:
+            continue
+    combined = "\n\n---\n\n".join(parts)
+    if not combined.strip():
+        return ""
+    header = (
+        f"Execute the following saved plan (slug: `{slug}`).\n"
+        "Work through every task listed below in order.  Use default-mode "
+        "tools (write_file, edit_file, bash, …) as needed.  Push/deploy "
+        "commands will still prompt for human approval as usual.\n\n"
+    )
+    return _cap_message(header + combined)
+
+
+@app.get("/api/specs")
+def specs_list(_: str = Depends(verify_user)):
+    """N7: list saved plan slugs from .codemonkeys/specs/ (jailed)."""
+    return {"specs": _list_spec_slugs()}
+
+
+class SpecExecuteRequest(BaseModel):
+    title: str = ""        # optional session title override
+    budget_usd: float | None = None
+
+
+@app.post("/api/specs/{slug}/execute")
+def specs_execute(slug: str, req: SpecExecuteRequest,
+                  username: str = Depends(verify_user)):
+    """N7: create a default-mode session seeded with plan+tasks from <slug>.
+
+    Safety invariants:
+    - Slug is sanitized before use (same rule as save_spec).
+    - All file reads go through _jail_specs (no traversal possible).
+    - The executing session is always 'default' — never 'auto'.
+      Members are already limited to plan/default; Owner could choose auto
+      from the normal send flow, but execute always defaults to default so the
+      human approval gate stays on for push/deploy commands from plan handoffs.
+    - Seeded message is capped via _cap_message.
+    """
+    # Sanitize slug identically to save_spec
+    clean = re.sub(r"[^a-z0-9]+", "-", slug.lower()).strip("-")
+    clean = clean[:64].rstrip("-")
+    if not clean:
+        raise HTTPException(400, "Invalid slug")
+
+    # Confirm the slug directory exists and is actually inside the specs root
+    specs_root = os.path.realpath(_specs_root())
+    slug_dir = os.path.realpath(os.path.join(specs_root, clean))
+    if not slug_dir.startswith(specs_root + os.sep):
+        raise HTTPException(400, "Invalid slug")
+    if not os.path.isdir(slug_dir):
+        raise HTTPException(404, f"No saved plan found for slug: {clean!r}")
+
+    seed = _read_spec_for_execution(clean)
+    if not seed:
+        raise HTTPException(404,
+            f"Slug {clean!r} exists but has no plan or tasks artifacts to execute")
+
+    title = req.title or f"exec:{clean}"
+    s = new_session(title, budget_usd=req.budget_usd)
+    sid = s["id"]
+
+    # Seed as default mode — the approval gate stays on (non-negotiable for
+    # plan handoffs which commonly include git push / fly deploy steps).
+    s["mode"] = "default"
+    emit(s, "user", text=seed)
+    threading.Thread(target=run_session_message, args=(s, seed), daemon=True).start()
+
+    return {"id": sid, "slug": clean, "mode": "default"}
+
+
 # ----------------------------------------------------------------- N11 audit log
 
 # Security-relevant event types only — everything else is filtered out before the
