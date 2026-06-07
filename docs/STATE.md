@@ -1,6 +1,6 @@
 # CodeMonkeys — Current State (jumping-off point)
 
-**Read this first when picking the project back up.** Last updated 2026-06-06.
+**Read this first when picking the project back up.** Last updated 2026-06-07.
 
 ## What it is
 Self-hosted web coding console (Claude Code-style agent). Single-file FastAPI
@@ -59,12 +59,25 @@ Daystrom agent corps in `corps/`. Full overview: `README.md` +
 - **apply_patch** (#8): `git apply` unified-diff edits, atomic, every diff target
   path jail-checked before apply. In FULL_TOOLS + corps `Edit`.
 
+## Shipped since (v0.3 — 2026-06-06/07, merged to `main`, NOT yet deployed)
+- **Security wave** (PRs #12–#20): approval-gate shell-quoting hardening,
+  secret redaction in context/UI/audit log, upload/message-input hardening,
+  login brute-force throttle + per-IP/global ceilings, security response
+  headers, local TOTP QR (no CDN secret leak), pinned requirements + CI.
+- **Blackboard memory** (#4, PR #14 + multi-agent extension): persistent
+  `.codemonkeys/blackboard-<slug>.md` FACTS/DECISIONS/NEXT per task; jailed
+  `blackboard_read`/`blackboard_write` tools; boards injected (bounded, framed
+  as untrusted DATA) into the commander prompt at session start. Multi-AGENT
+  half: every Daystrom subagent gets `blackboard_read`; Edit/Write-capable
+  units also get `blackboard_write`; plan mode read-only end to end
+  (`_plan_filter_subagent_tools`). Write path serialized (`_BB_LOCK`,
+  single-process assumption) + atomic tmp+rename. Red-teamed GO-WITH-FIXES,
+  all fixes applied; tests in `tests/test_blackboard.py`.
+
 ## Next up (from docs/IDEATION.md)
-1. **Blackboard cross-session memory** (#4) — `.codemonkeys/blackboard-<task>.md`
-   with FACTS/DECISIONS/NEXT surviving session resets (S).
-2. **Connector marketplace UI** (#9) — poll the MCP Registry, one-click add (now
+1. **Connector marketplace UI** (#9) — poll the MCP Registry, one-click add (now
    that the MCP client exists). Plus **escalation-on-failure** (cheapest→pricier).
-3. **Debate-verify gate** (#7) on high-risk changes; **two-layer KB** (#10).
+2. **Debate-verify gate** (#7) on high-risk changes; **two-layer KB** (#10).
 
 ## MCP connectors (v1+v2, merged to main 2026-06-06)
 - Sync Streamable-HTTP JSON-RPC client over `requests` (no new deps, no SDK).
