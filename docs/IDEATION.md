@@ -59,6 +59,28 @@ backlog exhausted** — remaining work is owner-gated/needs an owner decision.
 by #42; #38/#46 docs) merge together cleanly in the suggested order — **integrated
 suite 338/338 green**.
 
+## New backlog "N" — 12 ideas (ideated 2026-06-07 PM; owner greenlit Wave 1)
+
+| # | Item | Status | Risk |
+|---|------|--------|------|
+| ~~N1~~ | **Smart provider failover + cooldown** (skip 429'd/quota-dead providers) | ✅ **PR #52** (red-teamed, fixed) | med |
+| ~~N2~~ | **Daily spend cap** across all sessions + kill-switch/override | ✅ **PR #51** (red-teamed, fixed) | med |
+| N3 | **Cost/usage dashboard** (by-day/by-model, UI) | ✅ **PR #53** | low |
+| ~~N4~~ | **Diff preview** of file writes in the console | ✅ **PR #50** | low |
+| N5 | **Streaming output** — stream partial model text to the console | queued | med |
+| N6 | **Session resume after restart** (survive Fly scale-to-zero/deploy mid-run) | queued | med |
+| N7 | **Plan→execute handoff** (run a saved spec-mode plan) | ✅ **PR #55** | low |
+| N8 | **Context auto-compaction** via the fractal digest near token limit | queued | med |
+| N9 | **Structured tool-error retry/repair** (bounded, signature-aware) | queued | low |
+| N10 | **Readiness probe** `/readyz` (deep health vs liveness) | ✅ **PR #49** | low |
+| N11 | **Owner audit-log viewer** (security-event UI) | ✅ **PR #54** (red-team GO) | low |
+| N12 | **Model catalog/pricing refresh** (no code edits to add models) | queued | med |
+
+**Wave 1 (N4/N1/N2/N10) + Wave 2 (N3/N11/N7) = PRs #49–#55, all built + reviewed,
+unmerged.** Merge order + conflict notes in `docs/RELEASE_NOTES.md`.
+**Next buildable (queued):** N9 (low), N5/N6/N8/N12 (med). N5/N6/N8 touch the
+agent loop / call_model — sequence them to limit `server.py` merge churn.
+
 ## MCP follow-ups (carved out of #1) — ALL SHIPPED 2026-06-06
 
 - ~~**#1a — OAuth 2.1 client flow**~~ ✅ auth-code + PKCE S256; tokens in
