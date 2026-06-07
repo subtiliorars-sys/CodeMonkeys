@@ -128,7 +128,9 @@ RISKY_PATTERNS = [
     r"\bchmod\s+-R\b",              # recursive perm change
     r"\bchown\s+-R\b",             # recursive owner change
     r"\btruncate\b",               # truncate -s 0 file
-    r">\s*/dev/",                   # redirect into a device node
+    # redirect into a BLOCK device (disk wipe) — NOT /dev/null|stderr|stdout|tty
+    # which appear in almost every command (`2>/dev/null`, `>/dev/null 2>&1`).
+    r">\s*/dev/(?:sd|nvme|hd|vd|mmcblk|disk|loop|mapper|ram|zram)",
     r"\b(?:curl|wget)\b[^|]*\|\s*(?:sudo\s+)?(?:ba)?sh\b",  # pipe net → shell
     r"\b(?:shutdown|reboot|halt|poweroff|telinit)\b",  # NOT bare `init` (git/npm init are benign)
     r"\bgit\s+push\b.*--force\b|\bgit\s+push\b.*\s-f\b",    # explicit force-push
