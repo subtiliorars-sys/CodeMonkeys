@@ -46,7 +46,7 @@ function showMain() {
   // Owner-only controls hidden for invited Members
   document.querySelectorAll(".owner-only").forEach((el) =>
     el.classList.toggle("hidden", state.role !== "Owner"));
-  refreshSessions(); refreshRepos(); listPasskeys();
+  refreshSessions(); refreshSpecs(); refreshRepos(); listPasskeys();
 }
 function logout() {
   ["cm_token", "cm_username", "cm_role"].forEach((k) => localStorage.removeItem(k));
@@ -269,6 +269,51 @@ async function refreshSessions() {
     }));
   } catch (e) { /* ignore */ }
 }
+
+/* ---------------- saved plans (N7) ---------------- */
+
+async function refreshSpecs() {
+  const box = $("spec-list");
+  if (!box) return;
+  try {
+    const d = await api("/api/specs");
+    const specs = d.specs || [];
+    if (!specs.length) {
+      box.innerHTML = '<div class="text-slate-600">none yet</div>';
+      return;
+    }
+    box.innerHTML = specs.map((s) =>
+      `<div class="group flex items-center gap-1 rounded px-2 py-1 hover:bg-yellow-900/20">
+         <span class="flex-1 truncate text-slate-300" title="${esc(s.slug)}">
+           ${esc(s.title || s.slug)}
+           <span class="text-slate-600 text-[.65rem]">[${esc((s.artifacts || []).join(","))}]</span>
+         </span>
+         <button data-slug="${esc(s.slug)}" data-title="${esc(s.title || s.slug)}"
+           class="spec-exec gold-btn rounded px-2 py-0.5 text-[.65rem] opacity-0 group-hover:opacity-100"
+           title="Execute this plan in a new default-mode session">&#9654; run</button>
+       </div>`).join("");
+    box.querySelectorAll(".spec-exec").forEach((btn) => {
+      btn.onclick = async () => {
+        const slug = btn.dataset.slug;
+        btn.disabled = true;
+        btn.textContent = "…";
+        try {
+          const d = await api(`/api/specs/${encodeURIComponent(slug)}/execute`, "POST",
+            { title: `exec:${slug}` });
+          await refreshSessions();
+          openSession(d.id);
+        } catch (e) {
+          alert("Execute failed: " + e.message);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "▶ run";
+        }
+      };
+    });
+  } catch (e) { /* ignore — not critical */ }
+}
+
+$("btn-refresh-specs").onclick = refreshSpecs;
 
 async function refreshRepos() {
   try {
