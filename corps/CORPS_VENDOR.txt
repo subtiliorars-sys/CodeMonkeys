@@ -2,17 +2,19 @@
 # Re-sync:  corps-vendor-sync /home/subtiliorars/CodeMonkeys/corps
 # Audit:    corps-drift-check /home/subtiliorars/CodeMonkeys/corps
 source_repo: subtiliorars-sys/agent-corps
-source_sha: 1e2150b28444d717ce5348af0757dedecc2eb8d6
-source_short: 1e2150b
-synced_utc: 2026-06-06T23:54:08Z
+source_sha: e87b8d347ded21be87fee48673402a3f419b7a24
+source_short: e87b8d3
+synced_utc: 2026-06-07T02:58:10Z
 mode: --with-deploy
 files:
   ddd525485083ec62fb457058a610c11f4217bd9f  AGENT_DOCTRINE.md
-  2c19002796a2b3e65e96abc0b94cbeba4866783d  CORPS_COMMANDER.md
-  457d39f754e4937e0f0ed150b8a34884cd920101  CORPS_MODEL_TIERS.md
-  a6684e5cf2009ed5f6573da6fb3a9c4ec1cbe378  CORPS_TREASURY.md
-  d0af4d31022215afddae514e462d918cd2ea1d5f  CORPS_PLAYBOOKS.md
-  4ffc94f1822668228cf58356106f48259fd00acd  commands/deploy.md
+  316c7e63dadc79591e8540df71d1a5ab14f73240  CORPS_COMMANDER.md
+  ea3e1053eafd9bbea33983bc4da774ca4dc3b153  CORPS_MODEL_TIERS.md
+  f91342aee7aa064039ded67512510ad5a62856e1  CORPS_TREASURY.md
+  497c776e23411cb8d9a281e3d0e8469e7ba46aa5  CORPS_PLAYBOOKS.md
+  3c4fcdd5197db3e31f4dbcac954a77eab35438af  FLEET_PROTOCOL.md
+  85bc1652f1002fef2f4431b6154469b0e0b5c66d  agent-governance.md
+  042fec043b637ecdae61fa3b9c941e28eb959ff2  commands/deploy.md
   1db6ff04423629dc79faeca0de86cad01ea15394  agents/cartographer.md
   7b5f470fcff80220550b2b6d12cc27d1a8732f16  agents/community-strategist.md
   6407ffb190c079017182a51b8deea43245fe34da  agents/compliance-officer.md
@@ -27,7 +29,14 @@ files:
   25c02ccc6969263d437ef53b3424ad45dad20960  agents/provost-qa.md
   a50558c4f0988dd9c072e5848bacd01ee813cb94  agents/quartermaster.md
   28b5af5c946cd4213959848d658db88c9df9570e  agents/recon-scout.md
-  5d6940636baae1094dfbc8a559bf8971beeead80  agents/red-team.md
+  9ae16047573c25b04e91b161a3ad5d8a49d8e41e  agents/red-team.md
   acef07bb61aaf660fb957cd6f8e0f34d33cb8e40  agents/sapper.md
   4a1a1ef977d581253a230eb1174ac30632d2d202  agents/scribe.md
-  528e524a44799ae7ec7f61d54fe240f296c2466f  agents/staff-planner.md
+  d4242525a44d4be2e189802ea1d9d91f9257e906  agents/staff-planner.md
+  31bd4c70d6ad9287aa0dc34de4fcb439e8078169  templates/RISK_REGISTER_TEMPLATE.md
+  f54b539b57f63a50f122d5675eb3dd5a9baa2862  templates/RUNSHEET_TEMPLATE.md
+  43c21755c473df06ad682d7220a2c6b3cbfeba1a  playbooks/blackboard.md
+  4a2d3fd03e78add2c061ac969c275c4db097a91c  playbooks/contract-net.md
+  097bf27675e165c212b0a6fb22d6c66e1064bdc0  playbooks/debate-verify.md
+  ed3ede3b461530b9e4e23ff1db21c96fb429ee2d  playbooks/self-heal.md
+  4547729ea525289046fe7e42b7cfd478e1888f37  playbooks/swarm-discovery.md
