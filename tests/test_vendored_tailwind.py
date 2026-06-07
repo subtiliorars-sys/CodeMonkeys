@@ -47,3 +47,28 @@ def test_dockerfile_builds_tailwind():
 def test_built_css_is_gitignored():
     gi = _read(".gitignore")
     assert "static/forge/tailwind.css" in gi
+
+
+# ---- phase 2: CDN removed, CSP script-src 'self' ----------------------------
+
+def test_no_cdn_script_remains():
+    """Phase 2: the runtime cdn.tailwindcss.com <script> is gone — the vendored
+    /static/forge/tailwind.css is the only styler."""
+    for page in ("index.html", "terminal.html", "swarm.html"):
+        html = _read(f"static/forge/{page}")
+        assert "cdn.tailwindcss.com" not in html, f"{page} still loads the CDN"
+
+
+def test_no_inline_scripts_anywhere():
+    """script-src 'self' blocks inline <script> blocks; every page must load
+    JS from same-origin files only (swarm's inline block moved to swarm.js)."""
+    import re
+    for page in ("index.html", "terminal.html", "swarm.html"):
+        html = _read(f"static/forge/{page}")
+        for m in re.finditer(r"<script\b([^>]*)>", html):
+            assert "src=" in m.group(1), f"{page} carries an inline <script>"
+
+
+def test_swarm_js_extracted_and_referenced():
+    assert os.path.exists(os.path.join(_ROOT, "static/forge/swarm.js"))
+    assert '/static/forge/swarm.js' in _read("static/forge/swarm.html")

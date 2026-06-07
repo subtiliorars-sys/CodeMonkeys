@@ -37,6 +37,8 @@ def _assert_headers(resp):
     csp = resp.headers.get("content-security-policy", "")
     assert "frame-ancestors 'self'" in csp
     assert "object-src 'none'" in csp
+    # Tailwind phase 2: every script is a same-origin file (CDN <script> gone)
+    assert "script-src 'self'" in csp
 
 
 def test_headers_on_html_root():
