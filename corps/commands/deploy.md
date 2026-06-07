@@ -11,6 +11,7 @@ corps run with the same scoring/caps in `~/.claude/CORPS_COMMANDER.md`.
 Run the standard operation:
 
 1. **Triage (≤2 lines).** Score per `CORPS_COMMANDER.md` §1; round down. State echelon + why.
+   Surface hard-gate status from the repo's governance docs; green milestone + red gate = **HOLD**.
    - **Skirmish** (0–1) → solo, 0 subagents.
    - **Operation** (2–4) → ≤4 subagents, no staff-planner.
    - **Campaign** (≥5) → staff-planner first, ≤8 subagents.

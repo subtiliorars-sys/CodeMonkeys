@@ -25,5 +25,10 @@ trigger fires.***
 | **Broad READ-ONLY discovery/coverage**: >=4 files/dirs to scan in parallel, no interdependency | `swarm-discovery` | no orchestrator bottleneck; parallel coverage | many cheap T0 spawns + a scratchpad |
 | **Many specialists feeding ONE artifact**: >=3 sequential waves OR >2 specialist units converging on one output | `blackboard` | shared situational awareness; counters info-loss | discipline to maintain one file |
 | A **batch of heterogeneous tasks** where unit fit/cost varies a lot | `contract-net` | better assignment than top-down | a bidding round (often not worth it) |
+| **Autonomous loop / self-healing agent** hitting repeated failures | `self-heal` | structured halt before infinite loop | cheap — it's a stop rule, not a fan-out |
 
 If nothing matches: **stop here and run the default.** That is the common case.
+
+**Note on staff-planner:** plan mode is enforced by tool allowlist (`Read/Grep/Glob` only — no
+`Bash/Write/Edit`), not just by prompt. If a Campaign task description says "plan and execute",
+split it: staff-planner plans, line units execute. Never pass execution tools to staff-planner.

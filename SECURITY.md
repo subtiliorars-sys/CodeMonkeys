@@ -39,6 +39,12 @@ keep that radius away from everything else.
   (MFA not yet enrolled) — the throttle is their sole barrier and is deliberately
   not cleared until `/api/account/setup` completes. See "Known limitations" for
   tunables and residuals.
+- Passkeys are self-service revocable: `GET /api/webauthn/credentials` lists the
+  caller's own passkeys (handles only — no key material) and `DELETE
+  /api/webauthn/credentials/{cred_id}` removes one. The filter only ever touches
+  the **caller's own** credential list (no IDOR — a known foreign `cred_id` finds
+  no match → 404). Removing every passkey is allowed: PIN+TOTP remain, so it can
+  never lock the account out.
 - Lockout recovery only via `fly ssh console` (`scripts/reset_access.py`)
 
 ## Sandboxing & limits
@@ -64,6 +70,25 @@ keep that radius away from everything else.
   variable expansion (`g=git; $g push`), command substitution (`$(echo git) push`),
   and `eval` — are not visible to static matching and remain an accepted residual
   risk of gating a raw shell string (the kernel-sandbox gap below is the backstop).
+- **Auto-mode risky _bash_ commands pass a debate-verify gate** (IDEATION #7).
+  Auto mode has no human in the loop; before a `_is_risky` **bash** command
+  executes there, three verifiers (intent / safety / security lenses, no tools —
+  single judgment calls, not subagent loops) each try to refute it given recent
+  session context. They run on **distinct providers when 3+ are keyed**
+  (decorrelates the panel so one model's blind spot/jailbreak/injection can't
+  sink all three); with fewer keyed providers the cheapest is reused, so the
+  panel degrades to correlated lenses on one model — still useful, but weaker.
+  Majority refute (≥2/3) = BLOCKED, reasons returned to the model. **Fail
+  closed:** a verifier error, garbled verdict, or missing provider counts as a
+  refutal. Verifier calls are metered into the session ledger and emit
+  `debate_verify` events. default/plan keep the human approval gate unchanged.
+  **Scope & residual:** the same panel gates risky `bash` **and** every
+  auto-mode **MCP** tool call (W7 — an Owner-added connector is still a
+  prompt-injection-reachable side effect with no human in the loop). The
+  verifiers share `_is_risky`'s static-match residual above (for bash), and an
+  LLM verdict is probabilistic. Treat this as **damage reduction for auto mode,
+  never an authorization boundary** — the default-mode human gate is the only
+  real boundary.
 - Per-session USD budget halts the loop; subagent spawn cap 8; recursion depth 1
 - **Plan mode is read-only, end to end.** Its toolset is read/list/glob/grep +
   `spawn_agent` + `save_spec`; it has no write_file/edit_file/bash. Subagents

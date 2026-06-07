@@ -82,6 +82,23 @@ Doctrine handles what the platform cannot hard-enforce — the same contract as 
 
 ---
 
+## 5a. USD session budget (when the host exposes cost)
+
+Some hosts (workflow tools, SDK wrappers) expose a running USD cost. When that data is
+available:
+
+- Declare a **USD session cap** at triage alongside the spawn cap, e.g. `[Treasury · Op · spawn ≤3 reserve 1 · USD cap $0.50 · USD reserve $0.08]`.
+- Guard the main loop: `while cost_usd() < session_cap - reserve_usd: …`
+- When cost hits the session cap, **HALT spawning** and report remaining work to the human — identical to hitting the spawn cap. Do not silently continue.
+- The ledger line gains `usd:` and `usd_reserve:` fields, and must carry `verify=` + `VERIFIED-BY:` per §4, e.g.:
+  `LEDGER: spent 3/4 · $0.34/$0.50 · reserve 1 banked · usd_reserve $0.08; verify=RUN; VERIFIED-BY: provost-qa PASS`
+
+When cost data is NOT available, the spawn-count proxy remains the operative limit.
+Advisory-only doctrine (§5) still applies — the agent self-governs; the platform does not
+always hand a live meter.
+
+---
+
 ## 6. Interaction with existing rules
 
 - **Sits on top of** the echelon caps (Commander §1–2) and model tiers — it does not replace
