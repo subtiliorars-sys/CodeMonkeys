@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CodeMonkeys — terminal</title>
+<!-- Deliberately self-contained: no CDN, no Tailwind — plain CSS only
+     (docs/TERMINAL_DESIGN.md §4; the repo is exiting CDNs, PR #34). -->
+<style>
+  :root { --gold: #d4af37; --gold-bright: #f0c75e; --bg: #050507; --cyan: #22d3ee; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: #e2e8f0; display: flex; flex-direction: column;
+         font: 13px/1.5 ui-monospace, "Cascadia Code", "Source Code Pro", monospace; }
+  #scrollback { flex: 1; overflow-y: auto; padding: 12px 14px 4px;
+                white-space: pre-wrap; overflow-wrap: anywhere; }
+  #scrollback div { min-height: 1.2em; }
+  .t-banner { color: var(--gold); }
+  .t-in     { color: var(--gold-bright); }
+  .t-out    { color: #e2e8f0; }
+  .t-dim    { color: #64748b; }
+  .t-agent  { color: var(--cyan); }
+  .t-err    { color: #f87171; }
+  .t-warn   { color: var(--gold-bright); background: rgba(212,175,55,.10); }
+  #inputrow { display: flex; gap: 8px; padding: 8px 14px 12px;
+              border-top: 1px solid rgba(212,175,55,.30); }
+  #prompt   { color: var(--gold); user-select: none; }
+  #cmd { flex: 1; background: transparent; border: none; outline: none;
+         color: #e2e8f0; font: inherit; caret-color: var(--gold); }
+  #status { padding: 2px 14px; color: #475569; font-size: 11px;
+            border-top: 1px solid rgba(212,175,55,.15); }
+  a { color: var(--gold); }
+</style>
+</head>
+<body>
+  <div id="scrollback"></div>
+  <div id="inputrow"><span id="prompt">&gt;</span>
+    <input id="cmd" autocomplete="off" autocapitalize="off" spellcheck="false"
+           aria-label="terminal input" autofocus></div>
+  <div id="status">disconnected</div>
+  <script src="/static/forge/terminal.js"></script>
+</body>
+</html>
