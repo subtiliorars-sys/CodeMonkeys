@@ -224,6 +224,62 @@ def test_correct_key_reread_no_spurious_migration(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# (1e) BREAK-GLASS recovery — CM_MASTER_KEY_RESET (docs/RECOVERY.md Scenario A)
+# ---------------------------------------------------------------------------
+
+def test_breakglass_recovers_rotation_lockout(tmp_path, monkeypatch):
+    """The exact recovery path: encrypted under KEY-A, key 'lost' and replaced with
+    KEY-B (would normally fail closed) — with CM_MASTER_KEY_RESET=true it boots,
+    generating a FRESH secret encrypted under the new key (never reuses old bytes)."""
+    sf = tmp_path / "session_secret.key"
+    monkeypatch.setattr(server, "SECRET_FILE", str(sf))
+    monkeypatch.setattr(server, "CM_MASTER_KEY_RESET", False)
+    monkeypatch.setattr(server, "CM_MASTER_KEY", "KEY-AAAAAAAAAAAAAAAA")
+    _reset_secret_cache()
+    old = server._session_secret()
+
+    # rotate (lost original) + break-glass
+    monkeypatch.setattr(server, "CM_MASTER_KEY", "KEY-BBBBBBBBBBBBBBBB")
+    monkeypatch.setattr(server, "CM_MASTER_KEY_RESET", True)
+    _reset_secret_cache()
+    fresh = server._session_secret()           # must NOT raise
+
+    assert len(fresh) == 32 and fresh != old, "must mint a brand-new secret"
+    on_disk = sf.read_bytes()
+    assert on_disk.startswith(server._ENC_MAGIC)
+    # decrypts under the NEW key
+    assert _make_fernet_from_key("KEY-BBBBBBBBBBBBBBBB").decrypt(
+        on_disk[len(server._ENC_MAGIC):]) == fresh
+
+
+def test_breakglass_plaintext_mode(tmp_path, monkeypatch):
+    """With no master key, break-glass regenerates a fresh plaintext secret."""
+    sf = tmp_path / "session_secret.key"
+    sf.write_bytes(b"x" * 32)
+    monkeypatch.setattr(server, "SECRET_FILE", str(sf))
+    monkeypatch.setattr(server, "CM_MASTER_KEY", "")
+    monkeypatch.setattr(server, "CM_MASTER_KEY_RESET", True)
+    _reset_secret_cache()
+    fresh = server._session_secret()
+    assert len(fresh) == 32 and fresh != b"x" * 32
+    assert sf.read_bytes() == fresh            # plaintext (no header) in keyless mode
+
+
+def test_breakglass_off_by_default(tmp_path, monkeypatch):
+    """Without the flag, the lockout still fails closed (no accidental reset)."""
+    sf = tmp_path / "session_secret.key"
+    monkeypatch.setattr(server, "SECRET_FILE", str(sf))
+    monkeypatch.setattr(server, "CM_MASTER_KEY_RESET", False)
+    monkeypatch.setattr(server, "CM_MASTER_KEY", "KEY-AAAAAAAAAAAAAAAA")
+    _reset_secret_cache()
+    server._session_secret()
+    monkeypatch.setattr(server, "CM_MASTER_KEY", "KEY-BBBBBBBBBBBBBBBB")
+    _reset_secret_cache()
+    with pytest.raises(RuntimeError):
+        server._session_secret()
+
+
+# ---------------------------------------------------------------------------
 # (2) Env eviction — test _evict_env_secrets() directly
 # ---------------------------------------------------------------------------
 # Because pytest imports all test modules into the same process, os.environ

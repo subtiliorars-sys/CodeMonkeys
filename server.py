@@ -174,6 +174,13 @@ FLEET_MAX_WORKERS = 200              # contract bound; payload stays ≪ 1 MB
 # secrets from in-memory variables; full closure requires the bash sandbox
 # described in docs/design/PER_USER_ISOLATION.md L4.
 CM_MASTER_KEY: str = os.environ.get("CM_MASTER_KEY", "")       # Fernet at-rest encryption key
+# BREAK-GLASS recovery: if the master key is lost/rotated and the app won't boot
+# ("cannot decrypt session_secret.key"), set CM_MASTER_KEY_RESET=true (+ the new
+# CM_MASTER_KEY) and redeploy. On boot the app then GENERATES A FRESH signing
+# secret (does NOT adopt the old/leaked file), so it boots — everyone simply has
+# to log in again. Remove the flag after. Setting Fly env vars already requires
+# owner-level access, so this adds no attacker capability. See docs/RECOVERY.md.
+CM_MASTER_KEY_RESET: bool = os.environ.get("CM_MASTER_KEY_RESET", "").lower() in ("1", "true", "yes")
 
 # Commands that pause the loop for human approval (CodeMonkeys design rule:
 # no silent pushes/deploys/destruction; git reset --hard has bitten us before)
@@ -405,6 +412,20 @@ def _session_secret() -> bytes:
                 raise
             os.replace(tmp, SECRET_FILE)
             os.chmod(SECRET_FILE, 0o600)
+
+        # BREAK-GLASS: regenerate a FRESH secret and overwrite, instead of failing
+        # closed. Recovers a lost/rotated key or a corrupt file with one env var +
+        # redeploy. Generates new random bytes (never adopts the old/leaked file),
+        # so it's safe; cost is that everyone must log in again. Loud warning.
+        if CM_MASTER_KEY_RESET:
+            raw = secrets.token_bytes(32)
+            _persist(raw, encrypt=(fernet is not None))
+            _logging.warning(
+                "CM_MASTER_KEY_RESET is set — GENERATED A FRESH session_secret.key "
+                "(all existing sessions are now invalid; everyone must log in again). "
+                "REMOVE CM_MASTER_KEY_RESET from the environment after this boot.")
+            _SESSION_SECRET_CACHE = raw
+            return raw
 
         if fernet is None:
             # Plaintext mode (no key). An encrypted file with no key = fail closed.
