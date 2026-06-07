@@ -21,6 +21,7 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import math
 import os
 import re
@@ -33,6 +34,8 @@ import threading
 import time
 import urllib.parse
 import uuid
+
+_log = logging.getLogger(__name__)
 
 import pyotp
 import requests
@@ -1332,9 +1335,12 @@ def save_models(cfg):
     _bust_secret_cache()      # newly-added API keys must be redactable immediately
 
 
-def _resolve(prov):
-    """Provider entry -> dict the chat layer consumes."""
-    return {"name": prov.get("label", "?"), "kind": prov["kind"],
+def _resolve(prov, pid=None):
+    """Provider entry -> dict the chat layer consumes.
+
+    *pid* is threaded through so cooldown helpers can bench by provider-id.
+    """
+    return {"pid": pid, "name": prov.get("label", "?"), "kind": prov["kind"],
             "base_url": prov.get("base_url", ""), "model": prov.get("model", ""),
             "api_key": prov.get("key", ""),
             "input_cost_per_m": prov.get("in", 0), "output_cost_per_m": prov.get("out", 0)}
@@ -1350,10 +1356,24 @@ def _callable_provider(p):
 
 
 def _usable(cfg):
-    """Callable providers, sorted cheapest-first by selected-model output cost."""
-    items = [(pid, p) for pid, p in cfg["providers"].items()
-             if _callable_provider(p)]
-    return sorted(items, key=lambda kv: kv[1].get("out", 1e9))
+    """Callable, non-cooled providers sorted cheapest-first by output cost.
+
+    All-cooled fallback: if every callable provider is currently in cooldown,
+    return just the least-recently-cooled one (shortest remaining window) so
+    callers always get *something* rather than an empty list.
+    """
+    all_callable = [(pid, p) for pid, p in cfg["providers"].items()
+                    if _callable_provider(p)]
+    all_callable = sorted(all_callable, key=lambda kv: kv[1].get("out", 1e9))
+    active = [(pid, p) for pid, p in all_callable if not _is_cooled(pid)]
+    if active:
+        return active
+    # All providers are cooled — fall back to least-recently-cooled so the
+    # caller can still make a call (it may succeed if the window just expired).
+    if not all_callable:
+        return []
+    fallback_pid = _least_recently_cooled([pid for pid, _ in all_callable])
+    return [(pid, p) for pid, p in all_callable if pid == fallback_pid]
 
 
 def main_provider(cfg):
@@ -1363,11 +1383,12 @@ def main_provider(cfg):
     sel = cfg.get("selected", "auto")
     if sel != "auto" and not cfg.get("auto_cheapest"):
         prov = cfg["providers"].get(sel)
-        if prov and _callable_provider(prov):
-            return _resolve(prov)
+        if prov and _callable_provider(prov) and not _is_cooled(sel):
+            return _resolve(prov, pid=sel)
     # auto / auto_cheapest: cheapest provider flagged for the cascade, else cheapest
-    auto = [p for pid, p in usable if p.get("auto")]
-    return _resolve(auto[0] if auto else usable[0][1])
+    auto = [(pid, p) for pid, p in usable if p.get("auto")]
+    pid, p = auto[0] if auto else usable[0]
+    return _resolve(p, pid=pid)
 
 
 def provider_for_tier(cfg, tier):
@@ -1375,10 +1396,11 @@ def provider_for_tier(cfg, tier):
     usable = _usable(cfg)
     if not usable:
         return None
-    provs = [p for _, p in usable]
-    idx = {"t0": 0, "t1": len(provs) // 3, "t2": (2 * len(provs)) // 3,
-           "t3": len(provs) - 1}.get(tier, len(provs) // 2)
-    return _resolve(provs[min(idx, len(provs) - 1)])
+    n = len(usable)
+    idx = {"t0": 0, "t1": n // 3, "t2": (2 * n) // 3,
+           "t3": n - 1}.get(tier, n // 2)
+    pid, p = usable[min(idx, n - 1)]
+    return _resolve(p, pid=pid)
 
 
 class ProviderUpsert(BaseModel):
@@ -1467,6 +1489,22 @@ def models_settings(req: ModelSettings, _: str = Depends(verify_owner)):
     cfg = load_models()
     cfg["auto_cheapest"] = req.auto_cheapest
     save_models(cfg)
+    return {"ok": True}
+
+
+@app.get("/api/cooldowns")
+def cooldowns_get(_: str = Depends(verify_owner)):
+    """Owner-only: show which providers are currently benched and for how long.
+
+    Returns {pid: seconds_remaining}.  Never exposes API keys.
+    """
+    return {"cooldowns": _cooldown_snapshot()}
+
+
+@app.delete("/api/cooldowns/{pid}")
+def cooldowns_clear(pid: str, _: str = Depends(verify_owner)):
+    """Owner-only: manually lift a provider cooldown (e.g. after re-keying)."""
+    _clear_cooldown(pid)
     return {"ok": True}
 
 
@@ -2571,10 +2609,28 @@ h1{{color:#ef4444;}}</style></head>
 
 # Transient provider failures worth a retry (rate limit / gateway / overload).
 _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504, 529})
+_AUTH_FAIL_STATUS = frozenset({401, 403})
 
 
 class TransientModelError(RuntimeError):
-    """A provider error that is worth retrying (rate-limit / 5xx / network)."""
+    """A provider error that is worth retrying (rate-limit / 5xx / network).
+
+    Carries optional metadata so the cooldown layer can honour Retry-After and
+    distinguish a hard rate-limit (429) from a generic 5xx.
+    """
+    def __init__(self, message, *, http_status=None, retry_after=None):
+        super().__init__(message)
+        self.http_status = http_status        # int or None
+        self.retry_after = retry_after        # int seconds or None
+
+
+class ProviderAuthError(RuntimeError):
+    """Auth failure (401/403) — not worth retrying. 401 = bad/expired key (long
+    bench); 403 is overloaded (WAF/geo/moderation/proxy rate-limit) so the caller
+    benches it only briefly. Carries the status to distinguish them."""
+    def __init__(self, message, *, http_status=None):
+        super().__init__(message)
+        self.http_status = http_status
 
 
 def _chat_openai(provider, system, history, tools, max_tokens):
@@ -2612,8 +2668,20 @@ def _chat_openai(provider, system, history, tools, max_tokens):
             json=payload, timeout=300)
     except requests.exceptions.RequestException as e:
         raise TransientModelError(f"{provider['name']} network error: {e}")
+    if r.status_code in _AUTH_FAIL_STATUS:
+        raise ProviderAuthError(
+            f"{provider['name']} HTTP {r.status_code}: {r.text[:200]}",
+            http_status=r.status_code)
     if r.status_code in _RETRYABLE_STATUS:
-        raise TransientModelError(f"{provider['name']} HTTP {r.status_code}: {r.text[:200]}")
+        retry_after = None
+        try:
+            retry_after = int(
+                getattr(r, "headers", {}).get("Retry-After", ""))
+        except (TypeError, ValueError):
+            pass
+        raise TransientModelError(
+            f"{provider['name']} HTTP {r.status_code}: {r.text[:200]}",
+            http_status=r.status_code, retry_after=retry_after)
     if r.status_code >= 400:
         raise RuntimeError(f"{provider['name']} HTTP {r.status_code}: {r.text[:400]}")
     data = r.json()
@@ -2679,31 +2747,122 @@ def _chat_anthropic(provider, system, history, tools, max_tokens):
 _MODEL_RETRIES = 3            # total attempts on a transient failure
 _MODEL_BACKOFF_S = (1, 3, 8)  # fixed backoff between attempts (no jitter: testable)
 
+# ---- Provider cooldown registry -----------------------------------------
+# When a provider keeps 429-ing or its key is bad we bench it for a short
+# window so the selection cascade skips it and picks the next usable one.
+# Keyed by provider-id (pid); value = epoch second after which it is usable.
+_COOLDOWN_LOCK = threading.Lock()
+_PROVIDER_COOLDOWNS: dict[str, float] = {}
+
+# Cooldown durations (seconds).  Constants so tests can monkeypatch them.
+_COOLDOWN_TRANSIENT_S = 60   # 429 / exhausted transient retries / 403 (overloaded)
+_COOLDOWN_AUTH_S = 300       # 401 bad/expired key — won't fix itself soon
+_COOLDOWN_MAX_S = 3600       # F3: hard ceiling so a hostile/huge Retry-After can't bench for days
+
+
+def bench_provider(pid: str, seconds: float, *, _now=None) -> None:
+    """Mark provider *pid* as unavailable for *seconds* from now.
+
+    If Retry-After already implies a longer window, honour that instead.
+    Safe to call from any thread.
+    """
+    if not pid:
+        return
+    now = _now if _now is not None else time.time()
+    until = now + seconds
+    with _COOLDOWN_LOCK:
+        existing = _PROVIDER_COOLDOWNS.get(pid, 0)
+        _PROVIDER_COOLDOWNS[pid] = max(existing, until)
+    _log.warning("provider_cooldown pid=%s seconds=%.0f", pid, seconds)
+
+
+def _clear_cooldown(pid: str) -> None:
+    """Remove any active cooldown for *pid* (used by tests and admin clear)."""
+    with _COOLDOWN_LOCK:
+        _PROVIDER_COOLDOWNS.pop(pid, None)
+
+
+def _is_cooled(pid: str, *, _now=None) -> bool:
+    """Return True if *pid* is currently in cooldown."""
+    now = _now if _now is not None else time.time()
+    with _COOLDOWN_LOCK:
+        return _PROVIDER_COOLDOWNS.get(pid, 0) > now
+
+
+def _least_recently_cooled(pids: list[str], *, _now=None) -> str | None:
+    """Fallback: of all cooled pids, return the one whose cooldown expires
+    soonest (i.e. least penalised).  Returns None if pids is empty."""
+    if not pids:
+        return None
+    now = _now if _now is not None else time.time()
+    with _COOLDOWN_LOCK:
+        return min(pids, key=lambda p: _PROVIDER_COOLDOWNS.get(p, now))
+
+
+def _cooldown_snapshot(*, _now=None) -> dict[str, float]:
+    """Return {pid: seconds_remaining} for all active cooldowns (owner view)."""
+    now = _now if _now is not None else time.time()
+    with _COOLDOWN_LOCK:
+        return {pid: round(until - now, 1)
+                for pid, until in _PROVIDER_COOLDOWNS.items()
+                if until > now}
+# -------------------------------------------------------------------------
+
 
 def _call_provider(provider, system, history, tools, max_tokens):
     if provider["kind"] == "anthropic":
         try:
             return _chat_anthropic(provider, system, history, tools, max_tokens)
         except Exception as e:
+            status = getattr(e, "status_code", None)
+            # Surface anthropic SDK auth errors as ProviderAuthError.
+            if status in _AUTH_FAIL_STATUS:
+                raise ProviderAuthError(str(e), http_status=status)
             # Surface anthropic SDK overload/rate-limit/5xx as retryable.
-            if getattr(e, "status_code", None) in _RETRYABLE_STATUS:
-                raise TransientModelError(str(e))
+            if status in _RETRYABLE_STATUS:
+                retry_after = None
+                try:
+                    retry_after = int(
+                        getattr(e, "response", None)
+                        and e.response.headers.get("Retry-After", "") or "")
+                except (TypeError, ValueError):
+                    pass
+                raise TransientModelError(
+                    str(e), http_status=status, retry_after=retry_after)
             raise
     return _chat_openai(provider, system, history, tools, max_tokens)
 
 
 def call_model(provider, system, history, tools, max_tokens=8192):
     """Call the provider, retrying transient failures (429/5xx/network) with a
-    bounded fixed backoff. Non-transient errors (bad key, 400) raise immediately."""
+    bounded fixed backoff. Non-transient errors (bad key, 400) raise immediately.
+
+    On auth failure the provider is benched for _COOLDOWN_AUTH_S.  On
+    exhausted transient retries the provider is benched for _COOLDOWN_TRANSIENT_S
+    (or longer if Retry-After on the final 429 says so).
+    """
+    pid = provider.get("pid")
     last = None
-    for attempt in range(_MODEL_RETRIES):
-        try:
-            return _call_provider(provider, system, history, tools, max_tokens)
-        except TransientModelError as e:
-            last = e
-            if attempt < _MODEL_RETRIES - 1:
-                time.sleep(_MODEL_BACKOFF_S[min(attempt, len(_MODEL_BACKOFF_S) - 1)])
-    raise last
+    try:
+        for attempt in range(_MODEL_RETRIES):
+            try:
+                return _call_provider(provider, system, history, tools, max_tokens)
+            except TransientModelError as e:
+                last = e
+                if attempt < _MODEL_RETRIES - 1:
+                    time.sleep(_MODEL_BACKOFF_S[min(attempt, len(_MODEL_BACKOFF_S) - 1)])
+        # Retries exhausted — bench the provider.
+        cooldown_s = _COOLDOWN_TRANSIENT_S
+        if last and getattr(last, "retry_after", None):
+            cooldown_s = max(cooldown_s, last.retry_after)
+        cooldown_s = min(cooldown_s, _COOLDOWN_MAX_S)   # F3: cap a hostile/huge Retry-After
+        bench_provider(pid, cooldown_s)
+        raise last
+    except ProviderAuthError as e:
+        # F2: 401 = bad key (long bench); 403 is overloaded → brief bench only.
+        secs = _COOLDOWN_AUTH_S if getattr(e, "http_status", None) == 401 else _COOLDOWN_TRANSIENT_S
+        bench_provider(pid, secs)
+        raise
 
 
 def _pricier_provider(cfg, current):
@@ -2712,7 +2871,7 @@ def _pricier_provider(cfg, current):
     provider keeps failing rather than dying on the cheapest one."""
     cur_out = current.get("output_cost_per_m", 0)
     cur_model = current.get("model")
-    candidates = [_resolve(p) for _, p in _usable(cfg)]
+    candidates = [_resolve(p, pid=pid) for pid, p in _usable(cfg)]
     pricier = [p for p in candidates
                if p.get("output_cost_per_m", 0) > cur_out and p.get("model") != cur_model]
     return pricier[0] if pricier else None
@@ -2965,7 +3124,7 @@ def _verifier_providers(cfg):
     usable = _usable(cfg)
     if not usable:
         return []
-    provs = [_resolve(p) for _, p in usable]            # cheapest-first
+    provs = [_resolve(p, pid=pid) for pid, p in usable]  # cheapest-first
     n = len(_DEBATE_LENSES)
     if len(provs) >= n:
         return provs[:n]
@@ -2979,6 +3138,13 @@ def _debate_verify(session, cmd):
     providers = _verifier_providers(cfg)
     if not providers:
         return False, "no model provider available to verify — blocked"
+    # F1 (N1 red-team): if COOLDOWN shrank the distinct verifier set below the
+    # lens count, the panel collapses onto repeats of one model — its whole
+    # decorrelation rationale is gone. Don't silently weaken the gate: demand a
+    # UNANIMOUS allow in that degraded state. (A genuinely <3-provider config
+    # with no cooldown keeps the normal majority rule — that's a known posture.)
+    _distinct = len({p.get("pid") or p.get("name") for p in providers})
+    _degraded = _distinct < len(_DEBATE_LENSES) and bool(_cooldown_snapshot())
     tail = [h for h in session.get("history", [])
             if h.get("role") in ("user", "assistant")][-6:]
     context = "\n".join(f"[{h['role']}] {(h.get('text') or '')[:400]}"
@@ -3011,10 +3177,13 @@ def _debate_verify(session, cmd):
         if not verdict.upper().startswith("ALLOW"):
             refutes += 1                  # garbled/missing verdict = refute
         notes.append(f"{lens}: {verdict[:200] or 'REFUTE (no verdict)'}")
-    allowed = refutes <= 1
+    # degraded (cooldown-collapsed) panel → unanimous allow required
+    allowed = (refutes == 0) if _degraded else (refutes <= 1)
     summary = "; ".join(notes)
+    if _degraded:
+        summary = "[panel diversity degraded by provider cooldown — unanimous required] " + summary
     emit(session, "debate_verify", command=cmd[:300], allowed=allowed,
-         refutes=refutes, summary=summary[:600])
+         refutes=refutes, degraded=_degraded, summary=summary[:600])
     return allowed, summary
 
 
