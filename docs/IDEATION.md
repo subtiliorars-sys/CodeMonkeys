@@ -52,10 +52,12 @@ MERGED 2026-06-07 (stays OFF: double env gate, owner enables post-deploy).
 | S5 | **Notify-on-done** — webhook/run completion ping (OmniVerse pattern); pairs with #5. | ux/ops | low |
 | S6 | **Per-user workspace isolation** — biggest known gap; large, design-first. | security | high — design+red-team |
 
-**Standing-list status (consolidation Wave 11, 2026-06-07 ~09:40 UTC):** S1–S3 shipped
-as PRs, S4-A shipped (S4-B owner-gated). Next buildable item = **S5 notify-on-done**.
-**Integration verified:** all 6 open PRs (#38/#40/#41/#42/#43/#44; #39 superseded by #42)
-merge together cleanly in the suggested order — **integrated suite 323/323 green**.
+**Standing-list status (consolidation Wave 14, 2026-06-07 ~11:16 UTC):** S1–S5 all
+shipped as PRs; S6 design'd (#46, no code); S4-B owner-gated. **Safe build→PR
+backlog exhausted** — remaining work is owner-gated/needs an owner decision.
+**Integration verified:** the 6 code PRs (#40/#41/#42/#43/#44/#45; #39 superseded
+by #42; #38/#46 docs) merge together cleanly in the suggested order — **integrated
+suite 338/338 green**.
 
 ## MCP follow-ups (carved out of #1) — ALL SHIPPED 2026-06-06
 
