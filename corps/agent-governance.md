@@ -154,6 +154,75 @@ repeating myself?"
 
 ---
 
+## Approval-gate runtime pattern (Tier D — fleet / autonomous loop)
+
+Tier D = repos whose agents act in the world (see `GOVERNANCE_ROLLOUT_PLAN.md` §2).
+
+Any system that can invoke agent actions on a schedule or in a loop MUST enforce:
+
+1. **Machine-readable ACTION_RISK map.** Every action the loop can call has an explicit risk
+   level (`LOW` / `MED` / `HIGH`). An action not in the map defaults to **HIGH** — the map is
+   fail-closed, not fail-open.
+2. **`propose()` and `execute()` are separate functions.** The autonomous loop may only call
+   `propose()`. `execute()` is reachable exclusively by an explicit human command arriving on the
+   same surface that showed the proposal. Identical enforcement on every surface — no "admin
+   shortcut" bypass.
+3. **Approved state is human-asserted, not inferred.** The loop never auto-approves a proposal
+   because no rejection arrived in N seconds. Timeout = stay in `proposed` state, not proceed.
+
+---
+
+## Receipts ledger (Tier D — fleet / autonomous loop)
+
+Every consequential agent action (deploy, file write, external call, secret access, spend) MUST
+append a record to an **append-only JSONL** in a fixed path (e.g. `~/.claude/receipts/<repo>.jsonl`):
+
+```jsonl
+{"ts": <epoch>, "action": "...", "args": {...}, "result": "ok|err", "hash": "<sha256 of prior record>"}
+```
+
+Rules:
+- **Hash-chained:** each record's `hash` field is `sha256(json(prior_record))` — detects
+  truncation/corruption; tamper-evidence requires anchoring the latest hash outside the file.
+  First record hashes the empty string.
+- **Writes serialized:** one writer at a time; **file lock REQUIRED** (atomic append alone cannot
+  protect the hash chain) — no interleaved records from concurrent agents.
+- **Logging never raises.** A failure to write the receipt must NOT propagate into the action it
+  records — catch and surface separately; the action result stands.
+
+---
+
+## Public-surface register gate
+
+Distinct from `AGENT_DOCTRINE.md`'s "two-register output" artifact-marking rule; red-team's
+exemption applies ONLY to the artifact-marking rule, never to this gate.
+
+Before committing any file intended for a public-facing surface (docs, web copy, emails, social):
+
+1. **Sensitive-domain check:** does the copy name or clearly imply a sensitive domain (health,
+   recovery, legal status, financial distress)? If yes, apply the two-register rule — public copy
+   must use the game/general register, never the clinical/direct one.
+2. **Commitment-pressure check:** does the copy create pressure to spend, subscribe, or commit
+   before the user has full context? Flag and remove.
+
+These are **hard GATES** (binary preconditions) — not style suggestions. A commit that fails
+either check does not proceed regardless of milestone status.
+
+**Hard GATES vs. milestones:** a gate is a binary precondition (backup exists ✓/✗; policy posted
+✓/✗; public-surface register check passed ✓/✗). A milestone is a progress marker. `/deploy`
+surfaces gate status explicitly — a green milestone with a red gate = HOLD.
+
+---
+
+## Per-repo DECISIONS.md (recommended)
+
+Every repo that will receive ongoing agent contribution benefits from a `DECISIONS.md` at its
+root: one entry per significant choice, recording what was chosen, what was rejected, why, and
+what risks were accepted. This gives any new agent or human the context to avoid re-litigating
+settled choices. Format is prose-or-table, terse.
+
+---
+
 ## The Twelve Steps — inner alignment
 
 1. **Human primacy.** Unguided self-direction drifts into entropy. The human's intent is

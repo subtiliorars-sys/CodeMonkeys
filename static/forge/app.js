@@ -45,7 +45,7 @@ function showMain() {
   // Owner-only controls hidden for invited Members
   document.querySelectorAll(".owner-only").forEach((el) =>
     el.classList.toggle("hidden", state.role !== "Owner"));
-  refreshSessions(); refreshRepos();
+  refreshSessions(); refreshRepos(); listPasskeys();
 }
 function logout() {
   ["cm_token", "cm_username", "cm_role"].forEach((k) => localStorage.removeItem(k));
@@ -111,6 +111,32 @@ $("su-submit").onclick = async () => {
   } catch (e) { $("su-msg").textContent = e.message; }
 };
 $("su-done").onclick = () => showMain();
+
+/* ---------------- memory boards (Owner) ---------------- */
+
+const _mb = $("btn-memory");
+if (_mb) _mb.onclick = listBlackboards;
+
+async function listBlackboards() {
+  const box = $("memory-list");
+  if (!box) return;
+  try {
+    const r = await api("/api/blackboard", "GET");
+    if (!r.blackboards.length) { box.innerHTML = `<div class="text-[.6rem] text-slate-600 pl-2">no boards yet</div>`; return; }
+    box.innerHTML = r.blackboards.map((b) =>
+      `<div class="flex items-center justify-between text-[.65rem] text-slate-500 pl-2">`
+      + `<span>📋 ${esc(b.slug)} <span class="text-slate-700">${b.bytes}b</span></span>`
+      + `<button data-slug="${esc(b.slug)}" class="mb-rm text-red-400 hover:text-red-300">delete</button>`
+      + `</div>`).join("");
+    box.querySelectorAll(".mb-rm").forEach((btn) => {
+      btn.onclick = async () => {
+        if (!confirm(`Delete memory board "${btn.dataset.slug}"?`)) return;
+        try { await api("/api/blackboard/" + encodeURIComponent(btn.dataset.slug), "DELETE"); listBlackboards(); }
+        catch (e) { alert(e.message); }
+      };
+    });
+  } catch (_) { /* not owner / none */ }
+}
 
 /* ---------------- invite developers (Owner) ---------------- */
 
@@ -193,8 +219,30 @@ $("btn-passkey").onclick = async () => {
       },
     });
     msg.textContent = "✓ " + (r.message || "Passkey added.");
+    listPasskeys();
   } catch (e) { msg.textContent = "✗ " + e.message; }
 };
+
+// W12 — list + remove registered passkeys
+async function listPasskeys() {
+  const box = $("passkey-list");
+  if (!box) return;
+  try {
+    const r = await api("/api/webauthn/credentials", "GET");
+    if (!r.credentials.length) { box.innerHTML = ""; return; }
+    box.innerHTML = r.credentials.map((c) =>
+      `<div class="flex items-center justify-between text-[.65rem] text-slate-500">`
+      + `<span>🔑 ${c.short}…</span>`
+      + `<button data-cid="${c.id}" class="pk-rm text-red-400 hover:text-red-300">remove</button>`
+      + `</div>`).join("");
+    box.querySelectorAll(".pk-rm").forEach((b) => {
+      b.onclick = async () => {
+        try { await api("/api/webauthn/credentials/" + b.dataset.cid, "DELETE"); listPasskeys(); }
+        catch (e) { $("passkey-msg").textContent = "✗ " + e.message; }
+      };
+    });
+  } catch (_) { /* not logged in / no passkeys */ }
+}
 
 /* ---------------- sessions / repos ---------------- */
 
