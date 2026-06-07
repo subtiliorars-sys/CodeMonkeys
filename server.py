@@ -418,12 +418,23 @@ def _session_secret() -> bytes:
         # redeploy. Generates new random bytes (never adopts the old/leaked file),
         # so it's safe; cost is that everyone must log in again. Loud warning.
         if CM_MASTER_KEY_RESET:
+            # Don't let a forgotten key silently downgrade an encrypted file to
+            # plaintext (red-team R2) — refuse loudly and tell them to set the key.
+            if fernet is None and is_encrypted:
+                raise RuntimeError(
+                    "CM_MASTER_KEY_RESET is set but CM_MASTER_KEY is not, and the "
+                    "existing session_secret.key is encrypted — refusing to silently "
+                    "downgrade it to plaintext. Also set CM_MASTER_KEY to a new value "
+                    "(see docs/RECOVERY.md Scenario A), or delete the file to "
+                    "intentionally return to plaintext.")
             raw = secrets.token_bytes(32)
             _persist(raw, encrypt=(fernet is not None))
-            _logging.warning(
-                "CM_MASTER_KEY_RESET is set — GENERATED A FRESH session_secret.key "
-                "(all existing sessions are now invalid; everyone must log in again). "
-                "REMOVE CM_MASTER_KEY_RESET from the environment after this boot.")
+            warn = ("CM_MASTER_KEY_RESET is set — GENERATED A FRESH session_secret.key "
+                    "(all existing sessions are now invalid; everyone must log in again). "
+                    "REMOVE CM_MASTER_KEY_RESET from the environment after this boot.")
+            if fernet is None:
+                warn += " NOTE: stored UNENCRYPTED — no CM_MASTER_KEY set."
+            _logging.warning(warn)
             _SESSION_SECRET_CACHE = raw
             return raw
 

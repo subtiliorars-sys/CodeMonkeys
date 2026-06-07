@@ -265,6 +265,23 @@ def test_breakglass_plaintext_mode(tmp_path, monkeypatch):
     assert sf.read_bytes() == fresh            # plaintext (no header) in keyless mode
 
 
+def test_breakglass_keyless_refuses_to_downgrade_encrypted(tmp_path, monkeypatch):
+    """Reset flag set but CM_MASTER_KEY forgotten + file is encrypted → refuse,
+    don't silently drop to plaintext (red-team R2)."""
+    sf = tmp_path / "session_secret.key"
+    monkeypatch.setattr(server, "SECRET_FILE", str(sf))
+    monkeypatch.setattr(server, "CM_MASTER_KEY_RESET", False)
+    monkeypatch.setattr(server, "CM_MASTER_KEY", "KEY-AAAAAAAAAAAAAAAA")
+    _reset_secret_cache()
+    server._session_secret()                   # writes encrypted file
+
+    monkeypatch.setattr(server, "CM_MASTER_KEY", "")     # forgot the key
+    monkeypatch.setattr(server, "CM_MASTER_KEY_RESET", True)
+    _reset_secret_cache()
+    with pytest.raises(RuntimeError, match="downgrade"):
+        server._session_secret()
+
+
 def test_breakglass_off_by_default(tmp_path, monkeypatch):
     """Without the flag, the lockout still fails closed (no accidental reset)."""
     sf = tmp_path / "session_secret.key"

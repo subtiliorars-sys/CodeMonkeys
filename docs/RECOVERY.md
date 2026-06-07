@@ -60,7 +60,9 @@ log in again (PINs/passkeys/2FA still work — only active sessions drop).
 1. Pick a NEW master key — generate one:
    `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`
    (or just use any 32+ character random string). **Save it in your password manager.**
-2. Set **two** secrets and let it redeploy:
+2. Set **two** secrets and let it redeploy (**set both** — `CM_MASTER_KEY_RESET`
+   alone, without a new `CM_MASTER_KEY`, will refuse to boot rather than quietly
+   turn off at-rest encryption):
    - **Dashboard:** Secrets → set `CM_MASTER_KEY` = the new value, and add
      `CM_MASTER_KEY_RESET` = `true`.
    - **CLI:** `fly secrets set CM_MASTER_KEY="<new-value>" CM_MASTER_KEY_RESET=true -a codemonkeys`
