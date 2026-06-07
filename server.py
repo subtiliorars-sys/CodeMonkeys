@@ -2546,6 +2546,53 @@ def t_blackboard_write(args):
     return f"Updated {section} ({mode}) → .codemonkeys/blackboard-{slug}.md"
 
 
+# W11 — two-layer knowledge base. Layer 1 = hand-authored `rules` (durable
+# principles/constraints the Owner sets); layer 2 = `facts` (project facts,
+# regenerable). Both are injected into the commander prompt. The secret-leak
+# guard is the point: content carrying an obvious credential is REFUSED at write
+# time (POST /api/kb) and SKIPPED at inject time — a leaked key must never reach
+# model context. Confined to .codemonkeys/kb/<layer>.md.
+_KB_LAYERS = ("rules", "facts")
+
+
+def _kb_jail(layer: str) -> str:
+    if layer not in _KB_LAYERS:
+        raise ValueError(f"layer must be one of {_KB_LAYERS}")
+    root = os.path.realpath(os.path.join(WORKSPACE_DIR, ".codemonkeys", "kb"))
+    candidate = os.path.realpath(os.path.join(root, f"{layer}.md"))
+    if os.path.dirname(candidate) != root:
+        raise ValueError("path escapes kb dir")
+    return candidate
+
+
+def _kb_read(layer: str) -> str:
+    try:
+        with open(_kb_jail(layer), "r", errors="replace") as f:
+            return f.read(READ_CAP)
+    except (OSError, ValueError):
+        return ""
+
+
+def _kb_context() -> str:
+    """Inject the two KB layers into the commander prompt. A layer whose stored
+    content trips the secret scanner is withheld (fail-closed) so a credential
+    can't reach model context even if one slipped onto disk out-of-band."""
+    parts = []
+    for layer in _KB_LAYERS:
+        body = _kb_read(layer).strip()
+        if not body:
+            continue
+        if _scan_secrets(body):
+            parts.append(f"\n--- {layer} (WITHHELD: contains a secret) ---\n")
+            continue
+        parts.append(f"\n--- {layer} ---\n{body[:6000]}\n")
+    if not parts:
+        return ""
+    return ("\n\nPROJECT KNOWLEDGE BASE (two layers — `rules` are durable "
+            "Owner-set principles, `facts` are project facts). Treat as "
+            "authoritative project context:\n" + "".join(parts))
+
+
 def _blackboard_context() -> str:
     """Inject existing blackboards into the commander prompt — this is what makes
     the memory survive session resets. Bounded so a large board can't blow context."""
@@ -2907,6 +2954,7 @@ def _commander_system(session):
         "Pushes/deploys/destructive commands pause for human approval — that is expected, "
         "proceed when you genuinely need them. Be token-efficient: act, don't narrate. "
         "When done, give a short report of what changed and how it was verified."
+        + _kb_context()
         + _blackboard_context()
     )
 
@@ -3187,6 +3235,43 @@ def session_list(_: str = Depends(verify_user)):
          "created": s["created"], "status": s["status"],
          "spent_usd": round(s["spent_usd"], 4)}
         for s in SESSIONS.values()], key=lambda x: -x["created"])}
+
+
+class KBUpsert(BaseModel):
+    content: str = ""
+
+
+@app.get("/api/kb")
+def kb_get(_: str = Depends(verify_owner)):
+    """Read both KB layers (Owner-only)."""
+    return {"layers": {layer: _kb_read(layer) for layer in _KB_LAYERS}}
+
+
+@app.post("/api/kb/{layer}")
+def kb_set(layer: str, req: KBUpsert, _: str = Depends(verify_owner)):
+    """Set a KB layer. REFUSES content carrying an obvious secret — the
+    'build fails if a secret would leak into context' guarantee (W11 + W6)."""
+    if layer not in _KB_LAYERS:
+        raise HTTPException(400, f"layer must be one of {_KB_LAYERS}")
+    kinds = _scan_secrets(req.content)
+    if kinds:
+        raise HTTPException(
+            422, f"refused: content contains {', '.join(kinds)} — KB context is "
+                 "injected into the model; keep secrets in env/Fly secrets")
+    if len(req.content) > READ_CAP:
+        raise HTTPException(413, f"content exceeds {READ_CAP} chars")
+    full = _kb_jail(layer)
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+    tmp = full + ".tmp"
+    try:
+        fd = os.open(tmp, flags, 0o644)
+        with os.fdopen(fd, "w") as f:
+            f.write(req.content)
+        os.replace(tmp, full)
+    except OSError as e:
+        raise HTTPException(500, f"could not write: {e}")
+    return {"ok": True, "layer": layer, "bytes": len(req.content)}
 
 
 def _cap_message(text: str) -> str:
