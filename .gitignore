@@ -6,3 +6,5 @@ __pycache__/
 .env
 # editor / tooling
 .cursor/
+# build artifact — vendored Tailwind is generated in the Docker image / CI (#3)
+static/forge/tailwind.css
