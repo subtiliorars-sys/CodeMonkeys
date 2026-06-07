@@ -23,10 +23,16 @@ Daystrom agent corps in `corps/`. Full overview: `README.md` +
   W1–W12). `/healthz` (W1) is wired as the Fly liveness check (1 passing).
   Smoke-tested live: `/healthz` 200, `/api/usage` + `/api/kb` 401 fail-closed,
   `/` 200.
-- **Wave 4 (PRs #33/#34/#35/#36) + the web terminal (#37) are merged to `main`
-  but NOT yet deployed** — next deploy picks up fractal memory, vendored-Tailwind
-  phase 1, connector marketplace, webhook→PR runs (inert until webhook secrets
-  set), and the terminal (inert until both TERMINAL env gates set).
+- **2026-06-07 PM: DEPLOYED at v15** — everything merged to date is LIVE: Wave 1–4,
+  web terminal (#37, OFF), secret encrypt-at-rest (#47) + recovery (#48), and the
+  N-backlog Wave 1+2 (PRs #49–#56: N1 failover, N2 daily cap, N3 cost dashboard,
+  N4 diff preview, N7 plan→execute, N10 `/readyz`, N11 audit viewer). Smoke-green:
+  `/healthz` 200, `/readyz` 200 (checks all true), `/` 200, `/api/usage`+`/api/audit`
+  401 fail-closed, `/fleet-status.json` 404 (FLEET_TOKEN unset). Suite 472 on main.
+- **Inert until owner sets the secret (each = `fly secrets set …` auto-redeploys):**
+  `CM_MASTER_KEY` (encrypt session secret at rest — see docs/RECOVERY.md), `FLEET_TOKEN`
+  (fleet feed), `NOTIFY_WEBHOOK_URL` (ntfy), webhook + TERMINAL gates. Tailwind
+  phase-2 CDN removal is live — eyeball the vendored CSS render.
 
 ## Shipped so far (v0.1)
 - Auth: 4-digit+ PIN (PBKDF2) + mandatory TOTP; HMAC tokens; fail-closed.
