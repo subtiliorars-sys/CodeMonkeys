@@ -41,7 +41,7 @@ def test_transient_error_is_retried_then_succeeds(monkeypatch):
     monkeypatch.setattr(server.time, "sleep", lambda s: None)   # no real waiting
     calls = {"n": 0}
 
-    def flaky(provider, system, history, tools, max_tokens):
+    def flaky(provider, system, history, tools, max_tokens, **kw):
         calls["n"] += 1
         if calls["n"] < 3:
             raise server.TransientModelError("429 slow down")

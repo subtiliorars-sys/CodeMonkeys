@@ -11,6 +11,8 @@ const state = {
   sid: "", cursor: -1, timer: null, mode: "default",
   nextBudget: null, pendingApproval: null,
   lastActivity: Date.now(), hist: [], histIdx: -1,
+  // N5 streaming: live div being appended to for the current assistant turn.
+  streamDiv: null,
 };
 const IDLE_STOP_MS = 10 * 60 * 1000;   // stop polling after 10 min of inactivity
 const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07/g;
@@ -47,8 +49,30 @@ async function api(path, method = "GET", body) {
 function renderEvent(e) {
   switch (e.type) {
     case "user": break;                       // already echoed at the prompt
-    case "text": line((e.agent ? `[${e.agent}] ` : "") + e.text, "t-out"); break;
-    case "tool": line(`  ⚙ ${e.name} ${String(e.detail || "").slice(0, 160)}`, "t-dim"); break;
+    // N5: text_delta appends to a live div while streaming; text finalises the turn.
+    case "text_delta": {
+      const prefix = e.agent ? `[${e.agent}] ` : "";
+      if (!state.streamDiv) {
+        state.streamDiv = line(prefix, "t-out");
+      }
+      state.streamDiv.textContent += String(e.text || "").replace(ANSI_RE, "");
+      sb.scrollTop = sb.scrollHeight;
+      break;
+    }
+    case "text": {
+      // If a streamDiv exists (streaming was active) close it out; the final
+      // `text` event carries the complete assembled text so we replace the
+      // live div's content to guarantee consistency, then clear the ref.
+      const prefix = e.agent ? `[${e.agent}] ` : "";
+      if (state.streamDiv) {
+        state.streamDiv.textContent = prefix + String(e.text || "").replace(ANSI_RE, "");
+        state.streamDiv = null;
+      } else {
+        line(prefix + e.text, "t-out");
+      }
+      break;
+    }
+    case "tool": state.streamDiv = null; line(`  ⚙ ${e.name} ${String(e.detail || "").slice(0, 160)}`, "t-dim"); break;
     case "tool_result":
       line(`  ↳ ${e.ok ? "ok" : "FAIL"} ${String(e.detail || "").slice(0, 160)}`,
            e.ok ? "t-dim" : "t-err"); break;
@@ -66,8 +90,8 @@ function renderEvent(e) {
       line(`  ⚖ debate-verify ${e.allowed ? "ALLOWED" : "BLOCKED"}: ${e.command}`, "t-dim"); break;
     case "terminal_exec": break;              // local echo already covers it
     case "terminal_exec_result": break;       // rendered from the POST response
-    case "error": line(`✗ ${e.message}`, "t-err"); break;
-    case "done": line("— done —", "t-dim"); break;
+    case "error": state.streamDiv = null; line(`✗ ${e.message}`, "t-err"); break;
+    case "done": state.streamDiv = null; line("— done —", "t-dim"); break;
     default: break;
   }
 }
