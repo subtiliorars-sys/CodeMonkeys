@@ -104,14 +104,24 @@ Daystrom agent corps in `corps/`. Full overview: `README.md` +
   NO-GO). Design: `docs/TERMINAL_DESIGN.md`. **Stays OFF until owner sets both
   gates post-deploy.**
 
+## Open PR stack (2026-06-07 overnight — unmerged, owner reviews)
+All build→PR under the overnight order; **integration-verified: the 6 merge
+together cleanly, integrated suite 323/323 green.** Suggested order:
+1. **#38** docs/consolidation (this PR) — zero code conflict.
+2. **#42** dup-send fix + blank-base_url guard → then **close #39** (subset of #42).
+3. **#43** fractal memory phase 2 (scrubbed digest + pattern library) — broadens
+   `_scan_secrets`; land before #41 so the fleet feed inherits it.
+4. **#41** Fleet Deck `/fleet-status.json` (owner sets `FLEET_TOKEN` + deploys to activate).
+5. **#44** bash/terminal/MCP env scrub (defense-in-depth).
+6. **#40** Tailwind phase-2 / CSP — owner does the post-deploy visual check.
+
 ## Next up
-1. ~~BUG: blank base_url~~ → fixed in PR #39 (config-load repair + selection
-   fail-fast + non-transient call guard; 11 tests).
-2. **Fleet Deck handoff:** `GET /fleet-status.json` read-only Bearer-auth ops
-   feed per `~/fleet/contracts/fleetdeck-codemonkeys.md` (build+PR; deploy
-   owner-gated).
-3. Fractal memory phase 2+; Tailwind phase 2 (owner-gated); OAuth
-   secrets-envelope (see IDEATION "Still open").
+- **S5 notify-on-done** (next buildable wave).
+- **OWNER-GATED:** Tailwind phase-2 visual check (#40); Fleet Deck activation (#41);
+  terminal activation (#37); **bash sandbox / secrets-at-rest** — red-team found bash
+  can exfiltrate `session_secret.key` (→ auth bypass), model keys, OAuth tokens via
+  `cat ../<file>` + `/proc/<pid>/environ` (see SECURITY.md Known-limitations +
+  questions.md). The original "OAuth secrets-envelope" folds into that decision.
 
 ## MCP connectors (v1+v2, merged to main 2026-06-06)
 - Sync Streamable-HTTP JSON-RPC client over `requests` (no new deps, no SDK).

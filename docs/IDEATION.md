@@ -45,12 +45,17 @@ MERGED 2026-06-07 (stays OFF: double env gate, owner enables post-deploy).
 
 | # | Item | Why | Risk |
 |---|------|-----|------|
-| ~~S1~~ | ~~**BUG: blank-base_url provider**~~ ✅ **PR #39** (config-load repair + selection fail-fast + non-transient call guard; 11 tests). | correctness | low |
-| S2 | **Fleet Deck `GET /fleet-status.json`** — read-only Bearer-auth ops feed per `~/fleet/contracts/fleetdeck-codemonkeys.md` (maps #21 blackboard registry → `workers[]`; `hmac.compare_digest` on `FLEET_TOKEN`; no prompts/code/keys). Build+PR; deploy owner-gated. | fleet integration | med — red-team |
-| S3 | **Fractal memory phase 2** — scrubbed working-memory tier + curated pattern library on top of the #33 digest. | memory | low |
-| S4 | **OAuth secrets-envelope** — encrypt `client_secret`/`refresh_token` at rest on `/data` (today plaintext, readable by unsandboxed bash). | security | med — red-team |
+| ~~S1~~ | ~~**BUG: blank-base_url provider**~~ ✅ **PR #39** (also folded into **#42**; config-load repair + selection fail-fast + non-transient call guard; 11 tests). | correctness | low |
+| ~~S2~~ | ~~**Fleet Deck `GET /fleet-status.json`**~~ ✅ **PR #41** (read-only Bearer `FLEET_TOKEN` ops feed; fail-closed no-route-when-unset; red-teamed; deploy owner-gated). | fleet integration | med — red-team |
+| ~~S3~~ | ~~**Fractal memory phase 2**~~ ✅ **PR #43** (scrubbed tier-1 digest + cross-session pattern library `GET /api/memory/patterns`, owner-only; red-teamed, broadened `_scan_secrets`). | memory | low |
+| S4 | **Secrets-at-rest / bash sandbox.** Part A ✅ **PR #44** (strip secret-named env vars from bash/terminal/MCP subprocesses — defense-in-depth). Part B (encrypt `/data` secrets at rest incl. the original OAuth `client_secret`/`refresh_token` + `session_secret.key`; sandbox bash) is **OWNER-GATED** — red-team found the bash exfil surface is broader than env (see `SECURITY.md` + questions.md). | security | high — owner decision |
 | S5 | **Notify-on-done** — webhook/run completion ping (OmniVerse pattern); pairs with #5. | ux/ops | low |
 | S6 | **Per-user workspace isolation** — biggest known gap; large, design-first. | security | high — design+red-team |
+
+**Standing-list status (consolidation Wave 11, 2026-06-07 ~09:40 UTC):** S1–S3 shipped
+as PRs, S4-A shipped (S4-B owner-gated). Next buildable item = **S5 notify-on-done**.
+**Integration verified:** all 6 open PRs (#38/#40/#41/#42/#43/#44; #39 superseded by #42)
+merge together cleanly in the suggested order — **integrated suite 323/323 green**.
 
 ## MCP follow-ups (carved out of #1) — ALL SHIPPED 2026-06-06
 
