@@ -20,6 +20,7 @@ import hashlib
 import hmac
 import io
 import json
+import math
 import os
 import re
 import secrets
@@ -2868,6 +2869,7 @@ def _debate_verify(session, cmd):
             notes.append(f"{lens}: REFUTE (verifier error: {e})")
             continue
         session["spent_usd"] = session.get("spent_usd", 0) + usd
+        _accrue_daily(usd)   # N2 red-team R3: debate-verify spend must count toward the daily cap too
         emit(session, "cost", usd=round(usd, 6), in_tokens=resp["in_tokens"],
              out_tokens=resp["out_tokens"], model=provider["model"],
              agent=f"debate-verify:{lens}")
@@ -4442,6 +4444,10 @@ def set_daily_cap(req: DailyCapRequest, _: str = Depends(verify_owner)):
     is intentional: a human restart is a natural circuit-break point.
     """
     global _daily_cap_override
+    # N2 red-team R4: reject non-finite (Infinity/NaN) — an Inf override would
+    # silently disable the cap (the one feature whose job is cost protection).
+    if not math.isfinite(req.usd):
+        raise HTTPException(422, "usd must be a finite number")
     with _DAILY_LOCK:
         _daily_cap_override = max(req.usd, 0.0)
     cap = effective_daily_cap()

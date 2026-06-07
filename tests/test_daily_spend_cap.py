@@ -375,3 +375,38 @@ def test_concurrent_accrue(monkeypatch):
     assert abs(total - expected) < 1e-6, \
         f"concurrent accrue lost updates: expected {expected}, got {total}"
     _reset_daily(monkeypatch, usd=0.0)
+
+
+# ---- red-team R3: debate-verify spend must count toward the daily cap --------
+
+def test_debate_verify_spend_accrues_to_daily(monkeypatch):
+    _reset_daily(monkeypatch, usd=0.0)
+    monkeypatch.setattr(server, "load_models", lambda: {})
+    prov = {"name": "p", "model": "m",
+            "input_cost_per_m": 1000.0, "output_cost_per_m": 1000.0}
+    monkeypatch.setattr(server, "_verifier_providers", lambda cfg: [prov, prov, prov])
+    monkeypatch.setattr(server, "call_model",
+                        lambda *a, **k: {"text": "ALLOW: ok",
+                                         "in_tokens": 1000, "out_tokens": 1000})
+    s = _make_session()
+    server._debate_verify(s, "rm -rf /tmp/x")
+    assert server.daily_total_usd() > 0, \
+        "debate-verify spend must accrue to the daily total"
+    _reset_daily(monkeypatch, usd=0.0)
+
+
+# ---- red-team R4: cap endpoint rejects non-finite (Inf/NaN) ------------------
+
+def test_spend_cap_rejects_infinity(monkeypatch):
+    monkeypatch.setattr(server, "_daily_cap_override", 0.0)
+    server.app.dependency_overrides[server.verify_owner] = lambda: "owner"
+    try:
+        r = client.post("/api/spend/cap", content='{"usd": Infinity}',
+                        headers={"Content-Type": "application/json"})
+        assert r.status_code == 422, "Infinity must be rejected, not disable the cap"
+        assert server._daily_cap_override == 0.0      # unchanged
+        ok = client.post("/api/spend/cap", json={"usd": 1000000.0})
+        assert ok.status_code == 200                  # large finite still allowed
+    finally:
+        server.app.dependency_overrides.pop(server.verify_owner, None)
+        server._daily_cap_override = 0.0
