@@ -266,6 +266,69 @@ def healthz():
             "sessions": len(SESSIONS)}
 
 
+@app.get("/readyz")
+def readyz():
+    """Unauthenticated readiness probe — returns 200 when all required checks
+    pass, 503 when any required check fails.  Leaks NOTHING sensitive: only
+    boolean flags, not keys/paths/usernames.
+
+    Checks
+    ------
+    data_writable     (required) write+delete a temp file under DATA_DIR
+    crypto_ok         (required) if CM_MASTER_KEY is set, _FERNET_AVAILABLE
+                      must be True; if CM_MASTER_KEY is unset → True (N/A)
+    provider_configured (warning-only) at least one callable provider exists;
+                      failure makes status "not ready" but does NOT trigger 503
+                      so the app is considered ready for traffic even without a
+                      configured model (owner may add the key post-deploy)
+    """
+    from fastapi.responses import JSONResponse
+
+    # -- check: data_writable --------------------------------------------------
+    data_writable = False
+    try:
+        fd, tmp = tempfile.mkstemp(dir=DATA_DIR, prefix=".readyz_")
+        os.close(fd)
+        os.unlink(tmp)
+        data_writable = True
+    except Exception:
+        pass
+
+    # -- check: crypto_ok ------------------------------------------------------
+    # If CM_MASTER_KEY is set the cryptography package must be available,
+    # otherwise the app cannot decrypt the session signing secret and will
+    # refuse to serve sessions.  If CM_MASTER_KEY is unset this is N/A → True.
+    if CM_MASTER_KEY:
+        crypto_ok = _FERNET_AVAILABLE
+    else:
+        crypto_ok = True
+
+    # -- check: provider_configured (warning-only) ----------------------------
+    try:
+        cfg = load_models()
+        provider_configured = bool(_usable(cfg))
+    except Exception:
+        provider_configured = False
+
+    # -- aggregate ------------------------------------------------------------
+    # Required checks determine the HTTP status code.
+    required_ok = data_writable and crypto_ok
+    overall = "ready" if (required_ok and provider_configured) else "not ready"
+
+    body = {
+        "status": overall,
+        "uptime_s": int(time.time()) - _BOOT_TIME,
+        "sessions": len(SESSIONS),
+        "checks": {
+            "data_writable": data_writable,
+            "crypto_ok": crypto_ok,
+            "provider_configured": provider_configured,
+        },
+    }
+    status_code = 200 if required_ok else 503
+    return JSONResponse(content=body, status_code=status_code)
+
+
 @app.middleware("http")
 async def _security_headers(request, call_next):
     """Baseline browser-hardening for an auth-gated console that fronts a shell.
