@@ -1,6 +1,7 @@
 # CodeMonkeys — Current State (jumping-off point)
 
-**Read this first when picking the project back up.** Last updated 2026-06-07.
+**Read this first when picking the project back up.** Last updated 2026-06-07
+(post Wave-4 merges).
 
 ## What it is
 Self-hosted web coding console (Claude Code-style agent). Single-file FastAPI
@@ -22,6 +23,10 @@ Daystrom agent corps in `corps/`. Full overview: `README.md` +
   W1–W12). `/healthz` (W1) is wired as the Fly liveness check (1 passing).
   Smoke-tested live: `/healthz` 200, `/api/usage` + `/api/kb` 401 fail-closed,
   `/` 200.
+- **Wave 4 (PRs #33/#34/#35/#36) + the web terminal (#37) are merged to `main`
+  but NOT yet deployed** — next deploy picks up fractal memory, vendored-Tailwind
+  phase 1, connector marketplace, webhook→PR runs (inert until webhook secrets
+  set), and the terminal (inert until both TERMINAL env gates set).
 
 ## Shipped so far (v0.1)
 - Auth: 4-digit+ PIN (PBKDF2) + mandatory TOTP; HMAC tokens; fail-closed.
@@ -80,10 +85,43 @@ Daystrom agent corps in `corps/`. Full overview: `README.md` +
   single-process assumption) + atomic tmp+rename. Red-teamed GO-WITH-FIXES,
   all fixes applied; tests in `tests/test_blackboard.py`.
 
-## Next up (from docs/IDEATION.md)
-1. **Connector marketplace UI** (#9) — poll the MCP Registry, one-click add (now
-   that the MCP client exists). Plus **escalation-on-failure** (cheapest→pricier).
-2. **Debate-verify gate** (#7) on high-risk changes; **two-layer KB** (#10).
+## Shipped since (Wave 4 — 2026-06-07, merged to `main`, NOT yet deployed)
+- **Fractal/tiered memory phase 1** (#6, PR #33): deterministic theme-token
+  digest per session.
+- **Vendored Tailwind phase 1** (#3, PR #34): build pipeline + CI `css` job;
+  **CDN still active** — phase 2 (drop CDN + tighten CSP) is OWNER-GATED until
+  the owner confirms the vendored page renders.
+- **Connector marketplace** (#9, PR #35): curated catalog + MCP Registry fallback.
+- **Webhook → PR runs** (#5, PR #36): GitHub issue/webhook triggers a background
+  session that opens a PR. Fail-closed: OFF by default, HMAC sig, sender
+  allow-list, label + action gate, delivery dedup, body cap. **INERT until owner
+  sets WEBHOOK_ENABLED/WEBHOOK_SECRET/WEBHOOK_ALLOWED_SENDERS + adds the GitHub
+  webhook** (steps in PR #36 body).
+
+- **Web terminal** (PR #37, merged 2026-06-07): `/terminal` REPL + Owner-only
+  `!cmd` exec behind DOUBLE env gate (`TERMINAL_ENABLED` + `TERMINAL_EXEC_ENABLED`),
+  both default OFF → 404 everywhere. Red-teamed GO-WITH-FIXES (raw PTY mode =
+  NO-GO). Design: `docs/TERMINAL_DESIGN.md`. **Stays OFF until owner sets both
+  gates post-deploy.**
+
+## Open PR stack (2026-06-07 overnight — unmerged, owner reviews)
+All build→PR under the overnight order; **integration-verified: the 6 merge
+together cleanly, integrated suite 323/323 green.** Suggested order:
+1. **#38** docs/consolidation (this PR) — zero code conflict.
+2. **#42** dup-send fix + blank-base_url guard → then **close #39** (subset of #42).
+3. **#43** fractal memory phase 2 (scrubbed digest + pattern library) — broadens
+   `_scan_secrets`; land before #41 so the fleet feed inherits it.
+4. **#41** Fleet Deck `/fleet-status.json` (owner sets `FLEET_TOKEN` + deploys to activate).
+5. **#44** bash/terminal/MCP env scrub (defense-in-depth).
+6. **#40** Tailwind phase-2 / CSP — owner does the post-deploy visual check.
+
+## Next up
+- **S5 notify-on-done** (next buildable wave).
+- **OWNER-GATED:** Tailwind phase-2 visual check (#40); Fleet Deck activation (#41);
+  terminal activation (#37); **bash sandbox / secrets-at-rest** — red-team found bash
+  can exfiltrate `session_secret.key` (→ auth bypass), model keys, OAuth tokens via
+  `cat ../<file>` + `/proc/<pid>/environ` (see SECURITY.md Known-limitations +
+  questions.md). The original "OAuth secrets-envelope" folds into that decision.
 
 ## MCP connectors (v1+v2, merged to main 2026-06-06)
 - Sync Streamable-HTTP JSON-RPC client over `requests` (no new deps, no SDK).
@@ -112,6 +150,14 @@ Daystrom agent corps in `corps/`. Full overview: `README.md` +
   then `DATA_DIR=./data ./.venv/bin/uvicorn server:app --reload --port 8080`.
 
 ## Known gaps / TODO
-- No remove-passkey UI; no per-user workspace isolation; no escalation-on-failure
-  (cost governor selects cheapest but doesn't yet retry up a tier on failure);
-  Tailwind + QR via CDN (vendor before multi-user); no login rate-limit.
+- No per-user workspace isolation (all members share workspace + GITHUB_TOKEN +
+  shell).
+- Tailwind CDN still active (vendored pipeline merged, phase-2 cutover
+  owner-gated); CSP tighten rides with it.
+- OAuth secrets-envelope: `client_secret`/`refresh_token` plaintext on `/data`,
+  readable by the unsandboxed `bash` tool.
+- Blank-base_url provider bug (see "Next up" #1).
+- Auto-mode MCP calls: debate-verify covers risky bash + MCP (W7), but MCP
+  coverage is heuristic — revisit if MCP usage grows.
+- *(Closed in Wave 3: remove-passkey UI ✓, escalation-on-failure ✓, login
+  throttle/ceilings ✓, local TOTP QR ✓.)*

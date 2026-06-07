@@ -20,34 +20,44 @@ human.** That loop is the thing to own.
 | ~~2~~ | ~~**Self-heal loop**~~ ✅ **SHIPPED 2026-06-06** (auto-mode run→read-failure→patch→rerun-until-green doctrine in `MODE_GUIDANCE["auto"]`; caps 5 iters / repeat-signature=blocked / budget; guidance-only, model keeps tool-control). | M |
 | ~~3~~ | ~~**Spec-first plan mode**~~ ✅ **SHIPPED 2026-06-06** (plan mode writes Constitution/Spec/Plan/Tasks to `.codemonkeys/specs/<slug>/` via the jailed `save_spec` tool; each task carries a verify step. Red-teamed: closed a pre-existing hole where plan-mode `spawn_agent` could escalate to a write-capable subagent — plan is now read-only end to end). | S–M |
 | ~~4~~ | ~~**Blackboard cross-session memory**~~ ✅ **SHIPPED 2026-06-06/07** (cross-session half: `.codemonkeys/blackboard-<slug>.md` FACTS/DECISIONS/NEXT, jailed tools + commander-prompt injection, PR #14. Multi-AGENT half 2026-06-07: every Daystrom subagent gets `blackboard_read`, Edit/Write-capable units get `blackboard_write`, plan mode stays read-only end to end; write path serialized + atomic-rename; untrusted-DATA framing on prompt injection. Red-teamed GO-WITH-FIXES, fixes applied.) | S |
-| 5 | **Issue/webhook-triggered background runs** | Assign an issue / hit a webhook → background session opens a PR. Pair with notify-on-done (OmniVerse pattern). Cron via existing `/loop`. | M |
-| 6 | **Tiered / "fractal" memory + theme-token compaction** | Per-session raw → scrubbed working memory → curated pattern library; compact by extracting structured theme tokens, not lossy LLM summaries. (Owner's memory-engine spec.) | L |
+| ~~5~~ | ~~**Issue/webhook-triggered background runs**~~ ✅ **SHIPPED 2026-06-07** (PR #36 merged: webhook → background session → PR; fail-closed OFF-by-default + HMAC + sender allow-list + label/action gate + dedup + caps; INERT until owner sets webhook secrets). | M |
+| 6 | **Tiered / "fractal" memory + theme-token compaction** — **phase 1 SHIPPED 2026-06-07** (PR #33: deterministic theme-token digest per session). Remaining: scrubbed working memory → curated pattern library tiers. | L |
 | ~~7~~ | ~~**Debate-verify gate**~~ ✅ **SHIPPED 2026-06-07** (auto-mode risky *bash* commands — the path with NO human gate — now pass a 3-lens verifier panel (intent/safety/security, no tools), run on distinct providers when 3+ keyed else cheapest-repeated; majority refute = BLOCKED, fail closed on errors/garbled verdicts/no provider; metered into the ledger + `debate_verify` events; default/plan human gate unchanged. Damage-reduction not an auth boundary; bash-only (auto MCP still ungated). Red-teamed GO-WITH-FIXES, fixes applied. See SECURITY.md.) | S |
 | ~~8~~ | ~~**apply_patch tool**~~ ✅ **SHIPPED 2026-06-06** (`git apply` unified diffs, atomic, every diff target path jail-checked before apply; in FULL_TOOLS + corps `Edit`). | S |
-| 9 | **Connector marketplace UI** | Poll the MCP Registry, one-click add servers — the realistic "self-healing connectors." Depends on #1 (now shipped). | M |
-| 10 | **Two-layer KB** | Hand-authored rules + deterministically-generated project facts; build fails if secrets would leak into context. (OmniVerse pattern.) | S |
+| ~~9~~ | ~~**Connector marketplace UI**~~ ✅ **SHIPPED 2026-06-07** (PR #35 merged: curated catalog + MCP Registry fallback). | M |
+| ~~10~~ | ~~**Two-layer KB**~~ ✅ **SHIPPED 2026-06-07** (Wave 3 W11, PR #30: rules + generated facts with secret-leak guard). | S |
 
-## Wave 3 — safe self-contained items (ideated 2026-06-07, owner-requested)
+## Wave 3 — safe self-contained items ✅ ALL SHIPPED (merged PRs #23–#30, deployed v10)
 
-All Tier-A safe: docs/tests/own-branch code, no deploy, no owner secrets, no
-irreversible/external actions. Each ships as `work/<topic>` + an UNMERGED PR
-(owner merges). Security-touching items get a red-team pass. Grouped into PRs
-to keep review sane and limit single-file (`server.py`) merge pain.
+W1 `/healthz` · W2 escalation-on-failure · W3 model-call retry/backoff ·
+W4 `/api/usage` · W5 `_is_risky` hardening · W6 secret-scan write guard ·
+W7 debate-verify→MCP · W8 blackboard admin API+panel · W9 transcript export ·
+W10 per-session budget · W11 two-layer KB · W12 remove-passkey (red-teamed).
 
-| # | Item | Group / PR | Risk |
-|---|------|-----------|------|
-| ~~W1~~ | ✅ **`/healthz` liveness endpoint** — unauthenticated, leaks nothing (status/uptime/session-count). PR A. | A (ops) | low |
-| ~~W2~~ | ✅ **Escalation-on-failure** — `agent_loop` retries one tier up (`_pricier_provider`) before dying; sticks with the working tier. PR A. | A (ops) | low |
-| ~~W3~~ | ✅ **Model-call retry w/ backoff** — `call_model` retries transient 429/5xx/network (`TransientModelError`, 3 tries, fixed 1/3/8s); 4xx not retried. PR A. | A (ops) | low |
-| ~~W4~~ | ✅ **Usage/cost summary** — Owner-only `/api/usage` rollup from `cost` events. PR A. | A (ops) | low |
-| W5 | **Harden `_is_risky`** — add `dd`/`mkfs`/`chmod -R`/`chown -R`/`> /dev/…`/`curl\|sh`/`git push --force`/`truncate` to the approval gate + tests. | B (sec) | low |
-| W6 | **Secret-scan write guard** — flag/log when `write_file`/`apply_patch` would persist an obvious secret (API key/token/PEM) into the workspace. | B (sec) | low |
-| W7 | **Extend debate-verify to risky auto-mode MCP calls** — MED-2 follow-up; stacks on #22. | E (sec) | low |
-| W8 | **Blackboard management API + ⚙ panel** — Owner-only list/read/delete of boards; stacks on #21. | F (ux) | low |
-| W9 | **Session transcript export** — download a session as Markdown/JSON. | C (ux) | low |
-| W10 | **Per-session budget override** — set the USD budget at session creation (today only the global `SESSION_BUDGET_USD`). | C (ux) | low |
-| W11 | **Two-layer KB (#10)** — hand-authored rules + deterministically-generated project facts injected into context, with a secret-leak guard on generation. | C (ux) | low |
-| W12 | **Remove-passkey UI + endpoint** — close the known gap (passkeys can be added but not revoked); Owner-gated. | D (auth) | med — red-team |
+## Wave 4 ✅ ALL MERGED 2026-06-07 (PRs #33–#36, not yet deployed)
+
+#6 fractal memory phase 1 · #3 vendored Tailwind phase 1 (CDN still active,
+phase-2 cutover OWNER-GATED) · #9 connector marketplace · #5 webhook→PR runs
+(inert until webhook secrets). Separate workstream: **#37 web terminal** — also
+MERGED 2026-06-07 (stays OFF: double env gate, owner enables post-deploy).
+
+## Standing list (current — pick from here, one wave per PR)
+
+| # | Item | Why | Risk |
+|---|------|-----|------|
+| ~~S1~~ | ~~**BUG: blank-base_url provider**~~ ✅ **PR #39** (also folded into **#42**; config-load repair + selection fail-fast + non-transient call guard; 11 tests). | correctness | low |
+| ~~S2~~ | ~~**Fleet Deck `GET /fleet-status.json`**~~ ✅ **PR #41** (read-only Bearer `FLEET_TOKEN` ops feed; fail-closed no-route-when-unset; red-teamed; deploy owner-gated). | fleet integration | med — red-team |
+| ~~S3~~ | ~~**Fractal memory phase 2**~~ ✅ **PR #43** (scrubbed tier-1 digest + cross-session pattern library `GET /api/memory/patterns`, owner-only; red-teamed, broadened `_scan_secrets`). | memory | low |
+| S4 | **Secrets-at-rest / bash sandbox.** Part A ✅ **PR #44** (strip secret-named env vars from bash/terminal/MCP subprocesses — defense-in-depth). Part B (encrypt `/data` secrets at rest incl. the original OAuth `client_secret`/`refresh_token` + `session_secret.key`; sandbox bash) is **OWNER-GATED** — red-team found the bash exfil surface is broader than env (see `SECURITY.md` + questions.md). | security | high — owner decision |
+| S5 | **Notify-on-done** — webhook/run completion ping (OmniVerse pattern); pairs with #5. | ux/ops | low |
+| S6 | **Per-user workspace isolation** — biggest known gap; large, design-first. | security | high — design+red-team |
+
+**Standing-list status (consolidation Wave 14, 2026-06-07 ~11:16 UTC):** S1–S5 all
+shipped as PRs; S6 design'd (#46, no code); S4-B owner-gated. **Safe build→PR
+backlog exhausted** — remaining work is owner-gated/needs an owner decision.
+**Integration verified:** the 6 code PRs (#40/#41/#42/#43/#44/#45; #39 superseded
+by #42; #38/#46 docs) merge together cleanly in the suggested order — **integrated
+suite 338/338 green**.
 
 ## MCP follow-ups (carved out of #1) — ALL SHIPPED 2026-06-06
 
@@ -71,11 +81,10 @@ verify against current Google/Microsoft remote-MCP docs.
 
 ## Recommended next session
 
-#1 (MCP client, +v2 stdio/OAuth/auto-connect), #2 (self-heal), #3 (spec-first
-plan mode), #4 (blackboard memory, incl. multi-agent half) and #8 (apply_patch)
-are **shipped & merged to main**. Next candidates: **#9 connector marketplace**,
-**#7 debate-verify gate**, **#10 two-layer KB**, plus escalation-on-failure in
-the cost governor (cheapest→pricier retry).
+The original ranked backlog (#1–#10) and Waves 3–4 are **fully shipped**. Work
+from the **Standing list** above, in order (S1 bug first). Owner-gated items
+(Tailwind phase 2 / CSP, terminal activation, webhook secrets, OAuth app
+registration) wait for the owner regardless of list position.
 
 ## Notes / caveats from the research
 
