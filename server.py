@@ -1855,6 +1855,24 @@ def models_openrouter_refresh(_: str = Depends(verify_owner)):
             "refreshed_at": prov["catalog_refreshed_at"]}
 
 
+@app.get("/api/models/export")
+def models_export(_: str = Depends(verify_owner)):
+    """Return a sanitized snapshot of provider config (keys stripped) for backup/import."""
+    cfg = load_models()
+    export = {
+        "selected": cfg.get("selected", "auto"),
+        "auto_cheapest": cfg.get("auto_cheapest", True),
+        "providers": [
+            {"id": pid, "label": p.get("label", pid), "kind": p["kind"],
+             "base_url": p.get("base_url", ""), "model": p.get("model", ""),
+             "models": p.get("models", []), "has_key": bool(p.get("key")),
+             "in": p.get("in", 0), "out": p.get("out", 0), "auto": p.get("auto", False)}
+            for pid, p in cfg["providers"].items()
+        ],
+    }
+    return export
+
+
 @app.get("/api/models/openrouter/free")
 def models_openrouter_free(_: str = Depends(verify_owner)):
     """Return the zero-cost models from the cached OpenRouter catalog."""

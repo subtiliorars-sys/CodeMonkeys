@@ -548,3 +548,27 @@ def test_models_get_exposes_last_error_fields():
         assert or_prov["last_error_at"] == 9999
     finally:
         _remove_override()
+
+
+def test_export_strips_keys():
+    """GET /api/models/export returns config without keys, includes has_key bool."""
+    cfg = server.load_models()
+    cfg["providers"]["openrouter"]["key"] = "sk-secret-key-123"
+    server.save_models(cfg)
+    _override_owner()
+    try:
+        r = client.get("/api/models/export")
+        assert r.status_code == 200
+        data = r.json()
+        or_prov = next(p for p in data["providers"] if p["id"] == "openrouter")
+        assert "key" not in or_prov
+        assert or_prov["has_key"] is True
+        assert "sk-secret" not in str(data)
+    finally:
+        _remove_override()
+
+
+def test_export_requires_owner():
+    """GET /api/models/export is owner-only."""
+    r = client.get("/api/models/export")
+    assert r.status_code == 401

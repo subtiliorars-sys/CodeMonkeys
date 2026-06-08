@@ -760,7 +760,16 @@ else {
 
 /* ---------------- models modal ---------------- */
 
-$("btn-models").onclick = () => { $("modal-models").classList.remove("hidden"); loadProviders(); };
+$("btn-models").onclick = () => {
+  $("modal-models").classList.remove("hidden");
+  // Restore persisted auto-add preference
+  const chk = $("chk-auto-add-free");
+  if (chk) {
+    chk.checked = localStorage.getItem("cm_auto_add_free") === "1";
+    chk.onchange = () => localStorage.setItem("cm_auto_add_free", chk.checked ? "1" : "0");
+  }
+  loadProviders();
+};
 $("modal-close").onclick = () => $("modal-models").classList.add("hidden");
 
 // Track which provider rows are expanded (session-only; collapses reset on modal close)
@@ -875,6 +884,7 @@ async function loadProviders() {
       <div class="pv-detail flex flex-wrap items-center gap-1 mt-1 pl-6 ${expanded ? "" : "hidden"}">
         ${allModels.length >= 2 ? allModels.map((m) =>
           `<span class="inline-flex items-center gap-0.5 bg-slate-800 rounded px-1 text-xs text-slate-400">${esc(m)}`
+          + `<button class="pv-cpmodel text-slate-500/60 hover:text-slate-300 ml-0.5" data-mid="${esc(m)}" title="Copy model ID">⎘</button>`
           + `<button class="pv-rmmodel text-red-500/50 hover:text-red-400 ml-0.5" data-pid="${esc(p.id)}" data-mid="${esc(m)}" title="Remove model">×</button></span>`
         ).join("") : ""}
         <input type="text" class="pv-addmodel input rounded px-1 py-0.5 text-xs w-44" data-id="${esc(p.id)}"
@@ -917,6 +927,14 @@ async function loadProviders() {
       });
       loadProviders();
     } catch (e) { alert(e.message); }
+  }));
+  // copy model ID to clipboard
+  document.querySelectorAll(".pv-cpmodel").forEach((btn) => (btn.onclick = () => {
+    navigator.clipboard?.writeText(btn.dataset.mid).then(() => {
+      const orig = btn.textContent;
+      btn.textContent = "✓";
+      setTimeout(() => { btn.textContent = orig; }, 1200);
+    });
   }));
   // inline remove-model handler
   document.querySelectorAll(".pv-rmmodel").forEach((btn) => (btn.onclick = async () => {
@@ -1001,6 +1019,22 @@ async function loadProviders() {
       loadProviders();
     };
   });
+
+  // Duplicate model ID warning
+  const _allModelIds = d.providers.flatMap((p) => (p.models || []).map((m) => ({ m, pid: p.id })));
+  const _midCounts = {};
+  _allModelIds.forEach(({ m }) => { _midCounts[m] = (_midCounts[m] || 0) + 1; });
+  const _dupes = Object.keys(_midCounts).filter((m) => _midCounts[m] > 1);
+  let _dupWarn = $("dup-model-warn");
+  if (!_dupWarn) {
+    _dupWarn = document.createElement("p");
+    _dupWarn.id = "dup-model-warn";
+    _dupWarn.className = "text-xs text-yellow-500 mb-2";
+    $("provider-rows").after(_dupWarn);
+  }
+  _dupWarn.textContent = _dupes.length
+    ? `⚠ Duplicate model IDs across providers: ${_dupes.slice(0, 3).join(", ")}${_dupes.length > 3 ? " …" : ""}`
+    : "";
 
   // Pass OR catalog data as a hint to loadFreeModels to skip the extra API call
   const orProv = d.providers.find((p) => p.id === "openrouter");
@@ -1152,6 +1186,17 @@ $("btn-add-all-free").onclick = async () => {
     $("free-models-msg").textContent = e.message || "add failed";
   } finally {
     $("btn-add-all-free").disabled = false;
+  }
+};
+
+$("btn-export-config").onclick = async () => {
+  try {
+    const data = await api("/api/models/export");
+    await navigator.clipboard?.writeText(JSON.stringify(data, null, 2));
+    $("export-msg").textContent = "✓ copied";
+    setTimeout(() => { $("export-msg").textContent = ""; }, 2000);
+  } catch (e) {
+    $("export-msg").textContent = e.message || "copy failed";
   }
 };
 
