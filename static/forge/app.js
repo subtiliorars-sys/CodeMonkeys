@@ -774,8 +774,16 @@ $("modal-close").onclick = () => $("modal-models").classList.add("hidden");
 
 // Track which provider rows are expanded (session-only; collapses reset on modal close)
 const _pvExpanded = new Set();
-// Current sort order for provider list: "keyed" | "cost" | "name"
+// Current sort order for provider list: "keyed" | "cost" | "name" | "used"
 let _pvSort = "keyed";
+// Last-used timestamps per provider id (localStorage-backed)
+const _pvLastUsed = JSON.parse(localStorage.getItem("cm_pv_last_used") || "{}");
+const _pvSaveLastUsed = () => localStorage.setItem("cm_pv_last_used", JSON.stringify(_pvLastUsed));
+// Favorite model IDs, stored as "{pid}:{mid}" strings (localStorage-backed)
+const _pvFavorites = new Set(JSON.parse(localStorage.getItem("cm_pv_favorites") || "[]"));
+const _pvSaveFavorites = () => localStorage.setItem("cm_pv_favorites", JSON.stringify([..._pvFavorites]));
+// Active provider filter: "" | "free" | "keyed" | "auto"
+let _pvFilter = "";
 
 // Keyboard shortcuts for the models modal
 document.addEventListener("keydown", (e) => {
@@ -817,10 +825,21 @@ async function loadProviders() {
     return "t2";
   };
 
-  // Sort providers by current sort mode
-  const sortedProviders = [...d.providers].sort((a, b) => {
+  // Apply active filter then sort
+  const filteredProviders = _pvFilter === "free"
+    ? d.providers.filter((p) => Object.values(p.catalog || {}).some((c) => c.in === 0 && c.out === 0))
+    : _pvFilter === "keyed"
+    ? d.providers.filter((p) => p.has_key)
+    : _pvFilter === "auto"
+    ? d.providers.filter((p) => p.auto)
+    : d.providers;
+  const sortedProviders = [...filteredProviders].sort((a, b) => {
     if (_pvSort === "cost") return a.out - b.out;
     if (_pvSort === "name") return a.label.localeCompare(b.label);
+    if (_pvSort === "used") {
+      const ta = _pvLastUsed[a.id] || 0, tb = _pvLastUsed[b.id] || 0;
+      return tb - ta; // most-recently-used first
+    }
     // "keyed": keyed first, then by cost
     if (a.has_key !== b.has_key) return a.has_key ? -1 : 1;
     return a.out - b.out;
@@ -835,7 +854,9 @@ async function loadProviders() {
       return ` $${c.in}/$${c.out}/M`;
     };
     const _isFree = (m) => { const c = cat[m]; return c && c.in === 0 && c.out === 0; };
+    const _isFav = (m) => _pvFavorites.has(`${p.id}:${m}`);
     const sortedModels = [...allModels].sort((a, b) => {
+      if (_isFav(a) !== _isFav(b)) return _isFav(a) ? -1 : 1;
       if (_isFree(a) !== _isFree(b)) return _isFree(a) ? -1 : 1;
       return a.localeCompare(b);
     });
@@ -912,7 +933,9 @@ async function loadProviders() {
                 ? `<span class="text-green-400 text-[.6rem]">⚡</span>`
                 : `<span class="text-slate-500 text-[.6rem]">$${mc.out}/M</span>`)
             : "";
+          const fav = _isFav(m);
           return `<span class="inline-flex items-center gap-0.5 bg-slate-800 rounded px-1 text-xs text-slate-400">${esc(m)}${pillTag}`
+            + `<button class="pv-fav ${fav ? "text-yellow-400" : "text-slate-600/60"} hover:text-yellow-400 ml-0.5" data-pid="${esc(p.id)}" data-mid="${esc(m)}" title="${fav ? "Unpin" : "Pin to top"}">★</button>`
             + `<button class="pv-cpmodel text-slate-500/60 hover:text-slate-300 ml-0.5" data-mid="${esc(m)}" title="Copy model ID">⎘</button>`
             + `<button class="pv-rmmodel text-red-500/50 hover:text-red-400 ml-0.5" data-pid="${esc(p.id)}" data-mid="${esc(m)}" title="Remove model">×</button></span>`;
         }).join("") : ""}
@@ -935,6 +958,9 @@ async function loadProviders() {
   document.querySelectorAll(".pv-main").forEach((b) => (b.onclick = async () => {
     await api("/api/models/select", "POST", { id: b.dataset.id });
     await api("/api/models/settings", "POST", { auto_cheapest: false });
+    // Record last-used timestamp for sort-by-used
+    _pvLastUsed[b.dataset.id] = Math.floor(Date.now() / 1000);
+    _pvSaveLastUsed();
     loadProviders();
   }));
   document.querySelectorAll(".pv-del").forEach((b) => (b.onclick = async () => {
@@ -1038,8 +1064,8 @@ async function loadProviders() {
   if ($("btn-collapse-all")) $("btn-collapse-all").onclick = () => _setAllExpanded(false);
   if ($("btn-expand-all")) $("btn-expand-all").onclick = () => _setAllExpanded(true);
 
-  // Sort toggle buttons
-  ["keyed", "cost", "name"].forEach((mode) => {
+  // Sort toggle buttons (keyed / cost / A-Z / used)
+  ["keyed", "cost", "name", "used"].forEach((mode) => {
     const btn = $(`btn-sort-${mode}`);
     if (!btn) return;
     btn.className = `text-xs border rounded px-2 py-0.5 ${
@@ -1049,6 +1075,26 @@ async function loadProviders() {
     }`;
     btn.onclick = () => { _pvSort = mode; loadProviders(); };
   });
+
+  // Quick-filter buttons
+  ["", "free", "keyed", "auto"].forEach((f) => {
+    const btn = $(`btn-filter-${f || "all"}`);
+    if (!btn) return;
+    btn.className = `text-xs border rounded px-2 py-0.5 ${
+      _pvFilter === f
+        ? "border-cyan-600 text-cyan-300"
+        : "border-slate-700 text-slate-500 hover:text-slate-300"
+    }`;
+    btn.onclick = () => { _pvFilter = f; loadProviders(); };
+  });
+
+  // Favorite model toggle
+  document.querySelectorAll(".pv-fav").forEach((btn) => (btn.onclick = () => {
+    const key = `${btn.dataset.pid}:${btn.dataset.mid}`;
+    if (_pvFavorites.has(key)) _pvFavorites.delete(key); else _pvFavorites.add(key);
+    _pvSaveFavorites();
+    loadProviders();
+  }));
 
   // Global model search: show only rows whose label or model IDs match
   const searchInput = $("provider-search");
@@ -1343,9 +1389,27 @@ $("btn-export-config").onclick = async () => {
   }
 };
 
+// Inline base_url validation for custom provider form
+const _validateBaseUrl = () => {
+  const kind = $("pv-kind").value;
+  const base = $("pv-base").value.trim();
+  const msg = $("pv-msg");
+  if (kind === "openai" && !base) {
+    msg.textContent = "⚠ base_url is required for OpenAI-compatible providers";
+    msg.className = "col-span-2 text-xs text-yellow-400";
+  } else {
+    if (msg.textContent.startsWith("⚠")) { msg.textContent = ""; msg.className = "col-span-2 text-xs text-slate-400"; }
+  }
+};
+$("pv-kind").addEventListener("change", _validateBaseUrl);
+$("pv-base").addEventListener("input", _validateBaseUrl);
+
 $("pv-save").onclick = async () => {
   const id = $("pv-id").value.trim();
   if (!id) { $("pv-msg").textContent = "Give the provider an id."; return; }
+  if ($("pv-kind").value === "openai" && !$("pv-base").value.trim()) {
+    $("pv-msg").textContent = "⚠ base_url is required for OpenAI-compatible providers."; return;
+  }
   try {
     await api("/api/models", "POST", {
       id, label: id, kind: $("pv-kind").value,
