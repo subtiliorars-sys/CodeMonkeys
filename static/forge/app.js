@@ -777,7 +777,25 @@ async function loadProviders() {
     const autoP = d.providers.find((p) => p.auto && p.has_key);
     if (autoP) _pvExpanded.add(autoP.id);
   }
-  $("provider-rows").innerHTML = d.providers.map((p) => {
+  // Compute client-side tier labels (mirrors provider_for_tier logic: sort by out cost)
+  const callable = d.providers.filter((p) => p.has_key).sort((a, b) => a.out - b.out);
+  const n = callable.length;
+  const _tierOf = (pid) => {
+    const idx = callable.findIndex((p) => p.id === pid);
+    if (idx < 0) return null;
+    if (idx === 0) return "t0";
+    if (idx === n - 1) return "t3";
+    if (idx <= Math.floor(n / 3)) return "t1";
+    return "t2";
+  };
+
+  // Sort providers: keyed ones first (by cost asc = tier order), then unkeyless
+  const sortedProviders = [...d.providers].sort((a, b) => {
+    if (a.has_key !== b.has_key) return a.has_key ? -1 : 1;
+    return a.out - b.out;
+  });
+
+  $("provider-rows").innerHTML = sortedProviders.map((p) => {
     const allModels = p.models || [];
     const cat = p.catalog || {};
     const _costHint = (m) => {
@@ -801,8 +819,20 @@ async function loadProviders() {
         <button data-id="${esc(p.id)}" class="pv-toggle text-slate-500 hover:text-slate-300 text-xs w-4"
           title="${expanded ? "Collapse" : "Expand"}">${expanded ? "▼" : "▶"}</button>
         <button data-id="${esc(p.id)}" class="pv-main ${isMain ? "text-[var(--gold-bright)]" : "text-slate-600"} hover:text-[var(--gold)]" title="Use as main (when Auto is off)">★</button>
-        <span class="${p.has_key ? "text-green-400" : "text-slate-600"}">●</span>
+        <span class="${p.has_key ? "text-green-400" : "text-slate-600"}"
+          title="${p.has_key
+            ? (p.id === "openrouter" ? "key set — authenticated (higher rate limits)" : "key set")
+            : (p.id === "openrouter" ? "no key — unauthenticated (rate-limited free tier)" : "no key")
+          }">●</span>
         <b class="flex-1 ${isMain ? "text-[var(--gold-bright)]" : "text-slate-200"}">${esc(p.label)}</b>
+        ${(() => { const t = _tierOf(p.id); return t
+          ? `<span class="text-[.6rem] px-1 rounded border ${
+              t === "t0" ? "text-green-400 border-green-900/40" :
+              t === "t1" ? "text-blue-400 border-blue-900/40" :
+              t === "t2" ? "text-yellow-500 border-yellow-900/40" :
+                           "text-red-400 border-red-900/40"
+            }" title="Tier ${t} — position in cheapest-first routing">${t}</span>`
+          : ""; })()}
         <span class="text-slate-600 text-xs">${p.model ? esc(p.model) : ""}</span>
         <label class="flex items-center gap-1 text-slate-400" title="Include in cheapest-first cascade">
           <input type="checkbox" class="pv-auto accent-yellow-500" data-id="${esc(p.id)}" ${p.auto ? "checked" : ""}>✓auto</label>
@@ -917,6 +947,16 @@ async function loadProviders() {
   });
   // Pass OR catalog data as a hint to loadFreeModels to skip the extra API call
   const orProv = d.providers.find((p) => p.id === "openrouter");
+  const freeCount = orProv
+    ? Object.values(orProv.catalog || {}).filter((c) => c.in === 0 && c.out === 0).length
+    : 0;
+  // Update sidebar badge
+  const btnModels = $("btn-models");
+  if (btnModels) {
+    btnModels.innerHTML = freeCount > 0
+      ? `⚙ Models &amp; keys <span class="text-green-400 text-[.65rem]">⚡${freeCount}</span>`
+      : "⚙ Models &amp; keys";
+  }
   if (orProv) {
     const freeHint = {
       free: Object.entries(orProv.catalog || {})
