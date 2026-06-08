@@ -33,6 +33,7 @@ import tempfile
 import threading
 import time
 import urllib.parse
+import urllib.request
 import uuid
 
 _log = logging.getLogger(__name__)
@@ -1759,6 +1760,88 @@ def models_settings(req: ModelSettings, _: str = Depends(verify_owner)):
     cfg["auto_cheapest"] = req.auto_cheapest
     save_models(cfg)
     return {"ok": True}
+
+
+_OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+
+
+@app.post("/api/models/openrouter/refresh")
+def models_openrouter_refresh(_: str = Depends(verify_owner)):
+    """Fetch OpenRouter's model catalog with per-model pricing and cache it on the provider.
+
+    Converts per-token pricing (USD/token) → per-million (USD/1M).
+    Never touches key, selected, or the active model field.
+    """
+    cfg = load_models()
+    prov = cfg["providers"].get("openrouter")
+    if not prov:
+        raise HTTPException(404, "OpenRouter provider not configured")
+    key = prov.get("key", "")
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    req_obj = urllib.request.Request(_OPENROUTER_MODELS_URL, headers=headers)
+    try:
+        with urllib.request.urlopen(req_obj, timeout=20) as resp:
+            data = json.loads(resp.read())
+    except Exception as exc:
+        raise HTTPException(502, f"OpenRouter fetch failed: {exc}") from exc
+    catalog = []
+    for m in data.get("data", []):
+        mid = m.get("id", "")
+        if not mid:
+            continue
+        pricing = m.get("pricing") or {}
+        try:
+            p_in = float(pricing.get("prompt") or 0) * 1_000_000
+            p_out = float(pricing.get("completion") or 0) * 1_000_000
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(p_in) and math.isfinite(p_out) and p_in >= 0 and p_out >= 0):
+            continue
+        catalog.append({"id": mid, "name": m.get("name", mid), "in": p_in, "out": p_out})
+    prov["catalog"] = catalog
+    cfg["providers"]["openrouter"] = prov
+    save_models(cfg)
+    free_count = sum(1 for e in catalog if e["in"] == 0 and e["out"] == 0)
+    return {"ok": True, "total": len(catalog), "free": free_count}
+
+
+@app.get("/api/models/openrouter/free")
+def models_openrouter_free(_: str = Depends(verify_owner)):
+    """Return the zero-cost models from the cached OpenRouter catalog."""
+    cfg = load_models()
+    prov = cfg["providers"].get("openrouter", {})
+    catalog = prov.get("catalog", [])
+    free = [e for e in catalog if e.get("in", -1) == 0 and e.get("out", -1) == 0]
+    return {"free": free}
+
+
+@app.post("/api/models/free/add_all")
+def models_free_add_all(_: str = Depends(verify_owner)):
+    """Upsert all zero-cost OpenRouter catalog models into the provider's models list.
+
+    Idempotent: safe to call repeatedly.
+    Never touches key, selected, or costs (provider is already in=0/out=0).
+    """
+    cfg = load_models()
+    prov = cfg["providers"].get("openrouter")
+    if not prov:
+        raise HTTPException(404, "OpenRouter provider not configured")
+    catalog = prov.get("catalog", [])
+    free = [e for e in catalog if e.get("in", -1) == 0 and e.get("out", -1) == 0]
+    if not free:
+        raise HTTPException(400, "No free models in catalog — run ↻ Refresh first")
+    existing = set(prov.get("models", []))
+    added = 0
+    for m in free:
+        if m["id"] not in existing:
+            prov.setdefault("models", []).append(m["id"])
+            existing.add(m["id"])
+            added += 1
+    cfg["providers"]["openrouter"] = prov
+    save_models(cfg)
+    return {"ok": True, "added": added, "total": len(free)}
 
 
 @app.get("/api/cooldowns")

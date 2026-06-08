@@ -760,7 +760,7 @@ else {
 
 /* ---------------- models modal ---------------- */
 
-$("btn-models").onclick = () => { $("modal-models").classList.remove("hidden"); loadProviders(); };
+$("btn-models").onclick = () => { $("modal-models").classList.remove("hidden"); loadProviders(); loadFreeModels(); };
 $("modal-close").onclick = () => $("modal-models").classList.add("hidden");
 
 async function loadProviders() {
@@ -824,6 +824,53 @@ async function loadProviders() {
 $("auto-cheapest").onchange = async () => {
   await api("/api/models/settings", "POST", { auto_cheapest: $("auto-cheapest").checked });
   loadProviders();
+};
+
+/* ---------------- free-model auto-lister (Layer A) ---------------- */
+
+async function loadFreeModels() {
+  try {
+    const r = await api("/api/models/openrouter/free");
+    const free = r.free || [];
+    if (!free.length) {
+      $("free-models-list").innerHTML = `<span class="not-italic">No free models cached — click ↻ Refresh.</span>`;
+      $("btn-add-all-free").classList.add("hidden");
+      return;
+    }
+    $("free-models-list").innerHTML = free.map((m) =>
+      `<span class="inline-block bg-green-900/20 text-green-400 border border-green-900/40 rounded px-1 mr-1 mb-1 not-italic">${esc(m.id)}</span>`
+    ).join("");
+    $("btn-add-all-free").classList.remove("hidden");
+  } catch (_) {
+    $("free-models-list").textContent = "";
+  }
+}
+
+$("btn-or-refresh").onclick = async () => {
+  $("free-models-msg").textContent = "refreshing…";
+  $("btn-or-refresh").disabled = true;
+  try {
+    const r = await api("/api/models/openrouter/refresh", "POST", {});
+    $("free-models-msg").textContent = `✓ ${r.total} models, ${r.free} free`;
+    await loadFreeModels();
+  } catch (e) {
+    $("free-models-msg").textContent = e.message || "refresh failed";
+  } finally {
+    $("btn-or-refresh").disabled = false;
+  }
+};
+
+$("btn-add-all-free").onclick = async () => {
+  $("btn-add-all-free").disabled = true;
+  try {
+    const r = await api("/api/models/free/add_all", "POST", {});
+    $("free-models-msg").textContent = `✓ added ${r.added} (${r.total} free total)`;
+    loadProviders();
+  } catch (e) {
+    $("free-models-msg").textContent = e.message || "add failed";
+  } finally {
+    $("btn-add-all-free").disabled = false;
+  }
 };
 
 $("pv-save").onclick = async () => {

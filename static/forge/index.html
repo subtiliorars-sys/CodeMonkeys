@@ -223,6 +223,15 @@
     </label>
     <p class="text-xs text-slate-500 mb-2">One API key per provider — then pick any model from it. ★ = main provider (when Auto is off). ✓ = include in the cheapest-first cascade.</p>
     <div id="provider-rows" class="space-y-1 mb-4 text-xs"></div>
+    <div id="free-models-section" class="border-t border-slate-800 pt-3 mb-4">
+      <div class="flex items-center gap-2 mb-2">
+        <span class="text-[var(--gold-bright)] font-semibold">⚡ Free models</span>
+        <button id="btn-or-refresh" class="text-slate-400 hover:text-[var(--gold)] text-xs border border-slate-700 rounded px-2 py-0.5">↻ Refresh</button>
+        <span id="free-models-msg" class="text-xs text-slate-500 flex-1"></span>
+        <button id="btn-add-all-free" class="hidden gold-btn rounded px-3 py-0.5 text-xs">Add all free →</button>
+      </div>
+      <div id="free-models-list" class="text-xs text-slate-500 italic">Click ↻ Refresh to fetch free models from OpenRouter.</div>
+    </div>
     <div class="border-t border-slate-800 pt-3">
       <p class="text-xs text-slate-500 mb-2">Add a custom provider (any OpenAI-compatible endpoint):</p>
       <div class="grid grid-cols-2 gap-2 text-xs">
