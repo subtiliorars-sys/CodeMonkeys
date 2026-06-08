@@ -778,7 +778,10 @@ async function loadProviders() {
     if (autoP) _pvExpanded.add(autoP.id);
   }
   // Compute client-side tier labels (mirrors provider_for_tier logic: sort by out cost)
+  // callable = keyed+auto providers sorted by cost; cascadeOrder = 1-based call order
   const callable = d.providers.filter((p) => p.has_key).sort((a, b) => a.out - b.out);
+  const cascadeOrder = {};
+  callable.filter((p) => p.auto).forEach((p, i) => { cascadeOrder[p.id] = i + 1; });
   const n = callable.length;
   const _tierOf = (pid) => {
     const idx = callable.findIndex((p) => p.id === pid);
@@ -814,14 +817,16 @@ async function loadProviders() {
     const manyModels = allModels.length > 5;
     const expanded = _pvExpanded.has(p.id);
     return `
-    <div class="border-b border-slate-800/60 py-2 ${isMain ? "bg-yellow-900/10 rounded" : ""}">
+    <div class="border-b border-slate-800/60 py-2 ${isMain ? "bg-yellow-900/10 rounded" : ""} ${!p.has_key ? "opacity-50" : ""}">
       <div class="flex items-center gap-2">
         <button data-id="${esc(p.id)}" class="pv-toggle text-slate-500 hover:text-slate-300 text-xs w-4"
           title="${expanded ? "Collapse" : "Expand"}">${expanded ? "▼" : "▶"}</button>
         <button data-id="${esc(p.id)}" class="pv-main ${isMain ? "text-[var(--gold-bright)]" : "text-slate-600"} hover:text-[var(--gold)]" title="Use as main (when Auto is off)">★</button>
         <span class="${p.has_key ? "text-green-400" : "text-slate-600"}"
           title="${p.has_key
-            ? (p.id === "openrouter" ? "key set — authenticated (higher rate limits)" : "key set")
+            ? (p.id === "openrouter"
+                ? `key set ${p.key_hint} — authenticated (higher rate limits)`
+                : `key set ${p.key_hint}`)
             : (p.id === "openrouter" ? "no key — unauthenticated (rate-limited free tier)" : "no key")
           }">●</span>
         <b class="flex-1 ${isMain ? "text-[var(--gold-bright)]" : "text-slate-200"}">${esc(p.label)}</b>
@@ -834,6 +839,9 @@ async function loadProviders() {
             }" title="Tier ${t} — position in cheapest-first routing">${t}</span>`
           : ""; })()}
         <span class="text-slate-600 text-xs">${p.model ? esc(p.model) : ""}</span>
+        ${d.auto_cheapest && cascadeOrder[p.id]
+          ? `<span class="text-[.6rem] text-slate-500 border border-slate-700 rounded px-1"
+              title="Auto-cheapest call order">#${cascadeOrder[p.id]}</span>` : ""}
         <label class="flex items-center gap-1 text-slate-400" title="Include in cheapest-first cascade">
           <input type="checkbox" class="pv-auto accent-yellow-500" data-id="${esc(p.id)}" ${p.auto ? "checked" : ""}>✓auto</label>
         <button data-id="${esc(p.id)}" class="pv-del text-red-500/60 hover:text-red-400">remove</button>
@@ -1022,10 +1030,38 @@ async function loadFreeModels(hint) {
       });
     }));
     $("btn-add-all-free").classList.remove("hidden");
+    // Show "Remove :free" button if OR models list has :free-tagged entries
+    try {
+      const cfg = await api("/api/models");
+      const or = cfg.providers.find((p) => p.id === "openrouter");
+      const hasFreeTagged = or && (or.models || []).some((m) => m.endsWith(":free"));
+      if (hasFreeTagged) $("btn-remove-free").classList.remove("hidden");
+      else $("btn-remove-free").classList.add("hidden");
+    } catch (_) { /* non-critical */ }
   } catch (_) {
     $("free-models-list").textContent = "";
   }
 }
+
+$("btn-remove-free").onclick = async () => {
+  if (!confirm("Remove all :free-tagged models from OpenRouter's list?")) return;
+  $("btn-remove-free").disabled = true;
+  try {
+    const cfg = await api("/api/models");
+    const or = cfg.providers.find((p) => p.id === "openrouter");
+    const toRemove = (or?.models || []).filter((m) => m.endsWith(":free"));
+    for (const mid of toRemove) {
+      await api(`/api/models/openrouter/models/${encodeURIComponent(mid)}`, "DELETE");
+    }
+    $("free-models-msg").textContent = `✓ removed ${toRemove.length} :free models`;
+    $("btn-remove-free").classList.add("hidden");
+    loadProviders();
+  } catch (e) {
+    $("free-models-msg").textContent = e.message || "remove failed";
+  } finally {
+    $("btn-remove-free").disabled = false;
+  }
+};
 
 $("btn-or-refresh").onclick = async () => {
   $("free-models-msg").textContent = "refreshing…";

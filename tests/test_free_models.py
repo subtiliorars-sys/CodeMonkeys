@@ -444,6 +444,34 @@ def test_key_save_clears_catalog_refreshed_at():
         _remove_override()
 
 
+def test_key_hint_shows_last_four_chars():
+    """GET /api/models includes key_hint = last 4 chars of stored key."""
+    cfg = server.load_models()
+    cfg["providers"]["openrouter"]["key"] = "sk-abcdef1234"
+    server.save_models(cfg)
+    _override_owner()
+    try:
+        r = client.get("/api/models")
+        or_prov = next(p for p in r.json()["providers"] if p["id"] == "openrouter")
+        assert or_prov["key_hint"] == "…1234"
+    finally:
+        _remove_override()
+
+
+def test_key_hint_empty_when_no_key():
+    """key_hint is empty string when no key is stored."""
+    cfg = server.load_models()
+    cfg["providers"]["openrouter"]["key"] = ""
+    server.save_models(cfg)
+    _override_owner()
+    try:
+        r = client.get("/api/models")
+        or_prov = next(p for p in r.json()["providers"] if p["id"] == "openrouter")
+        assert or_prov["key_hint"] == ""
+    finally:
+        _remove_override()
+
+
 def test_key_save_blank_preserves_catalog_refreshed_at():
     """Saving with a blank key (keep existing) must NOT clear catalog_refreshed_at."""
     cfg = server.load_models()

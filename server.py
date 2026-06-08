@@ -1704,6 +1704,7 @@ def models_get(_: str = Depends(verify_owner)):
             {"id": pid, "label": p.get("label", pid), "kind": p["kind"],
              "base_url": p.get("base_url", ""), "model": p.get("model", ""),
              "models": p.get("models", []), "has_key": bool(p.get("key")),
+             "key_hint": ("…" + p["key"][-4:]) if p.get("key") else "",
              "in": p.get("in", 0), "out": p.get("out", 0), "auto": p.get("auto", False),
              "catalog": {e["id"]: {"in": e["in"], "out": e["out"]}
                          for e in p.get("catalog", [])},
