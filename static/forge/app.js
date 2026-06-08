@@ -839,8 +839,9 @@ async function loadProviders() {
       if (_isFree(a) !== _isFree(b)) return _isFree(a) ? -1 : 1;
       return a.localeCompare(b);
     });
+    const activeModel = (d.auto_cheapest || d.selected === p.id) ? p.model : null;
     const opts = sortedModels.map((m) =>
-      `<option value="${esc(m)}" ${m === p.model ? "selected" : ""}>${esc(m)}${_costHint(m)}</option>`).join("");
+      `<option value="${esc(m)}" ${m === p.model ? "selected" : ""}>${m === activeModel ? "★ " : ""}${esc(m)}${_costHint(m)}</option>`).join("");
     const isMain = p.id === d.selected && !d.auto_cheapest;
     const manyModels = allModels.length > 5;
     const expanded = _pvExpanded.has(p.id);
@@ -937,7 +938,9 @@ async function loadProviders() {
     loadProviders();
   }));
   document.querySelectorAll(".pv-del").forEach((b) => (b.onclick = async () => {
-    if (confirm(`Remove provider ${b.dataset.id}?`)) {
+    const pDel = d.providers.find((x) => x.id === b.dataset.id);
+    const warn = pDel?.has_key ? `\n⚠ This provider has a key stored — it will be deleted too.` : "";
+    if (confirm(`Remove provider ${b.dataset.id}?${warn}`)) {
       await api(`/api/models/${encodeURIComponent(b.dataset.id)}`, "DELETE"); loadProviders();
     }
   }));
@@ -1099,6 +1102,15 @@ async function loadProviders() {
     ? `⚠ Duplicate model IDs across providers: ${_dupes.slice(0, 3).join(", ")}${_dupes.length > 3 ? " …" : ""}`
     : "";
 
+  // Populate bulk-add provider selector
+  const bulkPid = $("bulk-add-pid");
+  if (bulkPid) {
+    const prev = bulkPid.value;
+    bulkPid.innerHTML = d.providers.map((p) =>
+      `<option value="${esc(p.id)}" ${p.id === prev ? "selected" : ""}>${esc(p.label)}</option>`
+    ).join("");
+  }
+
   // Pass OR catalog data as a hint to loadFreeModels to skip the extra API call
   const orProv = d.providers.find((p) => p.id === "openrouter");
   const freeCount = orProv
@@ -1179,13 +1191,20 @@ async function loadFreeModels(hint) {
       });
     }));
     $("btn-add-all-free").classList.remove("hidden");
-    // Show "Remove :free" button if OR models list has :free-tagged entries
+    // Show/hide "use cheapest" and "Remove :free" based on current OR config
     try {
       const cfg = await api("/api/models");
       const or = cfg.providers.find((p) => p.id === "openrouter");
       const hasFreeTagged = or && (or.models || []).some((m) => m.endsWith(":free"));
       if (hasFreeTagged) $("btn-remove-free").classList.remove("hidden");
       else $("btn-remove-free").classList.add("hidden");
+      // "★ use cheapest" — show when OR has free models in its active list
+      const hasFreeActive = or && (or.models || []).some((m) => {
+        const c = (or.catalog || {})[m];
+        return c && c.in === 0 && c.out === 0;
+      });
+      if (hasFreeActive) $("btn-use-cheapest-free")?.classList.remove("hidden");
+      else $("btn-use-cheapest-free")?.classList.add("hidden");
     } catch (_) { /* non-critical */ }
   } catch (_) {
     $("free-models-list").textContent = "";
@@ -1209,6 +1228,58 @@ $("btn-remove-free").onclick = async () => {
     $("free-models-msg").textContent = e.message || "remove failed";
   } finally {
     $("btn-remove-free").disabled = false;
+  }
+};
+
+$("btn-bulk-add").onclick = async () => {
+  const pid = $("bulk-add-pid").value;
+  const lines = ($("bulk-add-models").value || "").split("\n").map((s) => s.trim()).filter(Boolean);
+  if (!pid || !lines.length) { $("bulk-add-msg").textContent = "pick provider + enter IDs"; return; }
+  $("btn-bulk-add").disabled = true;
+  $("bulk-add-msg").textContent = "adding…";
+  try {
+    const cfg = await api("/api/models");
+    const prov = cfg.providers.find((p) => p.id === pid);
+    if (!prov) throw new Error("Provider not found");
+    const existing = new Set(prov.models || []);
+    const toAdd = lines.filter((m) => !existing.has(m));
+    const updatedModels = [...(prov.models || []), ...toAdd];
+    await api("/api/models", "POST", {
+      id: prov.id, label: prov.label, kind: prov.kind, base_url: prov.base_url,
+      model: prov.model, models: updatedModels, key: "", notes: prov.notes || "",
+      input_cost_per_m: prov.in, output_cost_per_m: prov.out, auto: prov.auto,
+    });
+    $("bulk-add-msg").textContent = `✓ +${toAdd.length} (${lines.length - toAdd.length} dupes skipped)`;
+    $("bulk-add-models").value = "";
+    loadProviders();
+  } catch (e) {
+    $("bulk-add-msg").textContent = e.message || "failed";
+  } finally {
+    $("btn-bulk-add").disabled = false;
+  }
+};
+
+$("btn-use-cheapest-free").onclick = async () => {
+  try {
+    const cfg = await api("/api/models");
+    const or = cfg.providers.find((p) => p.id === "openrouter");
+    if (!or) return;
+    // Find the free model with the shortest name (proxy for "official" / simplest) among active models
+    const freeModels = (or.models || []).filter((m) => {
+      const c = (or.catalog || {})[m]; return c && c.in === 0 && c.out === 0;
+    });
+    if (!freeModels.length) { $("free-models-msg").textContent = "no free models in OR list"; return; }
+    freeModels.sort((a, b) => a.length - b.length);
+    const chosen = freeModels[0];
+    await api("/api/models", "POST", {
+      id: or.id, label: or.label, kind: or.kind, base_url: or.base_url,
+      model: chosen, models: or.models, key: "", notes: or.notes || "",
+      input_cost_per_m: or.in, output_cost_per_m: or.out, auto: or.auto,
+    });
+    $("free-models-msg").textContent = `★ active: ${chosen}`;
+    loadProviders();
+  } catch (e) {
+    $("free-models-msg").textContent = e.message || "failed";
   }
 };
 

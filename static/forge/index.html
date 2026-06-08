@@ -244,6 +244,7 @@
           <input id="chk-auto-add-free" type="checkbox" class="accent-yellow-500">auto-add
         </label>
         <button id="btn-add-all-free" class="hidden gold-btn rounded px-3 py-0.5 text-xs">Add all free →</button>
+        <button id="btn-use-cheapest-free" class="hidden text-green-400/80 hover:text-green-300 text-xs border border-green-900/40 rounded px-2 py-0.5" title="Set active model to cheapest free model in OR's list">★ use cheapest</button>
         <button id="btn-remove-free" class="hidden text-red-500/60 hover:text-red-400 text-xs border border-slate-700 rounded px-2 py-0.5">Remove :free</button>
       </div>
       <div id="free-models-list" class="text-xs text-slate-500 italic">Click ↻ Refresh to fetch free models from OpenRouter.</div>
@@ -251,6 +252,18 @@
     <div class="border-t border-slate-800 pt-3 mb-4">
       <p class="text-xs text-slate-500 mb-2">Quick-add free-tier providers (paste your key after pre-filling):</p>
       <div id="preset-btns" class="flex flex-wrap gap-1 text-xs"></div>
+    </div>
+    <div class="border-t border-slate-800 pt-3 mb-4">
+      <p class="text-xs text-slate-500 mb-2">Bulk-add model IDs to a provider (one per line):</p>
+      <div class="flex gap-2 text-xs">
+        <select id="bulk-add-pid" class="input rounded px-2 py-1 w-36"></select>
+        <textarea id="bulk-add-models" class="input rounded px-2 py-1 flex-1 h-16 resize-none text-xs"
+          placeholder="model-id-1&#10;model-id-2&#10;…"></textarea>
+        <div class="flex flex-col gap-1">
+          <button id="btn-bulk-add" class="gold-btn rounded px-3 py-1">Add</button>
+          <span id="bulk-add-msg" class="text-slate-500 text-[.65rem]"></span>
+        </div>
+      </div>
     </div>
     <div class="border-t border-slate-800 pt-3">
       <p class="text-xs text-slate-500 mb-2">Add a custom provider (any OpenAI-compatible endpoint):</p>
