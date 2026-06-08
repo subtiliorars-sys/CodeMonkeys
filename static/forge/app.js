@@ -381,11 +381,25 @@ async function refreshSessions() {
       `<div class="group flex items-center gap-1 rounded px-2 py-1 hover:bg-yellow-900/20 ${s.id === state.sid ? "bg-yellow-900/30" : ""}">
          <span data-sid="${s.id}" class="session-item flex-1 cursor-pointer truncate ${s.id === state.sid ? "text-[var(--gold-bright)]" : "text-slate-300"}">
            ${esc(s.title)} <span class="text-slate-600">$${s.spent_usd}</span></span>
+         ${s.status === "interrupted"
+           ? `<button data-resume="${s.id}" class="session-resume text-amber-400 hover:text-amber-300 text-[.65rem] px-1 opacity-0 group-hover:opacity-100" title="Resume interrupted session">resume</button>`
+           : ""}
          <button data-del="${s.id}" class="session-del text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100" title="Delete session">✕</button>
        </div>`).join("")
       || '<div class="text-slate-600">none yet</div>';
     document.querySelectorAll(".session-item").forEach((el) =>
       (el.onclick = () => openSession(el.dataset.sid)));
+    // N6: resume button for interrupted sessions
+    document.querySelectorAll(".session-resume").forEach((el) => (el.onclick = async (e) => {
+      e.stopPropagation();
+      el.disabled = true; el.textContent = "…";
+      try {
+        await api(`/api/sessions/${el.dataset.resume}/resume`, "POST");
+        openSession(el.dataset.resume);
+      } catch (err) { alert("Resume failed: " + err.message); }
+      finally { el.disabled = false; el.textContent = "resume"; }
+      refreshSessions();
+    }));
     document.querySelectorAll(".session-del").forEach((el) => (el.onclick = async (e) => {
       e.stopPropagation();
       if (!confirm("Delete this session and its history?")) return;
