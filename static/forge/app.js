@@ -489,7 +489,10 @@ function openSession(sid) {
   $("stream").innerHTML = "";
   refreshSessions();
   startPolling(true);
+  $("btn-export-transcript")?.classList.remove("hidden");
 }
+
+$("btn-export-transcript").onclick = _exportTranscript;
 
 /* ---------------- event stream ---------------- */
 
@@ -776,6 +779,7 @@ $("btn-models").onclick = () => {
     chk.onchange = () => localStorage.setItem("cm_auto_add_free", chk.checked ? "1" : "0");
   }
   loadProviders();
+  _loadSpendSparkline();
 };
 $("modal-close").onclick = () => $("modal-models").classList.add("hidden");
 
@@ -931,6 +935,8 @@ async function loadProviders() {
               title="Auto-cheapest call order">#${cascadeOrder[p.id]}</span>` : ""}
         <label class="flex items-center gap-1 text-slate-400" title="Include in cheapest-first cascade">
           <input type="checkbox" class="pv-auto accent-yellow-500" data-id="${esc(p.id)}" ${p.auto ? "checked" : ""}>✓auto</label>
+        ${p.has_key ? `<button data-id="${esc(p.id)}" class="pv-ping text-slate-500/60 hover:text-slate-300 text-[.65rem] border border-slate-700/50 rounded px-1.5" title="Send 1-token request to measure latency">ping</button>` : ""}
+        <span class="pv-ping-result text-[.65rem]" data-id="${esc(p.id)}"></span>
         <button data-id="${esc(p.id)}" class="pv-del text-red-500/60 hover:text-red-400">remove</button>
       </div>
       ${p.last_error ? `<div class="pl-6 mt-0.5 text-red-400/80 text-xs truncate" title="${esc(p.last_error)}">⚠ ${esc(p.last_error.slice(0, 80))}${p.last_error.length > 80 ? "…" : ""}</div>` : ""}
@@ -1000,6 +1006,24 @@ async function loadProviders() {
     if (confirm(`Remove provider ${b.dataset.id}?${warn}`)) {
       await api(`/api/models/${encodeURIComponent(b.dataset.id)}`, "DELETE"); loadProviders();
     }
+  }));
+  // ping handler
+  document.querySelectorAll(".pv-ping").forEach((b) => (b.onclick = async () => {
+    const id = b.dataset.id;
+    const result = document.querySelector(`.pv-ping-result[data-id="${id}"]`);
+    b.disabled = true; b.textContent = "…";
+    if (result) result.textContent = "";
+    try {
+      const r = await api(`/api/models/${encodeURIComponent(id)}/ping`, "POST", {});
+      if (result) {
+        result.textContent = r.ok ? `✓ ${r.latency_ms}ms` : `✗ ${(r.error || "fail").slice(0, 40)}`;
+        result.className = `pv-ping-result text-[.65rem] ${r.ok ? "text-green-400" : "text-red-400"}`;
+      }
+      if (r.ok) _pvHealthRecord(id, true); else _pvHealthRecord(id, false);
+    } catch (e) {
+      if (result) { result.textContent = `✗ ${e.message.slice(0, 40)}`; result.className = "pv-ping-result text-[.65rem] text-red-400"; }
+      _pvHealthRecord(id, false);
+    } finally { b.disabled = false; b.textContent = "ping"; }
   }));
   document.querySelectorAll(".pv-savekey").forEach((b) => (b.onclick = async () => {
     const id = b.dataset.id;
@@ -1258,6 +1282,12 @@ async function loadProviders() {
   // Update calc/compare if visible
   _renderCostCalc(d.providers);
   _renderCompareTable(d.providers);
+  // Update active model in modal title
+  const activeProv = d.auto_cheapest
+    ? d.providers.filter((p) => p.has_key && p.auto).sort((a, b) => a.out - b.out)[0]
+    : d.providers.find((p) => p.id === d.selected);
+  const modalModel = $("modal-active-model");
+  if (modalModel) modalModel.textContent = activeProv?.model ? `· ${activeProv.model}` : "";
 }
 
 $("auto-cheapest").onchange = async () => {
@@ -1338,6 +1368,67 @@ function _renderCompareTable(providers) {
         <td class="py-0.5 text-right text-slate-500">${r.ctx ? (r.ctx >= 1000 ? Math.round(r.ctx/1000)+"k" : r.ctx) : "—"}</td>
       </tr>`).join("") +
     `</tbody></table>`;
+}
+
+/* ---------------- spend sparkline (7-day bar chart) ---------------- */
+async function _loadSpendSparkline() {
+  const wrap = $("spend-sparkline-wrap");
+  if (!wrap) return;
+  try {
+    const d = await api("/api/usage");
+    const byDay = d.by_day || [];
+    // Build last-7-days date list
+    const days = [];
+    const now = new Date();
+    for (let i = 6; i >= 0; i--) {
+      const dt = new Date(now);
+      dt.setUTCDate(now.getUTCDate() - i);
+      days.push(dt.toISOString().slice(0, 10));
+    }
+    const map = {};
+    byDay.forEach((r) => { map[r.day] = r.usd; });
+    const vals = days.map((d) => map[d] || 0);
+    const maxVal = Math.max(...vals, 0.0001);
+    const barsEl = $("spend-sparkline-bars");
+    const labelEl = $("spend-sparkline-label");
+    if (barsEl) {
+      barsEl.innerHTML = vals.map((v, i) => {
+        const pct = Math.max(4, Math.round((v / maxVal) * 100));
+        const isToday = days[i] === days[6];
+        return `<div class="w-5 ${isToday ? "bg-[var(--gold)]/70" : "bg-slate-600/60"} rounded-t"
+          style="height:${pct}%" title="${days[i]}: $${v.toFixed(5)}"></div>`;
+      }).join("");
+    }
+    if (labelEl) {
+      const total7 = vals.reduce((a, b) => a + b, 0);
+      labelEl.textContent = `7-day: $${total7.toFixed(4)} total`;
+    }
+    wrap.classList.remove("hidden");
+  } catch (_) { /* ignore — owner may not be logged in yet */ }
+}
+
+/* ---------------- transcript export ---------------- */
+async function _exportTranscript() {
+  if (!state.sid) return;
+  try {
+    const d = await api(`/api/sessions/${state.sid}/events?after=-1`);
+    const sess = document.querySelector(`[data-sid="${state.sid}"]`);
+    const title = sess ? sess.textContent.split("$")[0].trim() : state.sid;
+    const lines = [`# ${title}`, `session: ${state.sid}`, ""];
+    for (const e of (d.events || [])) {
+      const t = e.type;
+      if (t === "user") lines.push(`**user:** ${e.text || ""}`, "");
+      else if (t === "assistant") lines.push(`**assistant:** ${e.text || ""}`, "");
+      else if (t === "tool_call") lines.push(`> tool: ${e.name} ${JSON.stringify(e.args || {}).slice(0, 80)}`, "");
+      else if (t === "tool_result") lines.push(`> result: ${String(e.content || "").slice(0, 120)}`, "");
+      else if (t === "cost") lines.push(`*cost: $${e.usd} | in:${e.in_tokens} out:${e.out_tokens}*`, "");
+    }
+    const blob = new Blob([lines.join("\n")], {type: "text/markdown"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `session-${state.sid.slice(0, 8)}.md`;
+    a.click(); URL.revokeObjectURL(url);
+  } catch (e) { alert("Export failed: " + e.message); }
 }
 
 /* ---------------- free-model auto-lister (Layer A) ---------------- */

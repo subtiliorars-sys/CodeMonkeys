@@ -1945,6 +1945,58 @@ def models_clear_errors(_: str = Depends(verify_owner)):
     return {"ok": True, "cleared": cleared}
 
 
+@app.post("/api/models/{pid}/ping")
+def ping_provider(pid: str, _: str = Depends(verify_owner)):
+    """Fire a 1-token request to a provider and return latency_ms + ok/error.
+    Uses the stored base_url — no user-supplied URLs."""
+    cfg = load_models()
+    p = cfg["providers"].get(pid)
+    if not p:
+        raise HTTPException(404, "Provider not found")
+    if not p.get("key"):
+        raise HTTPException(400, "No API key configured for this provider")
+    model = p.get("model", "")
+    if not model:
+        raise HTTPException(400, "No model configured for this provider")
+    kind = p.get("kind", "openai")
+    start = time.time()
+    try:
+        if kind == "openai":
+            base_url = str(p.get("base_url") or "").strip()
+            if not base_url:
+                raise HTTPException(400, "No base_url configured for this provider")
+            r = requests.post(
+                base_url.rstrip("/") + "/chat/completions",
+                headers={"Authorization": f"Bearer {p['key']}",
+                         "Content-Type": "application/json"},
+                json={"model": model,
+                      "messages": [{"role": "user", "content": "hi"}],
+                      "max_tokens": 1},
+                timeout=15,
+            )
+            r.raise_for_status()
+        elif kind == "anthropic":
+            r = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": p["key"], "anthropic-version": "2023-06-01",
+                         "Content-Type": "application/json"},
+                json={"model": model,
+                      "messages": [{"role": "user", "content": "hi"}],
+                      "max_tokens": 1},
+                timeout=15,
+            )
+            r.raise_for_status()
+        else:
+            raise HTTPException(400, f"Unsupported provider kind: {kind}")
+        return {"ok": True, "latency_ms": int((time.time() - start) * 1000),
+                "model": model}
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"ok": False, "latency_ms": int((time.time() - start) * 1000),
+                "error": str(e)[:200], "model": model}
+
+
 @app.get("/api/models/openrouter/free")
 def models_openrouter_free(_: str = Depends(verify_owner)):
     """Return the zero-cost models from the cached OpenRouter catalog."""
