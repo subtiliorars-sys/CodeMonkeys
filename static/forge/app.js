@@ -913,6 +913,7 @@ async function loadProviders() {
         <button data-id="${esc(p.id)}" class="pv-del text-red-500/60 hover:text-red-400">remove</button>
       </div>
       ${p.last_error ? `<div class="pl-6 mt-0.5 text-red-400/80 text-xs truncate" title="${esc(p.last_error)}">⚠ ${esc(p.last_error.slice(0, 80))}${p.last_error.length > 80 ? "…" : ""}</div>` : ""}
+      ${p.has_key && allModels.length === 0 ? `<div class="pl-6 mt-0.5 text-yellow-500/80 text-xs">⚠ No models configured — expand and add at least one model ID</div>` : ""}
       <div class="pv-detail flex items-center gap-2 mt-1 pl-6 ${expanded ? "" : "hidden"}">
         ${manyModels ? `<input type="text" class="pv-filter input rounded px-1 py-0.5 w-28 text-xs" data-id="${esc(p.id)}"
           data-models="${esc(JSON.stringify(sortedModels))}" data-current="${esc(p.model)}"
@@ -944,6 +945,9 @@ async function loadProviders() {
           placeholder="+ add model id…">
         <button class="pv-addmodel-btn text-slate-500 hover:text-[var(--gold)] text-xs border border-slate-700 rounded px-2 py-0.5" data-id="${esc(p.id)}">add</button>
         <span class="pv-addmodel-msg text-xs text-slate-600" data-id="${esc(p.id)}"></span>
+        ${allModels.length >= 2
+          ? `<button class="pv-cplist text-slate-500/60 hover:text-slate-300 text-xs ml-auto" data-pid="${esc(p.id)}" data-models="${esc(JSON.stringify(allModels))}" title="Copy all model IDs as newline-separated list">⎘ list</button>`
+          : ""}
       </div>
     </div>`;
   }).join("");
@@ -992,6 +996,32 @@ async function loadProviders() {
       loadProviders();
     } catch (e) { alert(e.message); }
   }));
+<<<<<<< Updated upstream
+=======
+  // copy full model list to clipboard
+  document.querySelectorAll(".pv-cplist").forEach((btn) => (btn.onclick = () => {
+    const models = JSON.parse(btn.dataset.models);
+    navigator.clipboard?.writeText(models.join("\n")).then(() => {
+      const orig = btn.textContent;
+      btn.textContent = "✓";
+      setTimeout(() => { btn.textContent = orig; }, 1400);
+    });
+  }));
+  // set model as active via pill click
+  document.querySelectorAll(".pv-setmodel").forEach((btn) => (btn.onclick = async () => {
+    const { pid, mid } = btn.dataset;
+    const prov = d.providers.find((x) => x.id === pid);
+    if (!prov) return;
+    try {
+      await api("/api/models", "POST", {
+        id: prov.id, label: prov.label, kind: prov.kind, base_url: prov.base_url,
+        model: mid, models: prov.models, key: "", notes: prov.notes || "",
+        input_cost_per_m: prov.in, output_cost_per_m: prov.out, auto: prov.auto,
+      });
+      loadProviders();
+    } catch (e) { alert(e.message); }
+  }));
+>>>>>>> Stashed changes
   // copy model ID to clipboard
   document.querySelectorAll(".pv-cpmodel").forEach((btn) => (btn.onclick = () => {
     navigator.clipboard?.writeText(btn.dataset.mid).then(() => {
@@ -1174,11 +1204,11 @@ async function loadProviders() {
       : "⚙ Models &amp; keys";
   }
   if (orProv) {
+    const catalogEntries = Object.entries(orProv.catalog || {});
     const freeHint = {
-      free: Object.entries(orProv.catalog || {})
-        .filter(([, c]) => c.in === 0 && c.out === 0)
-        .map(([id]) => ({ id })),
+      free: catalogEntries.filter(([, c]) => c.in === 0 && c.out === 0).map(([id]) => ({ id })),
       refreshed_at: orProv.catalog_refreshed_at || null,
+      totalInCatalog: catalogEntries.length,
     };
     loadFreeModels(freeHint);
   } else {
@@ -1210,7 +1240,9 @@ async function loadFreeModels(hint) {
     const age = _catalogAge(r.refreshed_at);
     const stale = r.refreshed_at && (Date.now() / 1000 - r.refreshed_at) > 86400;
     if (age && !$("free-models-msg").textContent.startsWith("✓")) {
-      $("free-models-msg").textContent = stale ? `⚠ catalog ${age}` : `catalog ${age}`;
+      const totalInCatalog = hint?.totalInCatalog ?? null;
+      const countStr = totalInCatalog !== null ? ` · ${totalInCatalog} total` : "";
+      $("free-models-msg").textContent = stale ? `⚠ catalog ${age}${countStr}` : `catalog ${age}${countStr}`;
       if (stale) $("free-models-msg").classList.add("text-yellow-500");
       else $("free-models-msg").classList.remove("text-yellow-500");
     }
@@ -1379,6 +1411,29 @@ $("btn-add-all-free").onclick = async () => {
   }
 };
 
+<<<<<<< Updated upstream
+=======
+$("btn-toggle-free").onclick = () => {
+  const body = document.getElementById("free-models-section").querySelectorAll(":scope > :not(:first-child)");
+  const btn = $("btn-toggle-free");
+  const collapsed = btn.textContent === "▶";
+  body.forEach((el) => el.classList.toggle("hidden", collapsed));
+  btn.textContent = collapsed ? "▼" : "▶";
+  btn.title = collapsed ? "Collapse section" : "Expand section";
+};
+
+$("btn-clear-errors").onclick = async () => {
+  try {
+    const r = await api("/api/models/clear_errors", "POST", {});
+    $("export-msg").textContent = `✓ cleared ${r.cleared} error${r.cleared !== 1 ? "s" : ""}`;
+    setTimeout(() => { $("export-msg").textContent = ""; }, 2000);
+    loadProviders();
+  } catch (e) {
+    $("export-msg").textContent = e.message || "clear failed";
+  }
+};
+
+>>>>>>> Stashed changes
 $("btn-import-config").onclick = async () => {
   const raw = prompt("Paste exported config JSON:");
   if (!raw) return;
