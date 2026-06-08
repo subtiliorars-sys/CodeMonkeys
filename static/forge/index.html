@@ -140,7 +140,8 @@
         <span class="text-slate-500 uppercase tracking-wider">Sessions</span>
         <button id="btn-new-session" class="text-[var(--gold)] hover:text-[var(--gold-bright)]">+ new</button>
       </div>
-      <div id="session-list" class="space-y-1 mb-4"></div>
+      <div id="session-list" class="space-y-1 mb-1"></div>
+      <div id="sidebar-spend-today" class="owner-only text-slate-600 text-[.65rem] mb-3 hidden"></div>
       <div class="flex justify-between items-center mb-1">
         <span class="text-slate-500 uppercase tracking-wider">Saved Plans</span>
         <button id="btn-refresh-specs" class="text-[var(--gold)] hover:text-[var(--gold-bright)]" title="Refresh list">↻</button>
@@ -187,6 +188,11 @@
     <!-- session budget progress bar -->
     <div id="budget-bar-wrap" class="hidden owner-only h-1 bg-slate-800/60">
       <div id="budget-bar-fill" class="h-full bg-green-500 transition-all" style="width:0%" title=""></div>
+    </div>
+    <!-- budget alert banner -->
+    <div id="budget-alert" class="hidden owner-only px-4 py-1 text-xs bg-red-900/30 border-b border-red-700/50 text-red-300 flex items-center gap-2">
+      <span id="budget-alert-msg"></span>
+      <button id="budget-alert-close" class="ml-auto text-red-500 hover:text-red-200">✕</button>
     </div>
     <!-- encryption banner: shown when keys are unencrypted or failed to decrypt -->
     <div id="enc-banner" class="hidden owner-only px-4 py-2 text-xs bg-yellow-900/30 border-b border-yellow-700/50 text-yellow-300 flex items-center gap-2">

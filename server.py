@@ -6239,6 +6239,25 @@ def session_delete(sid: str, _: str = Depends(verify_user)):
     return {"ok": True}
 
 
+class SessionRename(BaseModel):
+    title: str
+
+
+@app.patch("/api/sessions/{sid}")
+def session_rename(sid: str, req: SessionRename, _: str = Depends(verify_user)):
+    """Update the session title (in-memory + index)."""
+    s = SESSIONS.get(sid)
+    if not s:
+        raise HTTPException(404, "No such session")
+    title = req.title.strip()[:120]
+    if not title:
+        raise HTTPException(400, "Title cannot be empty")
+    with s["lock"]:
+        s["title"] = title
+    _persist_index()
+    return {"ok": True, "title": title}
+
+
 # ---- Fleet Deck status feed (~/fleet/contracts/fleetdeck-codemonkeys.md) ------
 # Read-only ops metadata for the local fleet dashboard: each session maps to one
 # `worker`. STRICT allowlist of fields — no prompts, code, keys, or user content

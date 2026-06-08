@@ -72,6 +72,7 @@ async function checkEncryptionBanner() {
   }
 }
 $("enc-banner-close").onclick = () => $("enc-banner").classList.add("hidden");
+$("budget-alert-close").onclick = () => $("budget-alert").classList.add("hidden");
 function logout() {
   ["cm_token", "cm_username", "cm_role"].forEach((k) => localStorage.removeItem(k));
   state.token = ""; stopPolling(); showLogin();
@@ -381,10 +382,22 @@ async function refreshSessions() {
       const cur = d.sessions.find((s) => s.id === state.sid);
       if (cur) state.budget_usd = cur.budget_usd || null;
     }
+    // Compute today's total spend from sessions
+    const todaySpend = d.sessions.reduce((sum, s) => sum + (s.spent_usd || 0), 0);
+    const spendEl = $("sidebar-spend-today");
+    if (spendEl) {
+      if (todaySpend > 0) {
+        spendEl.textContent = `total: $${todaySpend.toFixed(4)}`;
+        spendEl.classList.remove("hidden");
+      } else {
+        spendEl.classList.add("hidden");
+      }
+    }
     $("session-list").innerHTML = d.sessions.map((s) =>
       `<div class="group flex items-center gap-1 rounded px-2 py-1 hover:bg-yellow-900/20 ${s.id === state.sid ? "bg-yellow-900/30" : ""}">
-         <span data-sid="${s.id}" class="session-item flex-1 cursor-pointer truncate ${s.id === state.sid ? "text-[var(--gold-bright)]" : "text-slate-300"}">
-           ${esc(s.title)} <span class="text-slate-600">$${s.spent_usd}</span></span>
+         <span data-sid="${s.id}" class="session-item flex-1 cursor-pointer truncate ${s.id === state.sid ? "text-[var(--gold-bright)]" : "text-slate-300"}"
+           title="Double-click to rename">
+           <span class="session-title" data-sid="${s.id}">${esc(s.title)}</span> <span class="text-slate-600">$${s.spent_usd}</span></span>
          ${s.status === "interrupted"
            ? `<button data-resume="${s.id}" class="session-resume text-amber-400 hover:text-amber-300 text-[.65rem] px-1 opacity-0 group-hover:opacity-100" title="Resume interrupted session">resume</button>`
            : ""}
@@ -393,6 +406,28 @@ async function refreshSessions() {
       || '<div class="text-slate-600">none yet</div>';
     document.querySelectorAll(".session-item").forEach((el) =>
       (el.onclick = () => openSession(el.dataset.sid)));
+    // inline rename on double-click of title span
+    document.querySelectorAll(".session-title").forEach((el) => {
+      el.ondblclick = (e) => {
+        e.stopPropagation();
+        const sid = el.dataset.sid;
+        const input = document.createElement("input");
+        input.value = el.textContent;
+        input.className = "input rounded px-1 py-0 text-[.7rem] w-full";
+        el.replaceWith(input);
+        input.focus(); input.select();
+        const commit = async () => {
+          const title = input.value.trim();
+          if (title && title !== el.textContent) {
+            try { await api(`/api/sessions/${sid}`, "PATCH", { title }); }
+            catch (_) {}
+          }
+          refreshSessions();
+        };
+        input.onblur = commit;
+        input.onkeydown = (ev) => { if (ev.key === "Enter") input.blur(); if (ev.key === "Escape") { input.value = el.textContent; input.blur(); } };
+      };
+    });
     // N6: resume button for interrupted sessions
     document.querySelectorAll(".session-resume").forEach((el) => (el.onclick = async (e) => {
       e.stopPropagation();
@@ -485,7 +520,9 @@ $("btn-clone").onclick = async () => {
 };
 
 function openSession(sid) {
-  state.sid = sid; state.after = -1;
+  state.sid = sid; state.after = -1; state.budget_usd = null;
+  _budgetAlertShownAt = 0;
+  $("budget-alert")?.classList.add("hidden");
   $("stream").innerHTML = "";
   refreshSessions();
   startPolling(true);
@@ -957,6 +994,9 @@ async function loadProviders() {
       <div class="pv-detail flex flex-wrap items-center gap-1 mt-1 pl-6 ${expanded ? "" : "hidden"}">
         ${allModels.length >= 2 ? allModels.map((m) => {
           const mc = cat[m];
+          const ctxBadge = mc?.context_length
+            ? `<span class="text-slate-600 text-[.55rem]" title="context window">${mc.context_length >= 1000 ? Math.round(mc.context_length/1000)+"k" : mc.context_length}</span>`
+            : "";
           const pillTag = mc
             ? (mc.in === 0 && mc.out === 0
                 ? `<span class="text-green-400 text-[.6rem]">⚡</span>`
@@ -964,7 +1004,7 @@ async function loadProviders() {
             : "";
           const fav = _isFav(m);
           return `<span class="inline-flex items-center gap-0.5 bg-slate-800 rounded px-1 text-xs text-slate-400">`
-            + `<button class="pv-setmodel text-slate-300 hover:text-[var(--gold)]" data-pid="${esc(p.id)}" data-mid="${esc(m)}" title="Set as active model">${esc(m)}</button>${pillTag}`
+            + `<button class="pv-setmodel text-slate-300 hover:text-[var(--gold)]" data-pid="${esc(p.id)}" data-mid="${esc(m)}" title="Set as active model">${esc(m)}</button>${pillTag}${ctxBadge}`
             + `<button class="pv-fav ${fav ? "text-yellow-400" : "text-slate-600/60"} hover:text-yellow-400 ml-0.5" data-pid="${esc(p.id)}" data-mid="${esc(m)}" title="${fav ? "Unpin" : "Pin to top"}">★</button>`
             + `<button class="pv-cpmodel text-slate-500/60 hover:text-slate-300 ml-0.5" data-mid="${esc(m)}" title="Copy model ID">⎘</button>`
             + `<button class="pv-rmmodel text-red-500/50 hover:text-red-400 ml-0.5" data-pid="${esc(p.id)}" data-mid="${esc(m)}" title="Remove model">×</button></span>`;
@@ -1296,6 +1336,8 @@ $("auto-cheapest").onchange = async () => {
 };
 
 /* ---------------- session budget bar ---------------- */
+let _budgetAlertShownAt = 0; // pct threshold at which alert was last shown (75 or 95)
+
 function _updateBudgetBar(spent, cap) {
   const wrap = $("budget-bar-wrap");
   const fill = $("budget-bar-fill");
@@ -1307,6 +1349,17 @@ function _updateBudgetBar(spent, cap) {
   fill.className = `h-full transition-all ${color}`;
   fill.style.width = `${pct.toFixed(1)}%`;
   fill.title = `$${spent.toFixed(4)} spent / $${cap.toFixed(2)} cap (${Math.round(pct)}%)`;
+  // Budget alert at 75% and 95%
+  const alertEl = $("budget-alert");
+  const alertMsg = $("budget-alert-msg");
+  if (alertEl && alertMsg) {
+    const threshold = pct >= 95 ? 95 : pct >= 75 ? 75 : 0;
+    if (threshold && threshold > _budgetAlertShownAt) {
+      _budgetAlertShownAt = threshold;
+      alertMsg.textContent = `Budget ${Math.round(pct)}% used — $${spent.toFixed(4)} / $${cap.toFixed(2)}`;
+      alertEl.classList.remove("hidden");
+    }
+  }
 }
 
 /* ---------------- cost calculator ---------------- */
