@@ -183,6 +183,10 @@
       <span class="flex-1"></span>
       <span id="hdr-spend" class="text-[var(--gold)]"></span>
     </header>
+    <!-- session budget progress bar -->
+    <div id="budget-bar-wrap" class="hidden owner-only h-1 bg-slate-800/60">
+      <div id="budget-bar-fill" class="h-full bg-green-500 transition-all" style="width:0%" title=""></div>
+    </div>
     <!-- encryption banner: shown when keys are unencrypted or failed to decrypt -->
     <div id="enc-banner" class="hidden owner-only px-4 py-2 text-xs bg-yellow-900/30 border-b border-yellow-700/50 text-yellow-300 flex items-center gap-2">
       <span id="enc-banner-msg"></span>
@@ -217,6 +221,8 @@
     <div class="flex items-center gap-2 mb-3">
       <h2 class="wordmark font-bold flex-1">Models &amp; API keys</h2>
       <button id="btn-clear-errors" class="hidden text-red-400/70 hover:text-red-400 text-xs border border-red-900/40 rounded px-2 py-0.5" title="Clear last_error on all providers">✕ errors</button>
+      <button id="btn-cost-calc" class="text-slate-500 hover:text-slate-300 text-xs border border-slate-700 rounded px-2 py-0.5" title="Estimate cost for given token counts">⊕ calc</button>
+      <button id="btn-compare" class="text-slate-500 hover:text-slate-300 text-xs border border-slate-700 rounded px-2 py-0.5" title="Side-by-side model comparison table">⊞ compare</button>
       <button id="btn-export-config" class="text-slate-500 hover:text-slate-300 text-xs border border-slate-700 rounded px-2 py-0.5" title="Copy config JSON to clipboard (keys excluded)">⎘ export</button>
       <button id="btn-import-config" class="text-slate-500 hover:text-slate-300 text-xs border border-slate-700 rounded px-2 py-0.5" title="Paste exported JSON to restore providers (keys not overwritten)">⤵ import</button>
       <span id="export-msg" class="text-xs text-slate-500"></span>
@@ -244,6 +250,19 @@
       <button id="btn-expand-all" class="text-slate-500 hover:text-slate-300 text-xs border border-slate-700 rounded px-2 py-0.5" title="Expand all">▼▼</button>
     </div>
     <div id="provider-rows" class="space-y-1 mb-4 text-xs"></div>
+    <div id="cost-calc-section" class="hidden border-t border-slate-800 pt-3 mb-3">
+      <div class="flex items-center gap-3 mb-2">
+        <span class="text-slate-400 font-semibold text-xs">Cost estimate</span>
+        <label class="flex items-center gap-1 text-xs text-slate-500">In <input id="calc-in" type="number" class="input rounded px-1 py-0.5 w-20 text-xs" value="1000" min="0"></label>
+        <label class="flex items-center gap-1 text-xs text-slate-500">Out <input id="calc-out" type="number" class="input rounded px-1 py-0.5 w-20 text-xs" value="500" min="0"></label>
+        <span class="text-slate-600 text-xs">tokens</span>
+      </div>
+      <div id="calc-results" class="text-xs space-y-0.5"></div>
+    </div>
+    <div id="compare-section" class="hidden border-t border-slate-800 pt-3 mb-3">
+      <p class="text-slate-400 font-semibold text-xs mb-2">Model comparison</p>
+      <div id="compare-table" class="text-xs"></div>
+    </div>
     <div id="free-models-section" class="border-t border-slate-800 pt-3 mb-4">
       <div class="flex items-center gap-2 mb-2">
         <button id="btn-toggle-free" class="text-slate-500 hover:text-slate-300 text-xs w-4" title="Toggle section">▼</button>

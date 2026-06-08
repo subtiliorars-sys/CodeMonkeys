@@ -9,7 +9,7 @@ const state = {
   token: localStorage.getItem("cm_token") || "",
   username: localStorage.getItem("cm_username") || "",
   role: localStorage.getItem("cm_role") || "",
-  sid: null, after: -1, status: "idle", timer: null, pollMs: 0,
+  sid: null, after: -1, status: "idle", timer: null, pollMs: 0, budget_usd: null,
   files: [], registering: false,
   mode: localStorage.getItem("cm_mode") || "default",
 };
@@ -377,6 +377,10 @@ async function listPasskeys() {
 async function refreshSessions() {
   try {
     const d = await api("/api/sessions");
+    if (state.sid) {
+      const cur = d.sessions.find((s) => s.id === state.sid);
+      if (cur) state.budget_usd = cur.budget_usd || null;
+    }
     $("session-list").innerHTML = d.sessions.map((s) =>
       `<div class="group flex items-center gap-1 rounded px-2 py-1 hover:bg-yellow-900/20 ${s.id === state.sid ? "bg-yellow-900/30" : ""}">
          <span data-sid="${s.id}" class="session-item flex-1 cursor-pointer truncate ${s.id === state.sid ? "text-[var(--gold-bright)]" : "text-slate-300"}">
@@ -583,7 +587,10 @@ async function poll() {
     state.status = d.status;
     $("hdr-dot").className = "dot " + d.status;
     $("hdr-status").textContent = d.status;
-    $("hdr-spend").textContent = `$${d.spent_usd} / session`;
+    $("hdr-spend").textContent = state.budget_usd
+      ? `$${d.spent_usd} / $${state.budget_usd}`
+      : `$${d.spent_usd}`;
+    _updateBudgetBar(d.spent_usd, state.budget_usd);
     const sess = document.querySelector(`[data-sid="${state.sid}"]`);
     $("hdr-title").textContent = sess ? sess.textContent.split("$")[0].trim() : state.sid;
     $("btn-stop").classList.toggle("hidden", d.status === "idle");
@@ -784,6 +791,8 @@ const _pvFavorites = new Set(JSON.parse(localStorage.getItem("cm_pv_favorites") 
 const _pvSaveFavorites = () => localStorage.setItem("cm_pv_favorites", JSON.stringify([..._pvFavorites]));
 // Active provider filter: "" | "free" | "keyed" | "auto"
 let _pvFilter = "";
+// Per-provider health history: { pid: [true, false, ...] } max 5 entries (in-memory, reset on reload)
+const _pvHealth = {};
 
 // Keyboard shortcuts for the models modal
 document.addEventListener("keydown", (e) => {
@@ -798,6 +807,17 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "r") $("btn-or-refresh")?.click();
   if (e.key === "a" && !$("btn-add-all-free")?.classList.contains("hidden")) $("btn-add-all-free")?.click();
 });
+
+function _pvHealthRecord(pid, ok) {
+  if (!_pvHealth[pid]) _pvHealth[pid] = [];
+  _pvHealth[pid].push(ok);
+  if (_pvHealth[pid].length > 5) _pvHealth[pid].shift();
+}
+function _pvHealthDots(pid) {
+  const h = _pvHealth[pid];
+  if (!h || !h.length) return "";
+  return h.map((ok) => `<span class="${ok ? "text-green-500" : "text-red-500"}" title="${ok ? "ok" : "fail"}">●</span>`).join("");
+}
 
 async function loadProviders() {
   const d = await api("/api/models");
@@ -895,6 +915,7 @@ async function loadProviders() {
         <b class="pv-label-edit ${isMain ? "text-[var(--gold-bright)]" : "text-slate-200"}" data-id="${esc(p.id)}"
           title="${p.notes ? esc(p.notes) : "Double-click to rename"}">${esc(p.label)}</b>
         ${allModels.length > 0 ? `<span class="text-slate-600 text-xs">(${allModels.length})</span>` : ""}
+        <span class="text-[.55rem] tracking-tighter flex items-center gap-px">${_pvHealthDots(p.id)}</span>
         <span class="flex-1"></span>
         ${(() => { const t = _tierOf(p.id); return t
           ? `<span class="text-[.6rem] px-1 rounded border ${
@@ -993,13 +1014,14 @@ async function loadProviders() {
         model, models: prov.models, key, notes,
         input_cost_per_m: prov.in, output_cost_per_m: prov.out, auto,
       });
+      _pvHealthRecord(id, true);
       // auto-collapse the row after a successful key save; auto-refresh OR catalog
       if (key) {
         _pvExpanded.delete(id);
         if (id === "openrouter") setTimeout(() => $("btn-or-refresh")?.click(), 400);
       }
       loadProviders();
-    } catch (e) { alert(e.message); }
+    } catch (e) { _pvHealthRecord(id, false); alert(e.message); }
   }));
   // set model as active via pill click
   document.querySelectorAll(".pv-setmodel").forEach((btn) => (btn.onclick = async () => {
@@ -1233,12 +1255,90 @@ async function loadProviders() {
   } else {
     loadFreeModels();
   }
+  // Update calc/compare if visible
+  _renderCostCalc(d.providers);
+  _renderCompareTable(d.providers);
 }
 
 $("auto-cheapest").onchange = async () => {
   await api("/api/models/settings", "POST", { auto_cheapest: $("auto-cheapest").checked });
   loadProviders();
 };
+
+/* ---------------- session budget bar ---------------- */
+function _updateBudgetBar(spent, cap) {
+  const wrap = $("budget-bar-wrap");
+  const fill = $("budget-bar-fill");
+  if (!wrap || !fill) return;
+  if (!cap || cap <= 0) { wrap.classList.add("hidden"); return; }
+  const pct = Math.min(100, (spent / cap) * 100);
+  const color = pct < 50 ? "bg-green-500" : pct < 80 ? "bg-yellow-500" : "bg-red-500";
+  wrap.classList.remove("hidden");
+  fill.className = `h-full transition-all ${color}`;
+  fill.style.width = `${pct.toFixed(1)}%`;
+  fill.title = `$${spent.toFixed(4)} spent / $${cap.toFixed(2)} cap (${Math.round(pct)}%)`;
+}
+
+/* ---------------- cost calculator ---------------- */
+function _renderCostCalc(providers) {
+  const section = $("cost-calc-section");
+  if (!section || section.classList.contains("hidden")) return;
+  const inTok = parseFloat($("calc-in")?.value) || 0;
+  const outTok = parseFloat($("calc-out")?.value) || 0;
+  const rows = providers
+    .filter((p) => p.has_key && p.models && p.models.length > 0)
+    .map((p) => {
+      const cost = (inTok / 1e6) * p.in + (outTok / 1e6) * p.out;
+      return `<div class="flex items-center gap-2 text-xs py-0.5">
+        <span class="text-slate-400 w-28 truncate" title="${esc(p.label)}">${esc(p.label)}</span>
+        <span class="text-slate-500 flex-1 text-[.6rem]">${esc(p.model || p.models[0] || "")}</span>
+        <span class="text-[var(--gold)]">$${cost < 0.0001 ? cost.toExponential(2) : cost.toFixed(5)}</span>
+      </div>`;
+    });
+  $("calc-results").innerHTML = rows.length
+    ? rows.join("")
+    : `<span class="text-slate-600">No keyed providers with models configured.</span>`;
+}
+
+/* ---------------- model comparison table ---------------- */
+function _renderCompareTable(providers) {
+  const section = $("compare-section");
+  if (!section || section.classList.contains("hidden")) return;
+  const rows = [];
+  for (const p of providers) {
+    const cat = p.catalog || {};
+    for (const m of (p.models || [])) {
+      const c = cat[m] || {};
+      rows.push({ provider: p.label, model: m,
+        in: c.in != null ? c.in : p.in,
+        out: c.out != null ? c.out : p.out,
+        ctx: c.context_length || null,
+        free: c.in === 0 && c.out === 0 });
+    }
+  }
+  if (!rows.length) {
+    $("compare-table").innerHTML = `<span class="text-slate-600 text-xs">Add models to providers to compare.</span>`;
+    return;
+  }
+  rows.sort((a, b) => a.out - b.out);
+  $("compare-table").innerHTML =
+    `<table class="w-full text-xs border-collapse"><thead><tr class="text-slate-500 border-b border-slate-800">
+      <th class="text-left py-0.5 pr-2">Provider</th>
+      <th class="text-left py-0.5 pr-2">Model</th>
+      <th class="text-right py-0.5 pr-2">$/M in</th>
+      <th class="text-right py-0.5 pr-2">$/M out</th>
+      <th class="text-right py-0.5">Context</th>
+    </tr></thead><tbody>` +
+    rows.map((r) =>
+      `<tr class="border-b border-slate-800/40 ${r.free ? "text-green-400/80" : "text-slate-300"}">
+        <td class="py-0.5 pr-2 truncate max-w-[6rem]" title="${esc(r.provider)}">${esc(r.provider)}</td>
+        <td class="py-0.5 pr-2 truncate max-w-[12rem]" title="${esc(r.model)}">${esc(r.model)}</td>
+        <td class="py-0.5 pr-2 text-right">${r.in === 0 ? "free" : "$"+r.in}</td>
+        <td class="py-0.5 pr-2 text-right">${r.out === 0 ? "free" : "$"+r.out}</td>
+        <td class="py-0.5 text-right text-slate-500">${r.ctx ? (r.ctx >= 1000 ? Math.round(r.ctx/1000)+"k" : r.ctx) : "—"}</td>
+      </tr>`).join("") +
+    `</tbody></table>`;
+}
 
 /* ---------------- free-model auto-lister (Layer A) ---------------- */
 
@@ -1387,11 +1487,35 @@ $("btn-toggle-free").onclick = () => {
   btn.textContent = hidden ? "▶" : "▼";
 };
 
+$("btn-cost-calc").onclick = () => {
+  const sec = $("cost-calc-section");
+  const visible = sec.classList.toggle("hidden");
+  $("btn-cost-calc").classList.toggle("text-[var(--gold)]", !visible);
+  if (!visible) loadProviders();
+};
+
+$("btn-compare").onclick = () => {
+  const sec = $("compare-section");
+  const visible = sec.classList.toggle("hidden");
+  $("btn-compare").classList.toggle("text-[var(--gold)]", !visible);
+  if (!visible) loadProviders();
+};
+
+// Re-compute cost when token counts change
+["calc-in", "calc-out"].forEach((id) => {
+  const el = $(id);
+  if (el) el.oninput = () => {
+    // Need providers; fetch last data from loadProviders cache or re-call
+    api("/api/models").then((d) => _renderCostCalc(d.providers)).catch(() => {});
+  };
+});
+
 $("btn-or-refresh").onclick = async () => {
   $("free-models-msg").textContent = "refreshing…";
   $("btn-or-refresh").disabled = true;
   try {
     const r = await api("/api/models/openrouter/refresh", "POST", {});
+    _pvHealthRecord("openrouter", true);
     $("free-models-msg").textContent = `✓ ${r.total} models, ${r.free} free`;
     await loadFreeModels();
     // auto-add free if checkbox is ticked
@@ -1401,6 +1525,7 @@ $("btn-or-refresh").onclick = async () => {
       loadProviders();
     }
   } catch (e) {
+    _pvHealthRecord("openrouter", false);
     const msg = e.message || "refresh failed";
     $("free-models-msg").textContent = msg;
     // live countdown in button label for cooldown errors
