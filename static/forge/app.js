@@ -913,6 +913,7 @@ async function loadProviders() {
         <button data-id="${esc(p.id)}" class="pv-del text-red-500/60 hover:text-red-400">remove</button>
       </div>
       ${p.last_error ? `<div class="pl-6 mt-0.5 text-red-400/80 text-xs truncate" title="${esc(p.last_error)}">⚠ ${esc(p.last_error.slice(0, 80))}${p.last_error.length > 80 ? "…" : ""}</div>` : ""}
+      ${p.has_key && allModels.length === 0 ? `<div class="pl-6 mt-0.5 text-yellow-500/80 text-xs">⚠ No models configured — add at least one model to use this provider.</div>` : ""}
       <div class="pv-detail flex items-center gap-2 mt-1 pl-6 ${expanded ? "" : "hidden"}">
         ${manyModels ? `<input type="text" class="pv-filter input rounded px-1 py-0.5 w-28 text-xs" data-id="${esc(p.id)}"
           data-models="${esc(JSON.stringify(sortedModels))}" data-current="${esc(p.model)}"
@@ -941,6 +942,9 @@ async function loadProviders() {
             + `<button class="pv-cpmodel text-slate-500/60 hover:text-slate-300 ml-0.5" data-mid="${esc(m)}" title="Copy model ID">⎘</button>`
             + `<button class="pv-rmmodel text-red-500/50 hover:text-red-400 ml-0.5" data-pid="${esc(p.id)}" data-mid="${esc(m)}" title="Remove model">×</button></span>`;
         }).join("") : ""}
+        ${allModels.length >= 2
+          ? `<button class="pv-cplist text-slate-500/60 hover:text-slate-300 text-xs border border-slate-700/50 rounded px-1.5 py-0.5" data-pid="${esc(p.id)}" data-models="${esc(JSON.stringify(allModels))}" title="Copy all model IDs as newline-separated list">⎘ list</button>`
+          : ""}
         ${Object.keys(cat).length > 0
           ? `<datalist id="dl-${esc(p.id)}">${Object.keys(cat).map((m) =>
               `<option value="${esc(m)}">`).join("")}</datalist>`
@@ -1014,6 +1018,15 @@ async function loadProviders() {
   // copy model ID to clipboard
   document.querySelectorAll(".pv-cpmodel").forEach((btn) => (btn.onclick = () => {
     navigator.clipboard?.writeText(btn.dataset.mid).then(() => {
+      const orig = btn.textContent;
+      btn.textContent = "✓";
+      setTimeout(() => { btn.textContent = orig; }, 1200);
+    });
+  }));
+  // copy all model IDs as newline-separated list
+  document.querySelectorAll(".pv-cplist").forEach((btn) => (btn.onclick = () => {
+    const models = JSON.parse(btn.dataset.models || "[]");
+    navigator.clipboard?.writeText(models.join("\n")).then(() => {
       const orig = btn.textContent;
       btn.textContent = "✓";
       setTimeout(() => { btn.textContent = orig; }, 1200);
@@ -1210,11 +1223,11 @@ async function loadProviders() {
       : "⚙ Models &amp; keys";
   }
   if (orProv) {
+    const catalogEntries = Object.entries(orProv.catalog || {});
     const freeHint = {
-      free: Object.entries(orProv.catalog || {})
-        .filter(([, c]) => c.in === 0 && c.out === 0)
-        .map(([id]) => ({ id })),
+      free: catalogEntries.filter(([, c]) => c.in === 0 && c.out === 0).map(([id]) => ({ id })),
       refreshed_at: orProv.catalog_refreshed_at || null,
+      totalInCatalog: catalogEntries.length,
     };
     loadFreeModels(freeHint);
   } else {
@@ -1246,7 +1259,8 @@ async function loadFreeModels(hint) {
     const age = _catalogAge(r.refreshed_at);
     const stale = r.refreshed_at && (Date.now() / 1000 - r.refreshed_at) > 86400;
     if (age && !$("free-models-msg").textContent.startsWith("✓")) {
-      $("free-models-msg").textContent = stale ? `⚠ catalog ${age}` : `catalog ${age}`;
+      const total = r.totalInCatalog ? ` · ${r.totalInCatalog} total` : "";
+      $("free-models-msg").textContent = stale ? `⚠ catalog ${age}${total}` : `catalog ${age}${total}`;
       if (stale) $("free-models-msg").classList.add("text-yellow-500");
       else $("free-models-msg").classList.remove("text-yellow-500");
     }
@@ -1364,6 +1378,13 @@ $("btn-use-cheapest-free").onclick = async () => {
   } catch (e) {
     $("free-models-msg").textContent = e.message || "failed";
   }
+};
+
+$("btn-toggle-free").onclick = () => {
+  const section = $("free-models-list");
+  const btn = $("btn-toggle-free");
+  const hidden = section.classList.toggle("hidden");
+  btn.textContent = hidden ? "▶" : "▼";
 };
 
 $("btn-or-refresh").onclick = async () => {
