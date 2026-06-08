@@ -167,6 +167,9 @@ TERMINAL_ENABLED = os.environ.get("TERMINAL_ENABLED", "").lower() in ("1", "true
 TERMINAL_EXEC_ENABLED = os.environ.get("TERMINAL_EXEC_ENABLED", "").lower() in ("1", "true", "yes")
 TERMINAL_MAX_CONCURRENT = int(os.environ.get("TERMINAL_MAX_CONCURRENT", "1"))
 TERMINAL_CMD_MAX_CHARS = 8000        # bound a single !cmd before any processing
+# N5: incremental model output streaming.  Default OFF so the non-streaming path
+# is byte-identical to pre-N5 when unset.  Set STREAM_ENABLED=1 to activate.
+STREAM_ENABLED = os.environ.get("STREAM_ENABLED", "").lower() in ("1", "true", "yes")
 # Fleet Deck feed (~/fleet/contracts/fleetdeck-codemonkeys.md): read-only ops
 # metadata for the local fleet dashboard. OFF until the owner sets the
 # FLEET_TOKEN Fly secret — unset/too-weak token = the route isn't registered
@@ -2843,6 +2846,146 @@ def _chat_openai(provider, system, history, tools, max_tokens):
             "out_tokens": usage.get("completion_tokens", 0)}
 
 
+def _chat_openai_stream(provider, system, history, tools, max_tokens, session,
+                        agent_label=None):
+    """Streaming variant of _chat_openai (N5).
+
+    Sends `stream: true` with `stream_options.include_usage: true` so the final
+    SSE chunk still delivers token counts.  Emits `text_delta` events as chunks
+    arrive (already redacted).  Returns the same dict shape as _chat_openai so
+    the caller (agent_loop) needs no structural changes.
+
+    Tool-call deltas are assembled across chunks following the OpenAI SSE spec:
+    each tool-call fragment carries an `index` field; we accumulate per-index
+    and reassemble at the end exactly as the non-streaming path would receive.
+
+    On any error (network, bad HTTP, malformed JSON, missing usage) we raise
+    so the caller's fallback triggers and retries non-streaming.
+    """
+    base_url = str(provider.get("base_url") or "").strip()
+    if not base_url:
+        raise RuntimeError(f"{provider.get('name', '?')}: blank base_url — set the "
+                           "provider endpoint in ⚙ Models")
+    messages = [{"role": "system", "content": system}]
+    for h in history:
+        if h["role"] == "user":
+            messages.append({"role": "user", "content": h["text"]})
+        elif h["role"] == "assistant":
+            msg = {"role": "assistant", "content": h.get("text") or None}
+            if h.get("tool_calls"):
+                msg["tool_calls"] = [
+                    {"id": tc["id"], "type": "function",
+                     "function": {"name": tc["name"], "arguments": json.dumps(tc["args"])}}
+                    for tc in h["tool_calls"]]
+            messages.append(msg)
+        elif h["role"] == "tool":
+            messages.append({"role": "tool", "tool_call_id": h["tool_call_id"],
+                             "content": h["content"]})
+    payload = {
+        "model": provider["model"],
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+    }
+    if tools:
+        payload["tools"] = [{"type": "function", "function":
+                             {"name": t["name"], "description": t["description"],
+                              "parameters": t["parameters"]}} for t in tools]
+    try:
+        r = requests.post(
+            base_url.rstrip("/") + "/chat/completions",
+            headers={"Authorization": f"Bearer {provider['api_key']}",
+                     "Content-Type": "application/json"},
+            json=payload, timeout=300, stream=True)
+    except requests.exceptions.RequestException as e:
+        raise TransientModelError(f"{provider['name']} network error: {e}")
+    if r.status_code in _AUTH_FAIL_STATUS:
+        raise ProviderAuthError(
+            f"{provider['name']} HTTP {r.status_code}: {r.text[:200]}",
+            http_status=r.status_code)
+    if r.status_code in _RETRYABLE_STATUS:
+        retry_after = None
+        try:
+            retry_after = int(getattr(r, "headers", {}).get("Retry-After", ""))
+        except (TypeError, ValueError):
+            pass
+        raise TransientModelError(
+            f"{provider['name']} HTTP {r.status_code}: {r.text[:200]}",
+            http_status=r.status_code, retry_after=retry_after)
+    if r.status_code >= 400:
+        raise RuntimeError(f"{provider['name']} HTTP {r.status_code}: {r.text[:400]}")
+
+    # Parse SSE lines.  Accumulate text and tool-call deltas.
+    text_parts: list[str] = []
+    # tool_call_index → {id, name, args_parts}
+    tc_accum: dict[int, dict] = {}
+    usage: dict = {}
+
+    for raw_line in r.iter_lines():
+        if not raw_line:
+            continue
+        line = raw_line.decode("utf-8") if isinstance(raw_line, bytes) else raw_line
+        if not line.startswith("data:"):
+            continue
+        payload_str = line[5:].strip()
+        if payload_str == "[DONE]":
+            break
+        try:
+            chunk = json.loads(payload_str)
+        except json.JSONDecodeError:
+            continue  # malformed chunk — skip, accumulation continues
+
+        # Usage arrives in the final data chunk when stream_options.include_usage=true
+        if chunk.get("usage"):
+            usage = chunk["usage"]
+
+        choices = chunk.get("choices") or []
+        if not choices:
+            continue
+        delta = choices[0].get("delta") or {}
+
+        # Text delta
+        content = delta.get("content") or ""
+        if content:
+            redacted = _redact(content)
+            text_parts.append(redacted)
+            if session is not None:
+                emit(session, "text_delta", text=redacted, agent=agent_label)
+
+        # Tool-call deltas
+        for tc_delta in delta.get("tool_calls") or []:
+            idx = tc_delta.get("index", 0)
+            if idx not in tc_accum:
+                tc_accum[idx] = {"id": "", "name": "", "args_parts": []}
+            entry = tc_accum[idx]
+            if tc_delta.get("id"):
+                entry["id"] += tc_delta["id"]
+            fn = tc_delta.get("function") or {}
+            if fn.get("name"):
+                entry["name"] += fn["name"]
+            if fn.get("arguments"):
+                entry["args_parts"].append(fn["arguments"])
+
+    # Assemble final text (already redacted per-chunk above)
+    full_text = "".join(text_parts)
+
+    # Assemble tool calls
+    tool_calls = []
+    for idx in sorted(tc_accum):
+        entry = tc_accum[idx]
+        args_str = "".join(entry["args_parts"])
+        try:
+            args = json.loads(args_str) if args_str else {}
+        except json.JSONDecodeError:
+            args = {}
+        tool_calls.append({"id": entry["id"], "name": entry["name"], "args": args})
+
+    return {"text": full_text, "tool_calls": tool_calls,
+            "in_tokens": usage.get("prompt_tokens", 0),
+            "out_tokens": usage.get("completion_tokens", 0)}
+
+
 def _chat_anthropic(provider, system, history, tools, max_tokens):
     if anthropic_sdk is None:
         raise RuntimeError("anthropic SDK not installed")
@@ -2953,7 +3096,8 @@ def _cooldown_snapshot(*, _now=None) -> dict[str, float]:
 # -------------------------------------------------------------------------
 
 
-def _call_provider(provider, system, history, tools, max_tokens):
+def _call_provider(provider, system, history, tools, max_tokens,
+                   session=None, agent_label=None):
     if provider["kind"] == "anthropic":
         try:
             return _chat_anthropic(provider, system, history, tools, max_tokens)
@@ -2974,23 +3118,37 @@ def _call_provider(provider, system, history, tools, max_tokens):
                 raise TransientModelError(
                     str(e), http_status=status, retry_after=retry_after)
             raise
+    # N5: OpenAI-compatible streaming (opt-in; fallback to non-streaming on error).
+    if STREAM_ENABLED and session is not None:
+        try:
+            return _chat_openai_stream(provider, system, history, tools, max_tokens,
+                                       session, agent_label)
+        except Exception as _stream_err:
+            _log.warning("streaming failed (%s), falling back to non-streaming",
+                         _stream_err)
     return _chat_openai(provider, system, history, tools, max_tokens)
 
 
-def call_model(provider, system, history, tools, max_tokens=8192):
+def call_model(provider, system, history, tools, max_tokens=8192,
+               session=None, agent_label=None):
     """Call the provider, retrying transient failures (429/5xx/network) with a
     bounded fixed backoff. Non-transient errors (bad key, 400) raise immediately.
 
     On auth failure the provider is benched for _COOLDOWN_AUTH_S.  On
     exhausted transient retries the provider is benched for _COOLDOWN_TRANSIENT_S
     (or longer if Retry-After on the final 429 says so).
+
+    N5: pass session + agent_label to enable streaming on OpenAI-compatible paths
+    when STREAM_ENABLED is set.  Callers that don't pass these get the original
+    non-streaming behaviour unchanged.
     """
     pid = provider.get("pid")
     last = None
     try:
         for attempt in range(_MODEL_RETRIES):
             try:
-                return _call_provider(provider, system, history, tools, max_tokens)
+                return _call_provider(provider, system, history, tools, max_tokens,
+                                      session=session, agent_label=agent_label)
             except TransientModelError as e:
                 last = e
                 if attempt < _MODEL_RETRIES - 1:
@@ -4250,7 +4408,9 @@ def agent_loop(session, provider, system, history, tool_names, max_turns,
             _set_outcome("budget")
             break
         try:
-            resp = call_model(provider, system, history, tools)
+            # N5: pass session+agent_label so streaming can emit text_delta events.
+            resp = call_model(provider, system, history, tools,
+                              session=session, agent_label=agent_label)
         except Exception as e:
             # Escalation-on-failure: try one tier up before giving up. The cost
             # governor picks cheapest-first; a persistently-failing cheap
@@ -4261,7 +4421,8 @@ def agent_loop(session, provider, system, history, tool_names, max_turns,
                      message=f"Model call failed ({e}); escalating to "
                              f"{escalated['model']}")
                 try:
-                    resp = call_model(escalated, system, history, tools)
+                    resp = call_model(escalated, system, history, tools,
+                                      session=session, agent_label=agent_label)
                     provider = escalated      # stick with the working tier
                 except Exception as e2:
                     emit(session, "error", agent=agent_label,
