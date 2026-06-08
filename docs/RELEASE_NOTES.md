@@ -16,27 +16,25 @@ deployed** — deploys are manual (`fly deploy`), your call.
 - **#47** encrypt `session_secret.key` at rest (off until `CM_MASTER_KEY` set) — twice red-teamed.
 - **#48** recovery: `CM_MASTER_KEY_RESET` break-glass + `docs/RECOVERY.md`.
 
-## Open PR stack — awaiting your merge (build→PR only; none merged while you were away)
+## ✅ Shipped + DEPLOYED (v15): the N-backlog Wave 1+2 + S4-A
+PRs #49–#56 (N1 failover, N2 daily cap, N3 cost dashboard, N4 diff preview, N7
+plan→execute, N10 `/readyz`, N11 audit viewer) merged + deployed v15, smoke-green.
+
+## Open PR stack — awaiting your merge (build→PR only; owner away)
 | PR | What | Risk / review |
 |----|------|---------------|
-| #49 | N10 readiness probe `/readyz` | ops, no secrets |
-| #50 | N4 unified diff preview for file writes | display-only |
-| #51 | N2 daily spend cap (across sessions) | red-teamed GO-WITH-FIXES → fixed |
-| #52 | N1 provider failover + cooldown | red-teamed GO-WITH-FIXES → fixed (debate-verify still fails closed) |
-| #53 | N3 cost dashboard (by-day/by-model) | display-only |
-| #54 | N11 owner audit-log viewer | red-teamed **GO** (stricter than existing endpoints) |
-| #55 | N7 plan→execute handoff | jail verified |
+| #58 | S4-B extend: encrypt `model_config.json`+`mcp_tokens.json` at rest (FAIL-SOFT) + evict `GITHUB_TOKEN` + UI banner | red-teamed **NO-GO→fixed→GO**; data-loss clobber fixed + R3 footguns hardened (ciphertext `.bak`) |
+| #59 | N9 tool-error-repeat guard (nudge + abort on stuck loops) | low-risk (no security boundary) |
+| #60 | N6 session-resume (survive Fly scale-to-zero/deploy mid-run) | low-risk (session lifecycle) |
 
-### Tested merge order (integration-checked 2026-06-07)
-Merge in this order — the first **5 apply cleanly**, the last **2 need a trivial
-`server.py` conflict resolution** (adjacent additions to the single file — keep
-both sides):
-1. #49 → 2. #50 → 3. #53 → 4. #54 → 5. #51  *(clean)*
-6. **#55** — minor `server.py` conflict (adjacent endpoint insertions), keep both
-7. **#52** — minor `server.py` conflict (provider/agent_loop region vs #51), keep both
+### Tested merge order (integration-checked 2026-06-07 ~22:50 UTC)
+**All three merge CLEANLY in this order — no conflicts — integrated suite 535 green:**
+1. **#58** (S4-B encrypt+evict) → 2. **#59** (N9 guard) → 3. **#60** (N6 resume)
 
-After merging, run `./.venv/bin/python -m pytest tests/ -q` to confirm green.
-(Each PR is green on its own branch; the conflicts are textual adjacency, not logic.)
+After merging, run `./.venv/bin/python -m pytest tests/ -q` (expect ~535) and
+`fly deploy --app codemonkeys --remote-only`. #58 is INERT until you set
+`CM_MASTER_KEY` (then model keys/mcp tokens encrypt too; see Scenario E + the
+`.undecryptable.bak` safety net in this file).
 
 ## Owner action items (when you're ready)
 - **Merge** the stack above (no deploy happens from merging).
