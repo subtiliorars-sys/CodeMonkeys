@@ -136,13 +136,73 @@ Do this once, when you're ready to turn on at-rest encryption:
 
 ---
 
+---
+
+## Scenario E — Banner says "could not decrypt saved model API keys"
+
+**Symptom:** a yellow warning banner appears at the top of the console after login
+(Owner only). It says something like "Could not decrypt saved model API keys — re-enter
+your keys in ⚙ Settings."
+
+**Cause:** `CM_MASTER_KEY` was changed or removed since the model API keys were last
+saved, so the app can't read the encrypted `model_config.json`.
+
+**What's NOT broken:** your login, logins for invited developers, existing sessions,
+and the app itself — everything still works; you just have to re-enter your API keys.
+This is by design: model keys are re-enterable; the sign-in secret (Scenario A) is not.
+
+**Best fix first — you might not need to re-enter anything:** if you still have the
+old `CM_MASTER_KEY`, just put it back (Scenario A, Fix 1) and your saved keys come
+right back. The app also auto-protects you: while it can't decrypt, the original
+encrypted file is preserved as `model_config.json.undecryptable.bak` (and likewise
+for `mcp_tokens.json`) before any save — so even an accidental Settings change can't
+permanently lose your keys. Restore the old key and they're recoverable.
+
+**Fix:**
+1. Open the console → ⚙ Settings → **Models & keys**.
+2. Re-enter each API key (Anthropic, OpenAI, etc.) and save.
+3. The banner disappears automatically.
+
+That's it. No redeploy needed. If you also set the correct `CM_MASTER_KEY` first, the
+keys will be saved encrypted going forward — no more banner.
+
+---
+
+## Scenario F — Banner says "model API keys are stored unencrypted"
+
+**Symptom:** a yellow warning banner (Owner only) says "Model API keys are stored
+unencrypted."
+
+**Cause:** `CM_MASTER_KEY` has never been set, so `model_config.json` and
+`mcp_tokens.json` on disk are plain JSON (no at-rest encryption).
+
+**This is not an emergency** — the app works fine. But if your Fly volume were ever
+exposed, a reader could see your API keys in plain text.
+
+**Fix (one owner step):**
+1. Generate a key: `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`
+2. **Save it in your password manager.**
+3. Set it: Fly dashboard → app `codemonkeys` → Secrets → add `CM_MASTER_KEY` = that
+   value (or `fly secrets set CM_MASTER_KEY="<value>" -a codemonkeys`). It redeploys.
+4. On the next boot the app automatically encrypts the existing files — no action needed.
+5. The banner disappears.
+
+> **Note:** `CM_MASTER_KEY` protects both the sign-in secret (Scenario A) AND the model
+> API keys / MCP tokens (Scenarios E/F). One key covers everything.
+
+---
+
 ## Where everything lives (for you or the AI)
 - App: **`codemonkeys`** on Fly · dashboard: https://fly.io/apps/codemonkeys
 - Data volume: **`cm_data`** → **`/data`** (survives deploys/restarts):
   - `/data/users.json` — accounts (PIN hashes, 2FA)
   - `/data/session_secret.key` — the login-token signing secret (encrypted if
-    `CM_MASTER_KEY` is set)
-  - `/data/model_config.json` — your model API keys
+    `CM_MASTER_KEY` is set); **FAIL-CLOSED** — wrong key = app won't start (Scenario A)
+  - `/data/model_config.json` — your model API keys (encrypted if `CM_MASTER_KEY` is
+    set); **FAIL-SOFT** — wrong/missing key = empty config + banner (Scenarios E/F),
+    app keeps running
+  - `/data/mcp_tokens.json` — MCP OAuth tokens (encrypted if `CM_MASTER_KEY` is set);
+    same fail-soft behaviour as model_config
 - Recovery script: `scripts/reset_access.py` (run via `fly ssh console`)
 - Deeper context: `SECURITY.md`, `docs/STATE.md`
 

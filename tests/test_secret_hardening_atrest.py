@@ -322,16 +322,16 @@ def test_eviction_removes_webhook_secret():
     )
 
 
-def test_eviction_preserves_github_token():
-    """GITHUB_TOKEN must NOT be in _SECRET_ENV_EVICT — git subprocesses need it."""
+def test_eviction_removes_github_token():
+    """GITHUB_TOKEN is now in _SECRET_ENV_EVICT (S4-B extend). _auth_url() uses
+    the GITHUB_TOKEN_VAL module constant instead of os.environ at call time."""
     token_val = "github_pat_EVICTION_TEST_TOKEN_xyz123"
     os.environ["GITHUB_TOKEN"] = token_val
     server._evict_env_secrets()
-    assert os.environ.get("GITHUB_TOKEN") == token_val, (
-        "GITHUB_TOKEN must survive _evict_env_secrets() — git auth depends on it"
+    assert os.environ.get("GITHUB_TOKEN") is None, (
+        "GITHUB_TOKEN must be evicted by _evict_env_secrets() — "
+        "_auth_url() now uses the GITHUB_TOKEN_VAL module constant"
     )
-    # Restore for other tests
-    os.environ.pop("GITHUB_TOKEN", None)
 
 
 def test_eviction_preserves_path_and_home():
@@ -348,9 +348,10 @@ def test_cm_master_key_in_evict_set():
     assert "CM_MASTER_KEY" in server._SECRET_ENV_EVICT
 
 
-def test_github_token_not_in_evict_set():
-    """GITHUB_TOKEN must NOT be in _SECRET_ENV_EVICT (intentionally preserved)."""
-    assert "GITHUB_TOKEN" not in server._SECRET_ENV_EVICT
+def test_github_token_in_evict_set():
+    """GITHUB_TOKEN must be in _SECRET_ENV_EVICT (S4-B extend).
+    _auth_url() uses the GITHUB_TOKEN_VAL constant, so eviction is safe."""
+    assert "GITHUB_TOKEN" in server._SECRET_ENV_EVICT
 
 
 def test_cm_master_key_module_constant_is_string():

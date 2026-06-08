@@ -180,6 +180,11 @@
       <span class="flex-1"></span>
       <span id="hdr-spend" class="text-[var(--gold)]"></span>
     </header>
+    <!-- encryption banner: shown when keys are unencrypted or failed to decrypt -->
+    <div id="enc-banner" class="hidden owner-only px-4 py-2 text-xs bg-yellow-900/30 border-b border-yellow-700/50 text-yellow-300 flex items-center gap-2">
+      <span id="enc-banner-msg"></span>
+      <button id="enc-banner-close" class="ml-auto text-yellow-500 hover:text-yellow-200">✕</button>
+    </div>
     <div id="stream" class="flex-1 overflow-y-auto px-4 py-3 space-y-2 text-sm"></div>
     <div id="composer" class="border-t border-yellow-900/40 p-3">
       <div class="flex items-center gap-2 mb-1 text-xs">
