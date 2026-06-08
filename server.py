@@ -6403,6 +6403,16 @@ def audit_page():
     )
 
 
+@app.get("/swarm")
+def swarm_viz_page():
+    """Phase-1 Colony swarm visualizer — no auth required (demo-safe static canvas page).
+    Live-mode polling inside the page still calls /api/swarm/state which is auth-gated."""
+    return FileResponse(
+        os.path.join(BASE_DIR, "static", "forge", "swarm_viz.html"),
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
 # ----------------------------------------------------------------- repos
 
 class RepoClone(BaseModel):

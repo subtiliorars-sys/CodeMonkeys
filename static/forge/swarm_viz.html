@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CodeMonkeys — Colony</title>
+<link rel="stylesheet" href="/static/forge/tailwind.css">
+<style>
+  :root {
+    --gold: #d4af37; --gold-bright: #f0c75e; --gold-dark: #a67c12;
+    --bg: #050507; --cyan: #22d3ee; --cyan-soft: #a5f3fc;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden;
+    background: var(--bg);
+    font-family: ui-monospace, "Cascadia Code", "Source Code Pro", monospace;
+    color: #e2e8f0; }
+
+  /* ── canvas stack ── */
+  #viz-container {
+    position: fixed; inset: 0;
+  }
+  #bg-canvas, #agent-canvas {
+    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+    display: block;
+    image-rendering: pixelated;
+  }
+  #bg-canvas    { z-index: 1; }
+  #agent-canvas { z-index: 2; pointer-events: none; }
+
+  /* CRT scanlines overlay */
+  #viz-container::after {
+    content: ""; pointer-events: none; position: absolute; inset: 0; z-index: 3;
+    background: repeating-linear-gradient(0deg,rgba(0,0,0,.14) 0 1px,transparent 1px 3px);
+    opacity: .5;
+  }
+
+  /* ── top bar ── */
+  #top-bar {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 10;
+    height: 40px;
+    display: flex; align-items: center; gap: 10px;
+    padding: 0 14px;
+    background: rgba(5,5,7,0.82);
+    border-bottom: 1px solid rgba(212,175,55,0.28);
+    backdrop-filter: blur(4px);
+  }
+  .wordmark { color: var(--gold); letter-spacing: .08em; font-weight: 700; font-size: .9rem; }
+  #back-link { color: #64748b; font-size: .75rem; text-decoration: none; margin-right: 4px; }
+  #back-link:hover { color: var(--gold); }
+  .spacer { flex: 1; }
+  #mode-btn {
+    font-size: .7rem; padding: 3px 10px; border-radius: 4px;
+    border: 1px solid rgba(212,175,55,0.4); color: var(--gold-bright);
+    background: rgba(212,175,55,0.07); cursor: pointer; white-space: nowrap;
+  }
+  #mode-btn:hover { background: rgba(212,175,55,0.15); }
+
+  /* ── HUD panel (top-right) ── */
+  #hud-panel {
+    position: fixed; top: 50px; right: 14px; z-index: 10;
+    width: 180px;
+    background: rgba(5,5,7,0.80);
+    border: 1px solid rgba(212,175,55,0.3);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: .72rem;
+    backdrop-filter: blur(4px);
+  }
+  .hud-row { display: flex; justify-content: space-between; margin-bottom: 5px; }
+  .hud-label { color: #475569; text-transform: uppercase; font-size: .62rem; letter-spacing: .06em; }
+  .hud-val   { color: var(--gold-bright); font-weight: 700; }
+  #hud-model { color: #a5f3fc; word-break: break-all; margin-top: 2px; font-size: .68rem; }
+  .hud-divider { border-top: 1px solid rgba(212,175,55,0.12); margin: 6px 0; }
+
+  /* ── active agent badge ── */
+  #active-badge {
+    display: inline-flex; align-items: center; gap: 5px;
+    background: rgba(34,211,238,0.10); border: 1px solid rgba(34,211,238,0.25);
+    border-radius: 12px; padding: 2px 9px; font-size: .68rem; color: #a5f3fc;
+  }
+  .dot-live {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #22c55e; animation: blink 1.2s ease-in-out infinite; flex-shrink: 0;
+  }
+  @keyframes blink { 50% { opacity: .3; } }
+
+  /* ── demo notice strip ── */
+  #demo-notice {
+    position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); z-index: 10;
+    background: rgba(5,5,7,0.80); border: 1px solid rgba(212,175,55,0.3);
+    border-radius: 6px; padding: 5px 14px; font-size: .68rem; color: #64748b;
+    backdrop-filter: blur(4px); white-space: nowrap;
+  }
+  #demo-notice.live-mode { color: var(--cyan-soft); border-color: rgba(34,211,238,0.35); }
+</style>
+</head>
+<body>
+
+<!-- canvas stack -->
+<div id="viz-container">
+  <canvas id="bg-canvas"></canvas>
+  <canvas id="agent-canvas"></canvas>
+</div>
+
+<!-- top bar -->
+<div id="top-bar">
+  <a id="back-link" href="/">&#8592; console</a>
+  <span style="font-size:1.1rem">&#x1F412;</span>
+  <span class="wordmark">CodeMonkeys</span>
+  <span style="font-size:.72rem;color:#475569;margin-left:2px">/ Colony</span>
+  <span class="spacer"></span>
+  <div id="active-badge">
+    <span class="dot-live"></span>
+    <span id="active-count">0</span>&nbsp;active
+  </div>
+  <button id="mode-btn">demo mode</button>
+</div>
+
+<!-- HUD panel -->
+<div id="hud-panel">
+  <div class="hud-row">
+    <span class="hud-label">Active agents</span>
+    <span class="hud-val" id="hud-active">0</span>
+  </div>
+  <div class="hud-row">
+    <span class="hud-label">Tasks done</span>
+    <span class="hud-val" id="hud-done">0</span>
+  </div>
+  <div class="hud-divider"></div>
+  <div class="hud-label">Model</div>
+  <div id="hud-model">&#8212;</div>
+</div>
+
+<!-- demo notice -->
+<div id="demo-notice">demo mode &#8212; mock colony data</div>
+
+<script type="module">
+import { initSwarmViz, setSwarmState } from "/static/forge/swarm-viz.js";
+
+// ── Mock dataset: 6 agents that cycle through states ──────────────────────
+const MOCK_AGENTS = [
+  { id: "recon-1",    label: "recon-scout",   state: "RUNNING",  progress: 0.6 },
+  { id: "eng-1",      label: "field-eng",     state: "THINKING", progress: 0   },
+  { id: "qa-1",       label: "provost-qa",    state: "IDLE",     progress: 0   },
+  { id: "redteam-1",  label: "red-team",      state: "RUNNING",  progress: 0.3 },
+  { id: "scribe-1",   label: "scribe",        state: "DONE",     progress: 1   },
+  { id: "planner-1",  label: "staff-planner", state: "BLOCKED",  progress: 0   },
+];
+
+const STATE_CYCLE = ["THINKING","RUNNING","RUNNING","BLOCKED","RUNNING","DONE","IDLE","THINKING"];
+const _agentNextTick = {};
+
+function _advanceDemoState(agents) {
+  const now = Date.now();
+  return agents.map(a => {
+    if (!_agentNextTick[a.id]) {
+      // Stagger initial tick so not all agents transition at the same time
+      _agentNextTick[a.id] = now + Math.random() * 6000;
+    }
+    const next = Object.assign({}, a);
+    if (now > _agentNextTick[a.id]) {
+      const idx = STATE_CYCLE.indexOf(a.state);
+      next.state = STATE_CYCLE[(idx + 1) % STATE_CYCLE.length] || "THINKING";
+      next.progress = next.state === "RUNNING" ? Math.random() * 0.4 : 0;
+      _agentNextTick[a.id] = now + 2500 + Math.random() * 4000;
+    } else if (a.state === "RUNNING") {
+      next.progress = Math.min(1, (a.progress || 0) + 0.006);
+    }
+    return next;
+  });
+}
+
+// ── HUD updater ───────────────────────────────────────────────────────────
+function _updateHUD(agents, modelLabel) {
+  const active = agents.filter(a => a.state !== "DONE" && a.state !== "IDLE").length;
+  const done   = agents.filter(a => a.state === "DONE").length;
+  document.getElementById("hud-active").textContent   = active;
+  document.getElementById("hud-done").textContent     = done;
+  document.getElementById("active-count").textContent = active;
+  if (modelLabel) document.getElementById("hud-model").textContent = modelLabel;
+}
+
+// ── Live-mode polling ─────────────────────────────────────────────────────
+let _liveInterval = null;
+
+async function _fetchLiveState() {
+  const token = localStorage.getItem("cm_token") || "";
+  try {
+    const r = await fetch("/api/swarm/state", {
+      headers: { Authorization: "Bearer " + token }
+    });
+    if (!r.ok) return;
+    const data = await r.json();
+    const agents = (data.agents || []).map(a => ({
+      id:       a.id || a.name || "unknown",
+      label:    (a.name || a.id || "agent").slice(0, 14),
+      state:    a.status === "running" ? "RUNNING"
+              : a.status === "done"    ? "DONE"
+              : a.status === "blocked" ? "BLOCKED"
+              : "IDLE",
+      progress: 0,
+    }));
+    window.__swarmState = agents;
+    const stats = data.stats || {};
+    _updateHUD(agents, stats.model || null);
+  } catch (_) { /* network error — keep showing last state */ }
+}
+
+// ── Demo ticker ───────────────────────────────────────────────────────────
+let _mockCurrent = MOCK_AGENTS.map(a => Object.assign({}, a));
+let _demoInterval = null;
+let _isDemo = true;
+
+function _demoTick() {
+  _mockCurrent = _advanceDemoState(_mockCurrent);
+  window.__swarmState = _mockCurrent;
+  _updateHUD(_mockCurrent, "claude-sonnet-4-6 (demo)");
+}
+
+function startDemo() {
+  _isDemo = true;
+  if (_liveInterval) { clearInterval(_liveInterval); _liveInterval = null; }
+  window.__swarmState = _mockCurrent;
+  _demoInterval = setInterval(_demoTick, 600);
+  const notice = document.getElementById("demo-notice");
+  notice.textContent = "demo mode — mock colony data";
+  notice.classList.remove("live-mode");
+  document.getElementById("mode-btn").textContent = "demo mode";
+  _updateHUD(_mockCurrent, "claude-sonnet-4-6 (demo)");
+}
+
+function startLive() {
+  _isDemo = false;
+  if (_demoInterval) { clearInterval(_demoInterval); _demoInterval = null; }
+  _fetchLiveState();
+  _liveInterval = setInterval(_fetchLiveState, 2000);
+  const notice = document.getElementById("demo-notice");
+  notice.textContent = "live mode — polling /api/swarm/state";
+  notice.classList.add("live-mode");
+  document.getElementById("mode-btn").textContent = "live mode";
+}
+
+document.getElementById("mode-btn").addEventListener("click", () => {
+  if (_isDemo) startLive(); else startDemo();
+});
+
+// ── Boot ──────────────────────────────────────────────────────────────────
+initSwarmViz("bg-canvas", "agent-canvas");
+startDemo();
+</script>
+</body>
+</html>
