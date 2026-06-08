@@ -935,13 +935,18 @@ async function loadProviders() {
                 : `<span class="text-slate-500 text-[.6rem]">$${mc.out}/M</span>`)
             : "";
           const fav = _isFav(m);
-          return `<span class="inline-flex items-center gap-0.5 bg-slate-800 rounded px-1 text-xs text-slate-400">${esc(m)}${pillTag}`
+          return `<span class="inline-flex items-center gap-0.5 bg-slate-800 rounded px-1 text-xs text-slate-400">`
+            + `<button class="pv-setmodel text-slate-300 hover:text-[var(--gold)]" data-pid="${esc(p.id)}" data-mid="${esc(m)}" title="Set as active model">${esc(m)}</button>${pillTag}`
             + `<button class="pv-fav ${fav ? "text-yellow-400" : "text-slate-600/60"} hover:text-yellow-400 ml-0.5" data-pid="${esc(p.id)}" data-mid="${esc(m)}" title="${fav ? "Unpin" : "Pin to top"}">★</button>`
             + `<button class="pv-cpmodel text-slate-500/60 hover:text-slate-300 ml-0.5" data-mid="${esc(m)}" title="Copy model ID">⎘</button>`
             + `<button class="pv-rmmodel text-red-500/50 hover:text-red-400 ml-0.5" data-pid="${esc(p.id)}" data-mid="${esc(m)}" title="Remove model">×</button></span>`;
         }).join("") : ""}
+        ${Object.keys(cat).length > 0
+          ? `<datalist id="dl-${esc(p.id)}">${Object.keys(cat).map((m) =>
+              `<option value="${esc(m)}">`).join("")}</datalist>`
+          : ""}
         <input type="text" class="pv-addmodel input rounded px-1 py-0.5 text-xs w-44" data-id="${esc(p.id)}"
-          placeholder="+ add model id…">
+          placeholder="+ add model id…" ${Object.keys(cat).length > 0 ? `list="dl-${esc(p.id)}"` : ""}>
         <button class="pv-addmodel-btn text-slate-500 hover:text-[var(--gold)] text-xs border border-slate-700 rounded px-2 py-0.5" data-id="${esc(p.id)}">add</button>
         <span class="pv-addmodel-msg text-xs text-slate-600" data-id="${esc(p.id)}"></span>
       </div>
@@ -989,6 +994,20 @@ async function loadProviders() {
         _pvExpanded.delete(id);
         if (id === "openrouter") setTimeout(() => $("btn-or-refresh")?.click(), 400);
       }
+      loadProviders();
+    } catch (e) { alert(e.message); }
+  }));
+  // set model as active via pill click
+  document.querySelectorAll(".pv-setmodel").forEach((btn) => (btn.onclick = async () => {
+    const { pid, mid } = btn.dataset;
+    const prov = d.providers.find((x) => x.id === pid);
+    if (!prov) return;
+    try {
+      await api("/api/models", "POST", {
+        id: prov.id, label: prov.label, kind: prov.kind, base_url: prov.base_url,
+        model: mid, models: prov.models, key: "", notes: prov.notes || "",
+        input_cost_per_m: prov.in, output_cost_per_m: prov.out, auto: prov.auto,
+      });
       loadProviders();
     } catch (e) { alert(e.message); }
   }));
@@ -1148,6 +1167,23 @@ async function loadProviders() {
   _dupWarn.textContent = _dupes.length
     ? `⚠ Duplicate model IDs across providers: ${_dupes.slice(0, 3).join(", ")}${_dupes.length > 3 ? " …" : ""}`
     : "";
+
+  // Show/hide "✕ clear errors" button based on whether any provider has an error
+  const hasErrors = d.providers.some((p) => p.last_error);
+  const btnClearErr = $("btn-clear-errors");
+  if (btnClearErr) btnClearErr.classList.toggle("hidden", !hasErrors);
+
+  // Auto-cheapest preview: show which provider+model would actually be called
+  const acPreview = $("ac-preview");
+  if (acPreview) {
+    if (d.auto_cheapest) {
+      const t0 = d.providers.filter((p) => p.has_key && p.auto).sort((a, b) => a.out - b.out)[0];
+      acPreview.textContent = t0 ? `→ would call: ${t0.label} · ${t0.model || "(no model set)"}` : "→ no keyed auto-providers";
+      acPreview.className = "text-xs text-slate-500 ml-2";
+    } else {
+      acPreview.textContent = "";
+    }
+  }
 
   // Populate bulk-add provider selector
   const bulkPid = $("bulk-add-pid");
@@ -1376,6 +1412,17 @@ $("btn-add-all-free").onclick = async () => {
     $("free-models-msg").textContent = e.message || "add failed";
   } finally {
     $("btn-add-all-free").disabled = false;
+  }
+};
+
+$("btn-clear-errors").onclick = async () => {
+  try {
+    const r = await api("/api/models/clear_errors", "POST", {});
+    $("export-msg").textContent = `✓ cleared ${r.cleared} error${r.cleared !== 1 ? "s" : ""}`;
+    setTimeout(() => { $("export-msg").textContent = ""; }, 2000);
+    loadProviders();
+  } catch (e) {
+    $("export-msg").textContent = e.message || "clear failed";
   }
 };
 

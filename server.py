@@ -1931,6 +1931,20 @@ def models_import(payload: ImportPayload, _: str = Depends(verify_owner)):
     return {"ok": True, "imported": imported, "skipped": skipped}
 
 
+@app.post("/api/models/clear_errors")
+def models_clear_errors(_: str = Depends(verify_owner)):
+    """Remove last_error and last_error_at from every provider."""
+    cfg = load_models()
+    cleared = 0
+    for prov in cfg["providers"].values():
+        if "last_error" in prov or "last_error_at" in prov:
+            prov.pop("last_error", None)
+            prov.pop("last_error_at", None)
+            cleared += 1
+    save_models(cfg)
+    return {"ok": True, "cleared": cleared}
+
+
 @app.get("/api/models/openrouter/free")
 def models_openrouter_free(_: str = Depends(verify_owner)):
     """Return the zero-cost models from the cached OpenRouter catalog."""

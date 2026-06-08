@@ -672,3 +672,43 @@ def test_import_skips_invalid_entries():
 def test_import_requires_owner():
     r = client.post("/api/models/import", json={"providers": []})
     assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# Clear errors
+# ---------------------------------------------------------------------------
+
+def test_clear_errors_removes_last_error_fields():
+    """POST /api/models/clear_errors wipes last_error + last_error_at from all providers."""
+    cfg = server.load_models()
+    cfg["providers"]["openrouter"]["last_error"] = "bad"
+    cfg["providers"]["openrouter"]["last_error_at"] = 1
+    server.save_models(cfg)
+    _override_owner()
+    try:
+        r = client.post("/api/models/clear_errors")
+        assert r.json()["cleared"] >= 1
+        prov = server.load_models()["providers"]["openrouter"]
+        assert "last_error" not in prov
+        assert "last_error_at" not in prov
+    finally:
+        _remove_override()
+
+
+def test_clear_errors_noop_when_no_errors():
+    """clear_errors returns cleared=0 when no providers have errors."""
+    cfg = server.load_models()
+    cfg["providers"]["openrouter"].pop("last_error", None)
+    cfg["providers"]["openrouter"].pop("last_error_at", None)
+    server.save_models(cfg)
+    _override_owner()
+    try:
+        r = client.post("/api/models/clear_errors")
+        assert r.json()["cleared"] == 0
+    finally:
+        _remove_override()
+
+
+def test_clear_errors_requires_owner():
+    r = client.post("/api/models/clear_errors")
+    assert r.status_code == 401
