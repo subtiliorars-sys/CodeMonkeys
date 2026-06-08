@@ -111,6 +111,12 @@ LOGIN_GLOBAL_MAX_FAILS = int(os.environ.get("LOGIN_GLOBAL_MAX_FAILS", "200"))
 # and in-window counters SURVIVE A RESTART (the pre-#13 in-memory tracker was
 # fail-open on restart). Lives under DATA_DIR like users.json / mcp_tokens.json.
 LOGIN_THROTTLE_FILE = os.path.join(DATA_DIR, "login_throttle.json")
+# M-7 real erasure (constitution invariant, OWNER-RATIFIED Option A). When an
+# account is erased we hard-delete every per-user store, write a TOMBSTONE so the
+# id can never be reactivated/re-registered into residue, and append an
+# owner-auditable erasure RECEIPT. Both live under DATA_DIR (/data) like users.json.
+ERASED_FILE = os.path.join(DATA_DIR, "erased_accounts.json")          # tombstone
+ERASURE_RECEIPTS_FILE = os.path.join(DATA_DIR, "erasure_receipts.jsonl")  # receipts
 SESSION_BUDGET_USD = float(os.environ.get("SESSION_BUDGET_USD", "1.00"))
 # Ceiling for a per-session budget override (W10) — a client can't set a runaway cap.
 SESSION_BUDGET_MAX_USD = float(os.environ.get("SESSION_BUDGET_MAX_USD", "50.00"))
@@ -386,6 +392,7 @@ def _startup_warm_mcp():
 # ----------------------------------------------------------------- storage
 
 _USERS_LOCK = threading.Lock()
+_ERASED_LOCK = threading.Lock()   # M-7: serialize tombstone + receipt writes
 _MODELS_LOCK = threading.Lock()
 _MCP_LOCK = threading.Lock()
 _SESSIONS_LOCK = threading.Lock()
@@ -856,6 +863,8 @@ def register(req: RegisterRequest):
     if len(req.pin) < 4:
         raise HTTPException(400, "PIN must be at least 4 digits")
     with _USERS_LOCK:
+        if _is_erased(username):                  # M-7 tombstone guard (in-lock: races erasure)
+            raise HTTPException(403, "This account was erased and cannot be re-registered")
         users = load_users()
         if username in users:
             raise HTTPException(409, "Username taken")
@@ -1111,6 +1120,8 @@ def invite(req: InviteRequest, _: str = Depends(verify_owner)):
             raise HTTPException(400, "Bad username")
         if uname in users:
             raise HTTPException(409, "Username already exists")
+        if _is_erased(uname):                     # M-7 tombstone guard
+            raise HTTPException(403, "That username was erased and cannot be reused")
         pin = _gen_starter_pin()
         salt = secrets.token_hex(16)
         users[uname] = {
@@ -1131,6 +1142,94 @@ def users_list(_: str = Depends(verify_owner)):
         for u, d in load_users().items()], key=lambda x: x["created"])}
 
 
+# ---------------------------------------------------------------- M-7 erasure
+# Constitution invariant M-7 (OWNER-RATIFIED Option A): an erasure request
+# HARD-DELETES the subject's record AND every other store keyed to that account,
+# writes a tombstone that guards every reactivation path, and emits a receipt.
+#
+# CM persistence is single-Owner-plus-Members with a SHARED workspace: sessions
+# (data/sessions/<sid>), uploads (workspace/uploads/<sid>/), the blackboard and
+# the KB are workspace-global and NOT attributed to a username — deleting them on
+# one member's erasure would destroy other accounts' (incl. the Owner's) data, so
+# they are out of per-user cascade scope by design. The stores actually keyed to a
+# *username* are: the users.json record (which carries pin_hash/salt/mfa_secret/
+# webauthn credentials), the per-username login-throttle counter, and the
+# transient in-memory WebAuthn registration challenge. The cascade clears each.
+# (See PR / report for the full enumeration + the architectural note.)
+
+def _load_erased() -> dict:
+    """The tombstone map {username: {erased_at, by}}. Caller need not hold a lock
+    for a read-only membership test; mutators take _ERASED_LOCK."""
+    data = _load_json(ERASED_FILE, {})
+    return data if isinstance(data, dict) else {}
+
+
+def _is_erased(uname: str) -> bool:
+    """True if *uname* has been erased — guards every reactivation path
+    (register, invite, account-setup rename) so an erased id is never reused."""
+    return uname in _load_erased()
+
+
+def _erase_user_data(uname: str) -> list:
+    """Cascade-delete every DERIVED per-user store for *uname* (the users.json
+    record itself is removed by the caller under _USERS_LOCK). Returns the list of
+    stores cleared, for the receipt. Best-effort per store: one failure must not
+    leave the others behind (and the users.json record is already gone)."""
+    cleared = []
+    # Per-username login-throttle counter (file + in-memory), reusing the
+    # existing serialized helper so a concurrent login can't resurrect it.
+    try:
+        with _LOGIN_LOCK:
+            existed = uname in _login_fails
+            _login_fails.pop(uname, None)
+            _login_persist()
+        if existed:
+            cleared.append("login_throttle")
+    except Exception as e:                       # never let a derived-store error
+        _log.warning("M-7 erasure: login_throttle clear failed for %r: %s", uname, e)
+    # Transient WebAuthn registration challenge (in-memory only).
+    try:
+        if _webauthn_states.pop(uname, None) is not None:
+            cleared.append("webauthn_state")
+    except Exception as e:
+        _log.warning("M-7 erasure: webauthn_state clear failed for %r: %s", uname, e)
+    return cleared
+
+
+def _write_tombstone(uname: str, by: str) -> int:
+    """Mark *uname* erased so it can never be reactivated/re-registered. Called
+    while the caller holds _USERS_LOCK so the tombstone lands atomically with the
+    record deletion — closing the race where a re-register slips in before the
+    id is tombstoned. Returns the erased_at timestamp (first erasure wins it)."""
+    ts = int(time.time())
+    with _ERASED_LOCK:                # lock order is always _USERS_LOCK → _ERASED_LOCK
+        erased = _load_erased()
+        rec = erased.setdefault(uname, {"erased_at": ts, "by": by})
+        _save_json(ERASED_FILE, erased)
+        return rec.get("erased_at", ts)
+
+
+def _write_receipt(uname: str, by: str, stores: list, ts: int) -> None:
+    """Append an owner-auditable erasure receipt. Records only the subject's id
+    (the M-7-permitted identifier) and the store names — never pin/salt/secret/
+    credential material."""
+    with _ERASED_LOCK:
+        try:
+            with open(ERASURE_RECEIPTS_FILE, "a") as f:
+                f.write(json.dumps({"ts": ts, "event": "erasure", "user": uname,
+                                    "by": by, "stores": stores}) + "\n")
+        except OSError as e:
+            _log.error("M-7 erasure: receipt append failed for %r: %s", uname, e)
+    _log.info("M-7 erasure receipt: user=%s by=%s stores=%s", uname, by, stores)
+
+
+def _record_erasure(uname: str, by: str, stores: list) -> None:
+    """Tombstone + receipt in one call (used by tests / non-locked callers).
+    The request path splits these so the tombstone can land under _USERS_LOCK."""
+    ts = _write_tombstone(uname, by)
+    _write_receipt(uname, by, stores, ts)
+
+
 @app.delete("/api/users/{uname}")
 def users_delete(uname: str, owner: str = Depends(verify_owner)):
     if uname == owner:
@@ -1142,8 +1241,25 @@ def users_delete(uname: str, owner: str = Depends(verify_owner)):
         if uname not in users:
             raise HTTPException(404, "No such user")
         del users[uname]
-        save_users(users)
-    return {"ok": True}
+        save_users(users)        # primary store gone → tokens for it 401 at once
+        # Tombstone INSIDE the users lock: an erased id is unregisterable from the
+        # same instant the record vanishes (no re-register/restore race window).
+        ts = _write_tombstone(uname, by=owner)
+    # Derived per-user stores + receipt can land after the lock is released.
+    stores = ["users.json"] + _erase_user_data(uname)
+    _write_receipt(uname, by=owner, stores=stores, ts=ts)
+    return {"ok": True, "erased": uname, "stores": stores}
+
+
+@app.get("/api/erasures")
+def erasures_list(_: str = Depends(verify_owner)):
+    """Owner-only view of the erasure tombstone trail (M-7 receipt audit): the
+    erased id, when, and by whom — no other PII."""
+    erased = _load_erased()
+    return {"erased": sorted(
+        ({"username": u, "erased_at": d.get("erased_at"), "by": d.get("by")}
+         for u, d in erased.items()),
+        key=lambda x: x.get("erased_at") or 0, reverse=True)}
 
 
 class FirstSetup(BaseModel):
@@ -1169,6 +1285,8 @@ def account_setup(req: FirstSetup, username: str = Depends(verify_token)):
                 raise HTTPException(400, "Bad username")
             if new_name in users:
                 raise HTTPException(409, "Username taken")
+            if _is_erased(new_name):              # M-7 tombstone guard (no rename into a tombstone)
+                raise HTTPException(403, "That username was erased and cannot be reused")
             users[new_name] = user
             del users[username]
             target = new_name
