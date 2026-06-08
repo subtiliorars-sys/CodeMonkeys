@@ -34,7 +34,7 @@ not when you intend to add it.
 ### Tier B — Holds people's data (adds to A)
 - [ ] **M-4 Consent before cloud egress** — no user content leaves to a third-party model/service without recorded, revocable consent. _(gate + test)_
 - [ ] **M-5 PII gates + scrubbing** — surfaces that publish/share user-derived content refuse high-confidence identifiers (fail-closed), with a scrubber beneath. _(gate + test)_
-- [ ] **M-7 Real erasure** — erasure hard-deletes from primary + derived stores; backups age out (stated exception); tombstone guards restore; never serve deleted data. _(gate + test + receipt)_
+- [x] **M-7 Real erasure** — `DELETE /api/users/{uname}` (Owner-only) hard-deletes the users.json record AND every derived per-user store (login-throttle counter, transient WebAuthn challenge; the record carries pin/salt/mfa/passkey material), writes a tombstone (`data/erased_accounts.json`) that blocks re-register/invite/rename-into the id, and appends an owner-auditable receipt (`data/erasure_receipts.jsonl`, viewable at `GET /api/erasures`) carrying only the subject id. Sessions/uploads/blackboard/KB are workspace-global (not per-user) so they are out of per-user cascade scope by design — see the architectural note below. Backups: CM's only backup notion is the Fly volume snapshot, which ages out of its window naturally (stated retention exception); no backup-deletion is built (Owner-reserved, Phase-4 crypto-shred target). _(gate + test + receipt)_
 - [ ] **M-8 Backup posture** — data-holding repos document + verify a backup path (snapshots and/or encrypted off-site vault, keys held by Owner). _(test: restore drill + receipt)_
 - [x] **M-10 Serialized atomic writes** — all mutators of shared user state are serialized (single-writer) and write atomically; no slow I/O in the critical section. _(test)_
 - [ ] **M-12 Minors + likeness consent** — no human imagery / minors' data without documented consent; public-surface images need a consent-log entry or a SAMPLE_ prefix (CI filename-check). _(hook + gate + receipt)_
@@ -113,12 +113,22 @@ be able to read the latest entry and know exactly what is and isn't satisfied.
     trail is aggregated from in-memory SESSIONS — NOT a hash-chained, tamper-evident
     persisted audit trail as S-3 specifies.
 
-- **MISSING (2):**
-  - **M-7 Real erasure (HIGH)** — `DELETE /api/users/{uname}` (server.py:998)
-    removes only the `users.json` record. No cascade to derived stores: the user's
-    `data/sessions/`, `<workspace>/uploads/<sid>/`, memory/blackboard entries
-    persist. No tombstone guarding restore, no erasure receipt. Tier B violation;
-    matches the known `uploads/` gap.
+- **RESOLVED (1):**
+  - **M-7 Real erasure (HIGH) — FIXED** (PR "M-7: real erasure cascade + tombstone
+    + receipt", closes #66; S-4 red-teamed). `DELETE /api/users/{uname}` now
+    cascade-deletes every store keyed to the username (users.json record +
+    login-throttle counter + transient WebAuthn challenge), writes a tombstone
+    (`data/erased_accounts.json`) that blocks re-register/invite/rename onto the id,
+    and appends a receipt (`data/erasure_receipts.jsonl`, `GET /api/erasures`).
+    **Architectural note:** CM's sessions (`data/sessions/<sid>`), uploads
+    (`<workspace>/uploads/<sid>/`), blackboard and KB are workspace-GLOBAL, not
+    attributed to a username — deleting them on one member's erasure would destroy
+    other accounts' (incl. the Owner's) data, so they are out of per-user cascade
+    scope by design. The one residual: a member's own typed messages live inside
+    SHARED session event logs, commingled and unattributed; precise per-user
+    erasure there needs per-user session attribution (tracked as follow-up).
+
+- **MISSING (1):**
   - **M-4 Consent before cloud egress (MED)** — user code/prompts are sent to
     third-party LLM providers (Gemini/OpenAI/OpenRouter/DeepSeek/xAI, server.py:1232+)
     with no recorded, revocable per-user cloud-processing consent gate or test.
