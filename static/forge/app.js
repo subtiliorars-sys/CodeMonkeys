@@ -827,7 +827,8 @@ async function loadProviders() {
 
   // Apply active filter then sort
   const filteredProviders = _pvFilter === "free"
-    ? d.providers.filter((p) => Object.values(p.catalog || {}).some((c) => c.in === 0 && c.out === 0))
+    // filter by active models list, not catalog — shows providers you can use free RIGHT NOW
+    ? d.providers.filter((p) => (p.models || []).some((m) => { const c = (p.catalog || {})[m]; return c && c.in === 0 && c.out === 0; }))
     : _pvFilter === "keyed"
     ? d.providers.filter((p) => p.has_key)
     : _pvFilter === "auto"
@@ -1375,6 +1376,20 @@ $("btn-add-all-free").onclick = async () => {
     $("free-models-msg").textContent = e.message || "add failed";
   } finally {
     $("btn-add-all-free").disabled = false;
+  }
+};
+
+$("btn-import-config").onclick = async () => {
+  const raw = prompt("Paste exported config JSON:");
+  if (!raw) return;
+  try {
+    const payload = JSON.parse(raw);
+    const r = await api("/api/models/import", "POST", payload);
+    $("export-msg").textContent = `✓ imported ${r.imported} providers`;
+    setTimeout(() => { $("export-msg").textContent = ""; }, 3000);
+    loadProviders();
+  } catch (e) {
+    $("export-msg").textContent = e.message || "import failed";
   }
 };
 

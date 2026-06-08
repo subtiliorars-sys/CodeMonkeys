@@ -611,3 +611,64 @@ def test_provider_notes_blank_preserves_existing():
         assert prov.get("notes") == "pre-existing note"
     finally:
         _remove_override()
+
+
+# ---------------------------------------------------------------------------
+# Import config
+# ---------------------------------------------------------------------------
+
+def test_import_upserts_providers():
+    """POST /api/models/import restores provider structure."""
+    _override_owner()
+    try:
+        r = client.post("/api/models/import", json={
+            "providers": [{"id": "groq", "label": "Groq", "kind": "openai",
+                           "base_url": "https://api.groq.com/v1", "model": "llama3-8b",
+                           "models": ["llama3-8b"], "in": 0.1, "out": 0.1, "auto": True}],
+        })
+        assert r.json()["imported"] == 1
+        prov = server.load_models()["providers"].get("groq")
+        assert prov is not None
+        assert prov["label"] == "Groq"
+        assert prov["model"] == "llama3-8b"
+    finally:
+        _remove_override()
+
+
+def test_import_does_not_overwrite_key():
+    """Import never touches stored keys."""
+    cfg = server.load_models()
+    cfg["providers"]["openrouter"]["key"] = "sk-keep-this"
+    server.save_models(cfg)
+    _override_owner()
+    try:
+        client.post("/api/models/import", json={
+            "providers": [{"id": "openrouter", "label": "OpenRouter", "kind": "openai",
+                           "base_url": "https://openrouter.ai/api/v1", "model": "x",
+                           "models": [], "in": 0, "out": 0, "auto": True}],
+        })
+        prov = server.load_models()["providers"]["openrouter"]
+        assert prov.get("key") == "sk-keep-this"
+    finally:
+        _remove_override()
+
+
+def test_import_skips_invalid_entries():
+    """Import skips entries missing id or with invalid kind."""
+    _override_owner()
+    try:
+        r = client.post("/api/models/import", json={
+            "providers": [
+                {"id": "", "kind": "openai"},          # blank id
+                {"id": "bad", "kind": "graphql"},      # invalid kind
+            ],
+        })
+        assert r.json()["imported"] == 0
+        assert r.json()["skipped"] == 2
+    finally:
+        _remove_override()
+
+
+def test_import_requires_owner():
+    r = client.post("/api/models/import", json={"providers": []})
+    assert r.status_code == 401

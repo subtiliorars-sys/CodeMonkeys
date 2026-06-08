@@ -132,6 +132,12 @@ SUBAGENT_MAX_TURNS = int(os.environ.get("SUBAGENT_MAX_TURNS", "25"))
 # abort the run after N_STOP identical failures to stop budget burn on stuck loops.
 N_NUDGE = int(os.environ.get("N_NUDGE", "2"))
 N_STOP  = int(os.environ.get("N_STOP",  "4"))
+# N8 — context auto-compaction. When estimated token count of system+history
+# exceeds COMPACT_AT_FRAC of the model's context window, replace the oldest turns
+# (past KEEP_RECENT) with a single synthetic digest note. Deterministic, no model call.
+COMPACT_AT_FRAC = float(os.environ.get("COMPACT_AT_FRAC", "0.7"))
+KEEP_RECENT     = int(os.environ.get("KEEP_RECENT", "12"))
+COMPACT_CONTEXT_WINDOW_DEFAULT = 128000   # safe fallback when model is unknown
 MAX_SUBAGENTS = 8          # Campaign cap from CORPS_COMMANDER.md
 BASH_TIMEOUT = 180
 OUTPUT_CAP = 16000         # chars of tool output fed back to the model
@@ -1487,29 +1493,35 @@ DEFAULT_PROVIDERS = {
     "gemini": {"label": "Google Gemini", "kind": "openai", "base_url": GEMINI_BASE,
                "key": "", "model": "gemini-2.5-flash",
                "models": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
-               "in": 0.30, "out": 2.50, "auto": True},
+               "in": 0.30, "out": 2.50, "auto": True,
+               "context_window": 1048576},
     "openrouter": {"label": "OpenRouter", "kind": "openai",
                    "base_url": "https://openrouter.ai/api/v1", "key": "",
                    "model": "qwen/qwen3-coder:free",
                    "models": ["qwen/qwen3-coder:free", "deepseek/deepseek-r1:free",
                               "openai/gpt-oss-120b:free", "anthropic/claude-sonnet-4.6",
                               "google/gemini-2.5-flash"],
-                   "in": 0.0, "out": 0.0, "auto": True},
+                   "in": 0.0, "out": 0.0, "auto": True,
+                   "context_window": 128000},
     "anthropic": {"label": "Anthropic Claude", "kind": "anthropic", "base_url": "",
                   "key": "", "model": "claude-sonnet-4-6",
                   "models": ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-8"],
-                  "in": 3.0, "out": 15.0, "auto": False},
+                  "in": 3.0, "out": 15.0, "auto": False,
+                  "context_window": 200000},
     "openai": {"label": "OpenAI", "kind": "openai", "base_url": "https://api.openai.com/v1",
                "key": "", "model": "gpt-4o-mini",
                "models": ["gpt-4o-mini", "gpt-4o", "o4-mini"],
-               "in": 0.15, "out": 0.60, "auto": False},
+               "in": 0.15, "out": 0.60, "auto": False,
+               "context_window": 128000},
     "deepseek": {"label": "DeepSeek", "kind": "openai", "base_url": "https://api.deepseek.com/v1",
                  "key": "", "model": "deepseek-chat",
                  "models": ["deepseek-chat", "deepseek-reasoner"],
-                 "in": 0.28, "out": 0.42, "auto": False},
+                 "in": 0.28, "out": 0.42, "auto": False,
+                 "context_window": 64000},
     "xai": {"label": "xAI Grok", "kind": "openai", "base_url": "https://api.x.ai/v1",
             "key": "", "model": "grok-4-fast",
-            "models": ["grok-4-fast", "grok-4"], "in": 0.20, "out": 0.50, "auto": False},
+            "models": ["grok-4-fast", "grok-4"], "in": 0.20, "out": 0.50, "auto": False,
+            "context_window": 131072},
 }
 _GEMINI_BASES = {GEMINI_BASE}
 
@@ -1613,7 +1625,8 @@ def _resolve(prov, pid=None):
     return {"pid": pid, "name": prov.get("label", "?"), "kind": prov["kind"],
             "base_url": prov.get("base_url", ""), "model": prov.get("model", ""),
             "api_key": prov.get("key", ""),
-            "input_cost_per_m": prov.get("in", 0), "output_cost_per_m": prov.get("out", 0)}
+            "input_cost_per_m": prov.get("in", 0), "output_cost_per_m": prov.get("out", 0),
+            "context_window": prov.get("context_window", COMPACT_CONTEXT_WINDOW_DEFAULT)}
 
 
 def _callable_provider(p):
@@ -1874,6 +1887,48 @@ def models_export(_: str = Depends(verify_owner)):
         ],
     }
     return export
+
+
+class ImportPayload(BaseModel):
+    selected: str = ""
+    auto_cheapest: bool = True
+    providers: list[dict] = []
+
+
+@app.post("/api/models/import")
+def models_import(payload: ImportPayload, _: str = Depends(verify_owner)):
+    """Upsert providers from an exported snapshot. Never overwrites stored keys."""
+    if not isinstance(payload.providers, list):
+        raise HTTPException(400, "providers must be a list")
+    cfg = load_models()
+    imported = skipped = 0
+    for p in payload.providers:
+        pid = p.get("id", "").strip()
+        kind = p.get("kind", "openai")
+        if not pid or kind not in ("openai", "anthropic"):
+            skipped += 1
+            continue
+        existing = cfg["providers"].get(pid, {})
+        existing.update({
+            "label": p.get("label", existing.get("label", pid)),
+            "kind": kind,
+            "base_url": p.get("base_url", existing.get("base_url", "")),
+            "model": p.get("model", existing.get("model", "")),
+            "models": p.get("models", existing.get("models", [])),
+            "in": float(p.get("in", existing.get("in", 0))),
+            "out": float(p.get("out", existing.get("out", 0))),
+            "auto": bool(p.get("auto", existing.get("auto", True))),
+            "notes": p.get("notes", existing.get("notes", "")),
+        })
+        existing.setdefault("key", "")
+        cfg["providers"][pid] = existing
+        imported += 1
+    if payload.selected:
+        cfg["selected"] = payload.selected
+    if payload.auto_cheapest is not None:
+        cfg["auto_cheapest"] = payload.auto_cheapest
+    save_models(cfg)
+    return {"ok": True, "imported": imported, "skipped": skipped}
 
 
 @app.get("/api/models/openrouter/free")
@@ -4626,6 +4681,98 @@ def make_executor(session, allowed, agent_label=None, depth=0):
     return execute
 
 
+# ---- N8: context auto-compaction -----------------------------------------------
+# Estimates tokens cheaply (len/4) and, when the window is getting full, replaces
+# the oldest turn-groups with a single deterministic digest note (no model call).
+# Key invariant: never break a tool_call / tool_result pair.
+
+def _context_window_for(provider) -> int:
+    """Return the effective context window size for *provider*.
+    Reads the `context_window` field set by _resolve(); falls back to the
+    module-level constant if absent or zero."""
+    w = provider.get("context_window") if isinstance(provider, dict) else None
+    if w and isinstance(w, int) and w > 0:
+        return w
+    return COMPACT_CONTEXT_WINDOW_DEFAULT
+
+
+def _estimate_tokens(system: str, history: list) -> int:
+    """Cheap over-estimate of token count: len(text)/4 rounded up, summed over
+    all text fields, tool-call args, and tool-result content.
+    Over-estimates by design (conservative) so compaction fires early rather
+    than on context-overflow."""
+    total = len(system or "") // 4 + 1
+    for h in history:
+        text = h.get("text") or ""
+        total += len(text) // 4 + 1
+        for tc in (h.get("tool_calls") or []):
+            arg_str = json.dumps(tc.get("args") or {})
+            total += len(arg_str) // 4 + 1
+        content = h.get("content") or ""
+        if isinstance(content, str):
+            total += len(content) // 4 + 1
+        elif isinstance(content, list):
+            for block in content:
+                total += len(str(block)) // 4 + 1
+    return total
+
+
+def _compact_history(history: list, system: str, provider, session, agent_label) -> list:
+    """Replace the oldest compactable turn-groups with a single synthetic
+    [earlier context, compacted] note.
+
+    Rules:
+    - Never drop the first user turn (task framing).
+    - Always keep the most recent KEEP_RECENT turns verbatim.
+    - Only compact at complete turn-group boundaries: an assistant turn with
+      tool_calls must be compacted together with all its following tool-result
+      turns; never split a pair.
+    - Any existing compaction note(s) in the span are folded in too (don't stack).
+    - Returns the new history (the passed-in list is not mutated).
+    """
+    n = len(history)
+    if n == 0:
+        return history
+
+    # Identify the safe verbatim tail: the last KEEP_RECENT turns, but must
+    # start on a clean boundary — back up to find one.
+    tail_start = max(1, n - KEEP_RECENT)  # always keep first turn (index 0)
+    # Align tail_start to a group boundary: skip backward past any dangling
+    # tool-result runs so the tail window begins right at an assistant turn or a
+    # user turn, never mid-group.
+    while tail_start < n and history[tail_start].get("role") == "tool":
+        tail_start += 1
+    # If alignment consumed everything, keep the last entry at minimum.
+    if tail_start >= n:
+        tail_start = max(1, n - 1)
+
+    # The compactable span is [1 .. tail_start) — skipping index 0 (first user).
+    span = history[1:tail_start]
+    if not span:
+        return history   # nothing to compact
+
+    # Build the digest from the span (+ first user turn for context framing).
+    pseudo_session = {"title": session.get("title", ""), "history": [history[0]] + span}
+    digest_md = _digest_markdown(pseudo_session)
+
+    synthetic = {
+        "role": "user",
+        "text": "[earlier context, compacted]\n" + digest_md,
+    }
+
+    new_history = [history[0], synthetic] + history[tail_start:]
+
+    est_before = _estimate_tokens(system, history)
+    est_after  = _estimate_tokens(system, new_history)
+    emit(session, "compaction",
+         turns_compacted=len(span),
+         turns_kept=len(new_history),
+         est_tokens_before=est_before,
+         est_tokens_after=est_after,
+         agent=agent_label)
+    return new_history
+
+
 def agent_loop(session, provider, system, history, tool_names, max_turns,
                agent_label=None, depth=0):
     _mcp_schemas = mcp_tool_schemas() if depth == 0 else {}
@@ -4677,6 +4824,10 @@ def agent_loop(session, provider, system, history, tool_names, max_turns,
                          "or raise the budget.")
             _set_outcome("budget")
             break
+        # N8: compact history if approaching the context window.
+        _cw = _context_window_for(provider)
+        if _estimate_tokens(system, history) > COMPACT_AT_FRAC * _cw:
+            history[:] = _compact_history(history, system, provider, session, agent_label)
         try:
             # N5: pass session+agent_label so streaming can emit text_delta events.
             resp = call_model(provider, system, history, tools,
