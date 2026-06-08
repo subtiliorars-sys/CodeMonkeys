@@ -1748,6 +1748,28 @@ def models_delete(pid: str, _: str = Depends(verify_owner)):
     return {"ok": True}
 
 
+@app.delete("/api/models/{pid}/models/{mid}")
+def model_entry_delete(pid: str, mid: str, _: str = Depends(verify_owner)):
+    """Remove a single model entry from a provider's models list.
+
+    If the removed model was the provider's active model, falls back to the
+    first remaining model (or empty string if none left).
+    """
+    cfg = load_models()
+    prov = cfg["providers"].get(pid)
+    if not prov:
+        raise HTTPException(404, f"Provider '{pid}' not found")
+    models = prov.get("models", [])
+    if mid not in models:
+        raise HTTPException(404, f"Model '{mid}' not in provider '{pid}'")
+    prov["models"] = [m for m in models if m != mid]
+    if prov.get("model") == mid:
+        prov["model"] = prov["models"][0] if prov["models"] else ""
+    cfg["providers"][pid] = prov
+    save_models(cfg)
+    return {"ok": True}
+
+
 @app.post("/api/models/select")
 def models_select(req: SelectModel, _: str = Depends(verify_owner)):
     cfg = load_models()

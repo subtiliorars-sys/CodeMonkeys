@@ -763,6 +763,9 @@ else {
 $("btn-models").onclick = () => { $("modal-models").classList.remove("hidden"); loadProviders(); loadFreeModels(); };
 $("modal-close").onclick = () => $("modal-models").classList.add("hidden");
 
+// Track which provider rows are expanded (session-only; collapses reset on modal close)
+const _pvExpanded = new Set();
+
 async function loadProviders() {
   const d = await api("/api/models");
   $("auto-cheapest").checked = !!d.auto_cheapest;
@@ -778,17 +781,21 @@ async function loadProviders() {
       `<option value="${esc(m)}" ${m === p.model ? "selected" : ""}>${esc(m)}${_costHint(m)}</option>`).join("");
     const isMain = p.id === d.selected && !d.auto_cheapest;
     const manyModels = allModels.length > 5;
+    const expanded = _pvExpanded.has(p.id);
     return `
     <div class="border-b border-slate-800/60 py-2 ${isMain ? "bg-yellow-900/10 rounded" : ""}">
       <div class="flex items-center gap-2">
+        <button data-id="${esc(p.id)}" class="pv-toggle text-slate-500 hover:text-slate-300 text-xs w-4"
+          title="${expanded ? "Collapse" : "Expand"}">${expanded ? "▼" : "▶"}</button>
         <button data-id="${esc(p.id)}" class="pv-main ${isMain ? "text-[var(--gold-bright)]" : "text-slate-600"} hover:text-[var(--gold)]" title="Use as main (when Auto is off)">★</button>
         <span class="${p.has_key ? "text-green-400" : "text-slate-600"}">●</span>
         <b class="flex-1 ${isMain ? "text-[var(--gold-bright)]" : "text-slate-200"}">${esc(p.label)}</b>
+        <span class="text-slate-600 text-xs">${p.model ? esc(p.model) : ""}</span>
         <label class="flex items-center gap-1 text-slate-400" title="Include in cheapest-first cascade">
           <input type="checkbox" class="pv-auto accent-yellow-500" data-id="${esc(p.id)}" ${p.auto ? "checked" : ""}>✓auto</label>
         <button data-id="${esc(p.id)}" class="pv-del text-red-500/60 hover:text-red-400">remove</button>
       </div>
-      <div class="flex items-center gap-2 mt-1 pl-6">
+      <div class="pv-detail flex items-center gap-2 mt-1 pl-6 ${expanded ? "" : "hidden"}"
         ${manyModels ? `<input type="text" class="pv-filter input rounded px-1 py-0.5 w-28 text-xs" data-id="${esc(p.id)}"
           data-models="${esc(JSON.stringify(allModels))}" data-current="${esc(p.model)}"
           placeholder="filter…" title="Filter models">` : ""}
@@ -798,8 +805,12 @@ async function loadProviders() {
         <button data-id="${esc(p.id)}" class="pv-savekey gold-btn rounded px-2 py-0.5">save</button>
         <span class="text-slate-600">$${p.out}/M</span>
       </div>
-      <div class="flex items-center gap-1 mt-1 pl-6">
-        <input type="text" class="pv-addmodel input rounded px-1 py-0.5 text-xs w-48" data-id="${esc(p.id)}"
+      <div class="pv-detail flex flex-wrap items-center gap-1 mt-1 pl-6 ${expanded ? "" : "hidden"}">
+        ${allModels.length >= 2 ? allModels.map((m) =>
+          `<span class="inline-flex items-center gap-0.5 bg-slate-800 rounded px-1 text-xs text-slate-400">${esc(m)}`
+          + `<button class="pv-rmmodel text-red-500/50 hover:text-red-400 ml-0.5" data-pid="${esc(p.id)}" data-mid="${esc(m)}" title="Remove model">×</button></span>`
+        ).join("") : ""}
+        <input type="text" class="pv-addmodel input rounded px-1 py-0.5 text-xs w-44" data-id="${esc(p.id)}"
           placeholder="+ add model id…">
         <button class="pv-addmodel-btn text-slate-500 hover:text-[var(--gold)] text-xs border border-slate-700 rounded px-2 py-0.5" data-id="${esc(p.id)}">add</button>
         <span class="pv-addmodel-msg text-xs text-slate-600" data-id="${esc(p.id)}"></span>
@@ -807,6 +818,14 @@ async function loadProviders() {
     </div>`;
   }).join("");
 
+  document.querySelectorAll(".pv-toggle").forEach((b) => (b.onclick = () => {
+    const id = b.dataset.id;
+    if (_pvExpanded.has(id)) _pvExpanded.delete(id); else _pvExpanded.add(id);
+    const row = b.closest("div[class*='border-b']");
+    row.querySelectorAll(".pv-detail").forEach((el) => el.classList.toggle("hidden"));
+    b.textContent = _pvExpanded.has(id) ? "▼" : "▶";
+    b.title = _pvExpanded.has(id) ? "Collapse" : "Expand";
+  }));
   document.querySelectorAll(".pv-main").forEach((b) => (b.onclick = async () => {
     await api("/api/models/select", "POST", { id: b.dataset.id });
     await api("/api/models/settings", "POST", { auto_cheapest: false });
@@ -829,6 +848,15 @@ async function loadProviders() {
         model, models: prov.models, key,
         input_cost_per_m: prov.in, output_cost_per_m: prov.out, auto,
       });
+      loadProviders();
+    } catch (e) { alert(e.message); }
+  }));
+  // inline remove-model handler
+  document.querySelectorAll(".pv-rmmodel").forEach((btn) => (btn.onclick = async () => {
+    const { pid, mid } = btn.dataset;
+    if (!confirm(`Remove model ${mid} from ${pid}?`)) return;
+    try {
+      await api(`/api/models/${encodeURIComponent(pid)}/models/${encodeURIComponent(mid)}`, "DELETE");
       loadProviders();
     } catch (e) { alert(e.message); }
   }));
@@ -902,6 +930,12 @@ async function loadFreeModels() {
       $("free-models-msg").textContent = stale ? `⚠ catalog ${age}` : `catalog ${age}`;
       if (stale) $("free-models-msg").classList.add("text-yellow-500");
       else $("free-models-msg").classList.remove("text-yellow-500");
+    }
+    if (!free.length && !r.refreshed_at) {
+      // No catalog yet — auto-trigger a background refresh on first open
+      $("free-models-list").innerHTML = `<span class="not-italic">Fetching free models…</span>`;
+      $("btn-or-refresh").click();
+      return;
     }
     if (!free.length) {
       $("free-models-list").innerHTML = `<span class="not-italic">No free models cached — click ↻ Refresh.</span>`;

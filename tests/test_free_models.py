@@ -344,3 +344,75 @@ def test_add_all_free_empty_catalog_returns_400():
 def test_add_all_free_requires_owner():
     r = client.post("/api/models/free/add_all")
     assert r.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
+# Redaction invariant: catalog model IDs must NOT be collected as secrets
+# ---------------------------------------------------------------------------
+
+def test_catalog_ids_not_in_sensitive_values():
+    """_sensitive_values() collects provider keys, not catalog model IDs.
+
+    If catalog IDs were treated as secrets they would be [REDACTED] in chat
+    output whenever the model name appeared — a confusing false positive.
+    """
+    marker_id = "free/catalog-test-model-should-not-redact:free"
+    _set_catalog([{"id": marker_id, "name": "Test", "in": 0.0, "out": 0.0}])
+    # Bust cache so _sensitive_values re-reads the config
+    server._bust_secret_cache()
+    vals = server._sensitive_values()
+    assert marker_id not in vals, (
+        f"Catalog model ID '{marker_id}' ended up in _sensitive_values — "
+        "it would be redacted from chat output as if it were an API key."
+    )
+
+
+def test_model_entry_delete_endpoint():
+    """DELETE /api/models/{pid}/models/{mid} removes the model from the list."""
+    cfg = server.load_models()
+    cfg["providers"]["openrouter"]["models"] = ["model-a", "model-b", "model-c"]
+    cfg["providers"]["openrouter"]["model"] = "model-a"
+    server.save_models(cfg)
+    _override_owner()
+    try:
+        r = client.delete("/api/models/openrouter/models/model-b")
+        assert r.status_code == 200
+        models = server.load_models()["providers"]["openrouter"]["models"]
+        assert "model-b" not in models
+        assert "model-a" in models
+        assert "model-c" in models
+    finally:
+        _remove_override()
+
+
+def test_model_entry_delete_active_model_fallback():
+    """Removing the active model falls back to the first remaining model."""
+    cfg = server.load_models()
+    cfg["providers"]["openrouter"]["models"] = ["model-x", "model-y"]
+    cfg["providers"]["openrouter"]["model"] = "model-x"
+    server.save_models(cfg)
+    _override_owner()
+    try:
+        client.delete("/api/models/openrouter/models/model-x")
+        prov = server.load_models()["providers"]["openrouter"]
+        assert prov["model"] == "model-y"
+    finally:
+        _remove_override()
+
+
+def test_model_entry_delete_404_unknown_model():
+    """Removing a model that isn't in the list returns 404."""
+    cfg = server.load_models()
+    cfg["providers"]["openrouter"]["models"] = ["real-model"]
+    server.save_models(cfg)
+    _override_owner()
+    try:
+        r = client.delete("/api/models/openrouter/models/ghost-model")
+        assert r.status_code == 404
+    finally:
+        _remove_override()
+
+
+def test_model_entry_delete_requires_owner():
+    r = client.delete("/api/models/openrouter/models/anything")
+    assert r.status_code in (401, 403)
