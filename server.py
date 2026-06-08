@@ -1801,10 +1801,12 @@ def models_openrouter_refresh(_: str = Depends(verify_owner)):
             continue
         catalog.append({"id": mid, "name": m.get("name", mid), "in": p_in, "out": p_out})
     prov["catalog"] = catalog
+    prov["catalog_refreshed_at"] = int(time.time())
     cfg["providers"]["openrouter"] = prov
     save_models(cfg)
     free_count = sum(1 for e in catalog if e["in"] == 0 and e["out"] == 0)
-    return {"ok": True, "total": len(catalog), "free": free_count}
+    return {"ok": True, "total": len(catalog), "free": free_count,
+            "refreshed_at": prov["catalog_refreshed_at"]}
 
 
 @app.get("/api/models/openrouter/free")
@@ -1814,7 +1816,7 @@ def models_openrouter_free(_: str = Depends(verify_owner)):
     prov = cfg["providers"].get("openrouter", {})
     catalog = prov.get("catalog", [])
     free = [e for e in catalog if e.get("in", -1) == 0 and e.get("out", -1) == 0]
-    return {"free": free}
+    return {"free": free, "refreshed_at": prov.get("catalog_refreshed_at")}
 
 
 @app.post("/api/models/free/add_all")

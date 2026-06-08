@@ -767,9 +767,11 @@ async function loadProviders() {
   const d = await api("/api/models");
   $("auto-cheapest").checked = !!d.auto_cheapest;
   $("provider-rows").innerHTML = d.providers.map((p) => {
-    const opts = (p.models || []).map((m) =>
+    const allModels = p.models || [];
+    const opts = allModels.map((m) =>
       `<option value="${esc(m)}" ${m === p.model ? "selected" : ""}>${esc(m)}</option>`).join("");
     const isMain = p.id === d.selected && !d.auto_cheapest;
+    const manyModels = allModels.length > 5;
     return `
     <div class="border-b border-slate-800/60 py-2 ${isMain ? "bg-yellow-900/10 rounded" : ""}">
       <div class="flex items-center gap-2">
@@ -781,11 +783,20 @@ async function loadProviders() {
         <button data-id="${esc(p.id)}" class="pv-del text-red-500/60 hover:text-red-400">remove</button>
       </div>
       <div class="flex items-center gap-2 mt-1 pl-6">
+        ${manyModels ? `<input type="text" class="pv-filter input rounded px-1 py-0.5 w-28 text-xs" data-id="${esc(p.id)}"
+          data-models="${esc(JSON.stringify(allModels))}" data-current="${esc(p.model)}"
+          placeholder="filter…" title="Filter models">` : ""}
         <select class="pv-model input rounded px-1 py-0.5 flex-1" data-id="${esc(p.id)}">${opts}</select>
         <input type="password" class="pv-key input rounded px-1 py-0.5 flex-1" data-id="${esc(p.id)}"
           placeholder="${p.has_key ? "key set ✓ (type to replace)" : "paste API key"}">
         <button data-id="${esc(p.id)}" class="pv-savekey gold-btn rounded px-2 py-0.5">save</button>
         <span class="text-slate-600">$${p.out}/M</span>
+      </div>
+      <div class="flex items-center gap-1 mt-1 pl-6">
+        <input type="text" class="pv-addmodel input rounded px-1 py-0.5 text-xs w-48" data-id="${esc(p.id)}"
+          placeholder="+ add model id…">
+        <button class="pv-addmodel-btn text-slate-500 hover:text-[var(--gold)] text-xs border border-slate-700 rounded px-2 py-0.5" data-id="${esc(p.id)}">add</button>
+        <span class="pv-addmodel-msg text-xs text-slate-600" data-id="${esc(p.id)}"></span>
       </div>
     </div>`;
   }).join("");
@@ -815,10 +826,48 @@ async function loadProviders() {
       loadProviders();
     } catch (e) { alert(e.message); }
   }));
+  // inline add-model handler
+  document.querySelectorAll(".pv-addmodel-btn").forEach((btn) => (btn.onclick = async () => {
+    const id = btn.dataset.id;
+    const input = document.querySelector(`.pv-addmodel[data-id="${id}"]`);
+    const msg = document.querySelector(`.pv-addmodel-msg[data-id="${id}"]`);
+    const newModel = input.value.trim();
+    if (!newModel) return;
+    const prov = d.providers.find((x) => x.id === id);
+    if (!prov) return;
+    const updatedModels = [...new Set([...(prov.models || []), newModel])];
+    try {
+      await api("/api/models", "POST", {
+        id, label: prov.label, kind: prov.kind, base_url: prov.base_url,
+        model: prov.model, models: updatedModels,
+        input_cost_per_m: prov.in, output_cost_per_m: prov.out, auto: prov.auto,
+      });
+      input.value = "";
+      msg.textContent = "✓";
+      setTimeout(() => { msg.textContent = ""; }, 2000);
+      loadProviders();
+    } catch (e) { msg.textContent = e.message; }
+  }));
+  document.querySelectorAll(".pv-addmodel").forEach((el) => (el.onkeydown = (e) => {
+    if (e.key === "Enter") document.querySelector(`.pv-addmodel-btn[data-id="${el.dataset.id}"]`).click();
+  }));
   // model dropdown / auto checkbox auto-save on change
   document.querySelectorAll(".pv-model, .pv-auto").forEach((el) => (el.onchange = () => {
     document.querySelector(`.pv-savekey[data-id="${el.dataset.id}"]`).click();
   }));
+  // model filter: rebuilds dropdown options on each keystroke
+  document.querySelectorAll(".pv-filter").forEach((input) => {
+    input.oninput = () => {
+      const q = input.value.toLowerCase();
+      const allModels = JSON.parse(input.dataset.models);
+      const current = input.dataset.current;
+      const sel = document.querySelector(`.pv-model[data-id="${input.dataset.id}"]`);
+      const filtered = q ? allModels.filter((m) => m.toLowerCase().includes(q)) : allModels;
+      sel.innerHTML = filtered.map((m) =>
+        `<option value="${esc(m)}" ${m === current ? "selected" : ""}>${esc(m)}</option>`
+      ).join("");
+    };
+  });
 }
 
 $("auto-cheapest").onchange = async () => {
@@ -828,10 +877,26 @@ $("auto-cheapest").onchange = async () => {
 
 /* ---------------- free-model auto-lister (Layer A) ---------------- */
 
+function _catalogAge(refreshed_at) {
+  if (!refreshed_at) return null;
+  const secs = Math.floor(Date.now() / 1000) - refreshed_at;
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
+  return `${Math.floor(secs / 86400)}d ago`;
+}
+
 async function loadFreeModels() {
   try {
     const r = await api("/api/models/openrouter/free");
     const free = r.free || [];
+    const age = _catalogAge(r.refreshed_at);
+    const stale = r.refreshed_at && (Date.now() / 1000 - r.refreshed_at) > 86400;
+    if (age && !$("free-models-msg").textContent.startsWith("✓")) {
+      $("free-models-msg").textContent = stale ? `⚠ catalog ${age}` : `catalog ${age}`;
+      if (stale) $("free-models-msg").classList.add("text-yellow-500");
+      else $("free-models-msg").classList.remove("text-yellow-500");
+    }
     if (!free.length) {
       $("free-models-list").innerHTML = `<span class="not-italic">No free models cached — click ↻ Refresh.</span>`;
       $("btn-add-all-free").classList.add("hidden");
@@ -890,6 +955,47 @@ $("pv-save").onclick = async () => {
     loadProviders();
   } catch (e) { $("pv-msg").textContent = e.message; }
 };
+
+/* ---------------- free-provider presets (#12) ---------------- */
+
+const _PROVIDER_PRESETS = [
+  { id: "groq",     label: "Groq",          base_url: "https://api.groq.com/openai/v1",
+    model: "llama-3.3-70b-versatile",
+    models: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"],
+    in: 0, out: 0 },
+  { id: "cerebras", label: "Cerebras",       base_url: "https://api.cerebras.ai/v1",
+    model: "llama3.1-8b",
+    models: ["llama3.1-8b", "llama3.1-70b"],
+    in: 0, out: 0 },
+  { id: "mistral",  label: "Mistral (free)", base_url: "https://api.mistral.ai/v1",
+    model: "mistral-small-latest",
+    models: ["mistral-small-latest", "open-mistral-nemo"],
+    in: 0, out: 0 },
+  { id: "github",   label: "GitHub Models",  base_url: "https://models.inference.ai.azure.com",
+    model: "gpt-4o-mini",
+    models: ["gpt-4o-mini", "Phi-3.5-mini-instruct", "Meta-Llama-3.1-8B-Instruct"],
+    in: 0, out: 0 },
+];
+
+(function () {
+  const box = $("preset-btns");
+  if (!box) return;
+  _PROVIDER_PRESETS.forEach((p) => {
+    const btn = document.createElement("button");
+    btn.className = "border border-slate-700 text-slate-300 hover:border-[var(--gold)] hover:text-[var(--gold)] rounded px-2 py-0.5";
+    btn.textContent = `+ ${p.label}`;
+    btn.onclick = () => {
+      $("pv-id").value = p.id;
+      $("pv-base").value = p.base_url;
+      $("pv-model").value = p.model;
+      $("pv-in").value = p.in;
+      $("pv-out").value = p.out;
+      $("pv-key").focus();
+      $("pv-msg").textContent = "Pre-filled — paste your API key and click Add provider.";
+    };
+    box.appendChild(btn);
+  });
+})();
 
 /* ---------------- MCP modal ---------------- */
 
