@@ -841,7 +841,7 @@ async function loadProviders() {
           title="${expanded ? "Collapse" : "Expand"}">${expanded ? "▼" : "▶"}</button>
         <button data-id="${esc(p.id)}" class="pv-main ${isMain ? "text-[var(--gold-bright)]" : "text-slate-600"} hover:text-[var(--gold)]" title="Use as main (when Auto is off)">★</button>
         <span class="${dotColor}" title="${esc(dotTitle)}">●</span>
-        <b class="${isMain ? "text-[var(--gold-bright)]" : "text-slate-200"}">${esc(p.label)}</b>
+        <b class="pv-label-edit ${isMain ? "text-[var(--gold-bright)]" : "text-slate-200"}" data-id="${esc(p.id)}" title="Double-click to rename">${esc(p.label)}</b>
         ${allModels.length > 0 ? `<span class="text-slate-600 text-xs">(${allModels.length})</span>` : ""}
         <span class="flex-1"></span>
         ${(() => { const t = _tierOf(p.id); return t
@@ -969,16 +969,52 @@ async function loadProviders() {
       ).join("");
     };
   });
+  // Collapse-all / expand-all
+  const _setAllExpanded = (expand) => {
+    document.querySelectorAll(".pv-toggle").forEach((b) => {
+      const id = b.dataset.id;
+      if (expand) _pvExpanded.add(id); else _pvExpanded.delete(id);
+      b.closest("div[class*='border-b']")?.querySelectorAll(".pv-detail")
+        .forEach((el) => el.classList.toggle("hidden", !expand));
+      b.textContent = expand ? "▼" : "▶";
+      b.title = expand ? "Collapse" : "Expand";
+    });
+  };
+  if ($("btn-collapse-all")) $("btn-collapse-all").onclick = () => _setAllExpanded(false);
+  if ($("btn-expand-all")) $("btn-expand-all").onclick = () => _setAllExpanded(true);
+
+  // Provider label inline rename: double-click the <b> label to edit
+  document.querySelectorAll(".pv-label-edit").forEach((b) => {
+    b.ondblclick = async () => {
+      const id = b.dataset.id;
+      const newLabel = prompt("Rename provider:", b.textContent.trim());
+      if (!newLabel || newLabel === b.textContent.trim()) return;
+      const cfg = await api("/api/models");
+      const p = cfg.providers.find((x) => x.id === id);
+      if (!p) return;
+      await api("/api/models", "POST", {
+        id: p.id, label: newLabel.trim(), kind: p.kind,
+        base_url: p.base_url, model: p.model,
+        models: p.models, key: "",
+        input_cost_per_m: p.in, output_cost_per_m: p.out, auto: p.auto,
+      });
+      loadProviders();
+    };
+  });
+
   // Pass OR catalog data as a hint to loadFreeModels to skip the extra API call
   const orProv = d.providers.find((p) => p.id === "openrouter");
   const freeCount = orProv
     ? Object.values(orProv.catalog || {}).filter((c) => c.in === 0 && c.out === 0).length
     : 0;
-  // Update sidebar badge
+  // Update sidebar badge with pulse when free models are available
   const btnModels = $("btn-models");
   if (btnModels) {
+    const freeSpan = freeCount > 0
+      ? `<span class="text-green-400 text-[.65rem] free-pulse">⚡${freeCount}</span>`
+      : "";
     btnModels.innerHTML = freeCount > 0
-      ? `⚙ Models &amp; keys <span class="text-green-400 text-[.65rem]">⚡${freeCount}</span>`
+      ? `⚙ Models &amp; keys ${freeSpan}`
       : "⚙ Models &amp; keys";
   }
   if (orProv) {
@@ -1086,6 +1122,12 @@ $("btn-or-refresh").onclick = async () => {
     const r = await api("/api/models/openrouter/refresh", "POST", {});
     $("free-models-msg").textContent = `✓ ${r.total} models, ${r.free} free`;
     await loadFreeModels();
+    // auto-add free if checkbox is ticked
+    if ($("chk-auto-add-free")?.checked && r.free > 0) {
+      await api("/api/models/free/add_all", "POST", {});
+      $("free-models-msg").textContent = `✓ ${r.total} models, ${r.free} free (auto-added)`;
+      loadProviders();
+    }
   } catch (e) {
     const msg = e.message || "refresh failed";
     $("free-models-msg").textContent = msg;

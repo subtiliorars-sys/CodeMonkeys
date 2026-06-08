@@ -44,6 +44,8 @@
   .dot.waiting_approval { background: var(--gold); animation: pulse .6s infinite; }
   .dot.interrupted { background: #f59e0b; }
   @keyframes pulse { 50% { opacity: .35; } }
+  @keyframes free-glow { 0%,100% { text-shadow: none; } 50% { text-shadow: 0 0 6px #4ade80; } }
+  .free-pulse { animation: free-glow 2s ease-in-out infinite; }
   .scanlines::after { content: ""; pointer-events: none; position: fixed; inset: 0;
     background: repeating-linear-gradient(0deg, rgba(0,0,0,.16) 0 1px, transparent 1px 3px); opacity:.5; }
   .monkey { image-rendering: pixelated; filter: drop-shadow(0 0 8px rgba(212,175,55,.5)); }
@@ -221,13 +223,20 @@
       <span><b class="text-[var(--gold-bright)]">Auto · cheapest-first</b> — start with the cheapest provider you've keyed
         (✓ in the cascade) and use pricier ones only when needed. Turn off to always use the ★ provider.</span>
     </label>
-    <p class="text-xs text-slate-500 mb-2">One API key per provider — then pick any model from it. ★ = main provider (when Auto is off). ✓ = include in the cheapest-first cascade.</p>
+    <div class="flex items-center gap-2 mb-1">
+      <p class="text-xs text-slate-500 flex-1">One API key per provider — then pick any model from it. ★ = main provider (when Auto is off). ✓ = include in the cheapest-first cascade.</p>
+      <button id="btn-collapse-all" class="text-slate-500 hover:text-slate-300 text-xs border border-slate-700 rounded px-2 py-0.5" title="Collapse all">▶▶</button>
+      <button id="btn-expand-all" class="text-slate-500 hover:text-slate-300 text-xs border border-slate-700 rounded px-2 py-0.5" title="Expand all">▼▼</button>
+    </div>
     <div id="provider-rows" class="space-y-1 mb-4 text-xs"></div>
     <div id="free-models-section" class="border-t border-slate-800 pt-3 mb-4">
       <div class="flex items-center gap-2 mb-2">
         <span class="text-[var(--gold-bright)] font-semibold">⚡ Free models</span>
         <button id="btn-or-refresh" class="text-slate-400 hover:text-[var(--gold)] text-xs border border-slate-700 rounded px-2 py-0.5">↻ Refresh</button>
         <span id="free-models-msg" class="text-xs text-slate-500 flex-1"></span>
+        <label class="flex items-center gap-1 text-xs text-slate-500 cursor-pointer" title="Automatically add all free models after each refresh">
+          <input id="chk-auto-add-free" type="checkbox" class="accent-yellow-500">auto-add
+        </label>
         <button id="btn-add-all-free" class="hidden gold-btn rounded px-3 py-0.5 text-xs">Add all free →</button>
         <button id="btn-remove-free" class="hidden text-red-500/60 hover:text-red-400 text-xs border border-slate-700 rounded px-2 py-0.5">Remove :free</button>
       </div>
