@@ -43,6 +43,10 @@ def _model(mid, prompt, completion, name=None):
     return {"id": mid, "name": name or mid,
             "pricing": {"prompt": str(prompt), "completion": str(completion)}}
 
+def _reset_or_cooldown():
+    """Reset the in-memory OpenRouter refresh cooldown so tests don't block each other."""
+    server._or_last_refresh = 0.0
+
 def _set_catalog(catalog: list):
     """Directly write a catalog into the OpenRouter provider entry."""
     cfg = server.load_models()
@@ -108,15 +112,7 @@ _OR_SAMPLE = [
 
 def test_refresh_maps_per_token_to_per_million(monkeypatch):
     """Pricing per-token × 1e6 == per-million stored in catalog."""
-    monkeypatch.setattr(
-        server.urllib.request, "urlopen",
-        lambda req, timeout=20: unittest.mock.MagicMock(
-            __enter__=lambda s: s,
-            __exit__=lambda s, *a: False,
-            read=lambda: _OR_SAMPLE_RAW,
-        ),
-    )
-    # Only the two paid entries with valid non-zero pricing
+    _reset_or_cooldown()
     paid = _model("paid/claude-sonnet", "3e-6", "15e-6")
     raw = json.dumps({"data": [paid]}).encode()
     mock_resp = unittest.mock.MagicMock()
@@ -142,6 +138,7 @@ _OR_SAMPLE_RAW = json.dumps({"data": _OR_SAMPLE}).encode()
 
 def test_refresh_skips_null_and_bad_pricing(monkeypatch):
     """Models with null, non-finite, or negative pricing are excluded from catalog."""
+    _reset_or_cooldown()
     mock_resp = unittest.mock.MagicMock()
     mock_resp.__enter__ = lambda s: s
     mock_resp.__exit__ = lambda s, *a: False
@@ -165,6 +162,7 @@ def test_refresh_skips_null_and_bad_pricing(monkeypatch):
 
 def test_refresh_free_count_in_response(monkeypatch):
     """Refresh response reports correct total and free counts."""
+    _reset_or_cooldown()
     mock_resp = unittest.mock.MagicMock()
     mock_resp.__enter__ = lambda s: s
     mock_resp.__exit__ = lambda s, *a: False
@@ -183,6 +181,7 @@ def test_refresh_free_count_in_response(monkeypatch):
 
 def test_refresh_does_not_touch_key_or_selected(monkeypatch):
     """Refresh must never alter the provider's key or the selected field."""
+    _reset_or_cooldown()
     cfg = server.load_models()
     cfg["providers"]["openrouter"]["key"] = "sk-sentinel-key"
     cfg["selected"] = "anthropic"
@@ -206,6 +205,35 @@ def test_refresh_does_not_touch_key_or_selected(monkeypatch):
 def test_refresh_requires_owner():
     r = client.post("/api/models/openrouter/refresh")
     assert r.status_code in (401, 403)
+
+
+def test_refresh_cooldown_blocks_rapid_calls(monkeypatch):
+    """Second refresh within cooldown window must return 429."""
+    _reset_or_cooldown()
+    mock_resp = unittest.mock.MagicMock()
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = lambda s, *a: False
+    mock_resp.read = lambda: json.dumps({"data": []}).encode()
+    monkeypatch.setattr(server.urllib.request, "urlopen", lambda *a, **kw: mock_resp)
+    _override_owner()
+    try:
+        r1 = client.post("/api/models/openrouter/refresh")
+        assert r1.status_code == 200
+        r2 = client.post("/api/models/openrouter/refresh")
+        assert r2.status_code == 429
+    finally:
+        _reset_or_cooldown()
+        _remove_override()
+
+
+def test_delete_provider_404_when_missing():
+    """DELETE on an unknown provider id must return 404."""
+    _override_owner()
+    try:
+        r = client.delete("/api/models/does-not-exist-xyz")
+        assert r.status_code == 404
+    finally:
+        _remove_override()
 
 
 # ---------------------------------------------------------------------------

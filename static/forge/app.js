@@ -768,8 +768,14 @@ async function loadProviders() {
   $("auto-cheapest").checked = !!d.auto_cheapest;
   $("provider-rows").innerHTML = d.providers.map((p) => {
     const allModels = p.models || [];
+    const cat = p.catalog || {};
+    const _costHint = (m) => {
+      const c = cat[m]; if (!c) return "";
+      if (c.in === 0 && c.out === 0) return " ⚡free";
+      return ` $${c.in}/$${c.out}/M`;
+    };
     const opts = allModels.map((m) =>
-      `<option value="${esc(m)}" ${m === p.model ? "selected" : ""}>${esc(m)}</option>`).join("");
+      `<option value="${esc(m)}" ${m === p.model ? "selected" : ""}>${esc(m)}${_costHint(m)}</option>`).join("");
     const isMain = p.id === d.selected && !d.auto_cheapest;
     const manyModels = allModels.length > 5;
     return `
@@ -903,8 +909,17 @@ async function loadFreeModels() {
       return;
     }
     $("free-models-list").innerHTML = free.map((m) =>
-      `<span class="inline-block bg-green-900/20 text-green-400 border border-green-900/40 rounded px-1 mr-1 mb-1 not-italic">${esc(m.id)}</span>`
+      `<button class="free-pill inline-flex items-center gap-1 bg-green-900/20 text-green-400 border border-green-900/40 rounded px-1 mr-1 mb-1 hover:border-green-400/60" data-id="${esc(m.id)}" title="Click to copy model ID">`
+      + `<span class="not-italic text-xs">${esc(m.id)}</span>`
+      + `<span class="text-green-700 text-[.6rem]">⎘</span></button>`
     ).join("");
+    $("free-models-list").querySelectorAll(".free-pill").forEach((btn) => (btn.onclick = () => {
+      navigator.clipboard.writeText(btn.dataset.id).then(() => {
+        const orig = btn.querySelector("span:last-child").textContent;
+        btn.querySelector("span:last-child").textContent = "✓";
+        setTimeout(() => { btn.querySelector("span:last-child").textContent = orig; }, 1200);
+      });
+    }));
     $("btn-add-all-free").classList.remove("hidden");
   } catch (_) {
     $("free-models-list").textContent = "";
@@ -919,7 +934,14 @@ $("btn-or-refresh").onclick = async () => {
     $("free-models-msg").textContent = `✓ ${r.total} models, ${r.free} free`;
     await loadFreeModels();
   } catch (e) {
-    $("free-models-msg").textContent = e.message || "refresh failed";
+    const msg = e.message || "refresh failed";
+    $("free-models-msg").textContent = msg;
+    // show cooldown remaining in button label
+    const wait = msg.match(/wait (\d+)s/);
+    if (wait) {
+      $("btn-or-refresh").textContent = `↻ ${wait[1]}s`;
+      setTimeout(() => { $("btn-or-refresh").textContent = "↻ Refresh"; }, parseInt(wait[1]) * 1000);
+    }
   } finally {
     $("btn-or-refresh").disabled = false;
   }

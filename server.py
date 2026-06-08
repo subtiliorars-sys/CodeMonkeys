@@ -1704,7 +1704,9 @@ def models_get(_: str = Depends(verify_owner)):
             {"id": pid, "label": p.get("label", pid), "kind": p["kind"],
              "base_url": p.get("base_url", ""), "model": p.get("model", ""),
              "models": p.get("models", []), "has_key": bool(p.get("key")),
-             "in": p.get("in", 0), "out": p.get("out", 0), "auto": p.get("auto", False)}
+             "in": p.get("in", 0), "out": p.get("out", 0), "auto": p.get("auto", False),
+             "catalog": {e["id"]: {"in": e["in"], "out": e["out"]}
+                         for e in p.get("catalog", [])}}
             for pid, p in cfg["providers"].items()],
     }
 
@@ -1737,6 +1739,8 @@ def models_upsert(req: ProviderUpsert, _: str = Depends(verify_owner)):
 @app.delete("/api/models/{pid}")
 def models_delete(pid: str, _: str = Depends(verify_owner)):
     cfg = load_models()
+    if pid not in cfg["providers"]:
+        raise HTTPException(404, f"Provider '{pid}' not found")
     cfg["providers"].pop(pid, None)
     if cfg.get("selected") == pid:
         cfg["selected"] = "auto"
@@ -1763,6 +1767,9 @@ def models_settings(req: ModelSettings, _: str = Depends(verify_owner)):
 
 
 _OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+_OR_REFRESH_COOLDOWN_S = 60
+_or_last_refresh: float = 0.0
+_or_refresh_lock = threading.Lock()
 
 
 @app.post("/api/models/openrouter/refresh")
@@ -1772,6 +1779,12 @@ def models_openrouter_refresh(_: str = Depends(verify_owner)):
     Converts per-token pricing (USD/token) → per-million (USD/1M).
     Never touches key, selected, or the active model field.
     """
+    global _or_last_refresh
+    with _or_refresh_lock:
+        since = time.time() - _or_last_refresh
+        if since < _OR_REFRESH_COOLDOWN_S:
+            raise HTTPException(429, f"Refresh cooldown: wait {int(_OR_REFRESH_COOLDOWN_S - since)}s")
+        _or_last_refresh = time.time()
     cfg = load_models()
     prov = cfg["providers"].get("openrouter")
     if not prov:
