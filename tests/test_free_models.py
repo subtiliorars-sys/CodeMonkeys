@@ -416,3 +416,50 @@ def test_model_entry_delete_404_unknown_model():
 def test_model_entry_delete_requires_owner():
     r = client.delete("/api/models/openrouter/models/anything")
     assert r.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
+# Key-save resets catalog_refreshed_at
+# ---------------------------------------------------------------------------
+
+def test_key_save_clears_catalog_refreshed_at():
+    """Saving a new key removes catalog_refreshed_at so stale indicator resets."""
+    cfg = server.load_models()
+    cfg["providers"]["openrouter"]["catalog_refreshed_at"] = 1_000_000
+    cfg["providers"]["openrouter"]["catalog"] = []
+    server.save_models(cfg)
+    _override_owner()
+    try:
+        r = client.post("/api/models", json={
+            "id": "openrouter", "label": "OpenRouter", "kind": "openai",
+            "base_url": "https://openrouter.ai/api/v1",
+            "model": "qwen/qwen3-coder:free", "models": [],
+            "key": "sk-new-key-xyz", "input_cost_per_m": 0, "output_cost_per_m": 0,
+            "auto": True,
+        })
+        assert r.status_code == 200
+        prov = server.load_models()["providers"]["openrouter"]
+        assert "catalog_refreshed_at" not in prov
+    finally:
+        _remove_override()
+
+
+def test_key_save_blank_preserves_catalog_refreshed_at():
+    """Saving with a blank key (keep existing) must NOT clear catalog_refreshed_at."""
+    cfg = server.load_models()
+    cfg["providers"]["openrouter"]["catalog_refreshed_at"] = 1_000_001
+    cfg["providers"]["openrouter"]["key"] = "sk-existing"
+    server.save_models(cfg)
+    _override_owner()
+    try:
+        client.post("/api/models", json={
+            "id": "openrouter", "label": "OpenRouter", "kind": "openai",
+            "base_url": "https://openrouter.ai/api/v1",
+            "model": "qwen/qwen3-coder:free", "models": [],
+            "key": "",  # blank = keep existing
+            "input_cost_per_m": 0, "output_cost_per_m": 0, "auto": True,
+        })
+        prov = server.load_models()["providers"]["openrouter"]
+        assert prov.get("catalog_refreshed_at") == 1_000_001
+    finally:
+        _remove_override()

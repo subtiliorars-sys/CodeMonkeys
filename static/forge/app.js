@@ -760,7 +760,7 @@ else {
 
 /* ---------------- models modal ---------------- */
 
-$("btn-models").onclick = () => { $("modal-models").classList.remove("hidden"); loadProviders(); loadFreeModels(); };
+$("btn-models").onclick = () => { $("modal-models").classList.remove("hidden"); loadProviders(); };
 $("modal-close").onclick = () => $("modal-models").classList.add("hidden");
 
 // Track which provider rows are expanded (session-only; collapses reset on modal close)
@@ -769,6 +769,14 @@ const _pvExpanded = new Set();
 async function loadProviders() {
   const d = await api("/api/models");
   $("auto-cheapest").checked = !!d.auto_cheapest;
+  // Auto-expand the selected/main provider on first load; don't collapse manually-opened rows
+  if (_pvExpanded.size === 0 && d.selected && d.selected !== "auto") {
+    _pvExpanded.add(d.selected);
+  } else if (_pvExpanded.size === 0) {
+    // auto mode: expand the cheapest auto-flagged provider
+    const autoP = d.providers.find((p) => p.auto && p.has_key);
+    if (autoP) _pvExpanded.add(autoP.id);
+  }
   $("provider-rows").innerHTML = d.providers.map((p) => {
     const allModels = p.models || [];
     const cat = p.catalog || {};
@@ -777,7 +785,12 @@ async function loadProviders() {
       if (c.in === 0 && c.out === 0) return " ⚡free";
       return ` $${c.in}/$${c.out}/M`;
     };
-    const opts = allModels.map((m) =>
+    const _isFree = (m) => { const c = cat[m]; return c && c.in === 0 && c.out === 0; };
+    const sortedModels = [...allModels].sort((a, b) => {
+      if (_isFree(a) !== _isFree(b)) return _isFree(a) ? -1 : 1;
+      return a.localeCompare(b);
+    });
+    const opts = sortedModels.map((m) =>
       `<option value="${esc(m)}" ${m === p.model ? "selected" : ""}>${esc(m)}${_costHint(m)}</option>`).join("");
     const isMain = p.id === d.selected && !d.auto_cheapest;
     const manyModels = allModels.length > 5;
@@ -797,7 +810,7 @@ async function loadProviders() {
       </div>
       <div class="pv-detail flex items-center gap-2 mt-1 pl-6 ${expanded ? "" : "hidden"}"
         ${manyModels ? `<input type="text" class="pv-filter input rounded px-1 py-0.5 w-28 text-xs" data-id="${esc(p.id)}"
-          data-models="${esc(JSON.stringify(allModels))}" data-current="${esc(p.model)}"
+          data-models="${esc(JSON.stringify(sortedModels))}" data-current="${esc(p.model)}"
           placeholder="filter…" title="Filter models">` : ""}
         <select class="pv-model input rounded px-1 py-0.5 flex-1" data-id="${esc(p.id)}">${opts}</select>
         <input type="password" class="pv-key input rounded px-1 py-0.5 flex-1" data-id="${esc(p.id)}"
@@ -902,6 +915,19 @@ async function loadProviders() {
       ).join("");
     };
   });
+  // Pass OR catalog data as a hint to loadFreeModels to skip the extra API call
+  const orProv = d.providers.find((p) => p.id === "openrouter");
+  if (orProv) {
+    const freeHint = {
+      free: Object.entries(orProv.catalog || {})
+        .filter(([, c]) => c.in === 0 && c.out === 0)
+        .map(([id]) => ({ id })),
+      refreshed_at: orProv.catalog_refreshed_at || null,
+    };
+    loadFreeModels(freeHint);
+  } else {
+    loadFreeModels();
+  }
 }
 
 $("auto-cheapest").onchange = async () => {
@@ -920,9 +946,10 @@ function _catalogAge(refreshed_at) {
   return `${Math.floor(secs / 86400)}d ago`;
 }
 
-async function loadFreeModels() {
+async function loadFreeModels(hint) {
+  // hint: optional {free, refreshed_at} pre-fetched from GET /api/models to save a round-trip
   try {
-    const r = await api("/api/models/openrouter/free");
+    const r = hint || await api("/api/models/openrouter/free");
     const free = r.free || [];
     const age = _catalogAge(r.refreshed_at);
     const stale = r.refreshed_at && (Date.now() / 1000 - r.refreshed_at) > 86400;

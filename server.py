@@ -1706,7 +1706,8 @@ def models_get(_: str = Depends(verify_owner)):
              "models": p.get("models", []), "has_key": bool(p.get("key")),
              "in": p.get("in", 0), "out": p.get("out", 0), "auto": p.get("auto", False),
              "catalog": {e["id"]: {"in": e["in"], "out": e["out"]}
-                         for e in p.get("catalog", [])}}
+                         for e in p.get("catalog", [])},
+             "catalog_refreshed_at": p.get("catalog_refreshed_at")}
             for pid, p in cfg["providers"].items()],
     }
 
@@ -1728,6 +1729,7 @@ def models_upsert(req: ProviderUpsert, _: str = Depends(verify_owner)):
     })
     if req.key:                    # blank key = keep existing
         prov["key"] = req.key
+        prov.pop("catalog_refreshed_at", None)  # key changed → age indicator resets
     prov.setdefault("key", "")
     if req.model and req.model not in prov["models"]:
         prov["models"].append(req.model)
