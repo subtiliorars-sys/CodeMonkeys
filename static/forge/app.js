@@ -774,6 +774,8 @@ $("modal-close").onclick = () => $("modal-models").classList.add("hidden");
 
 // Track which provider rows are expanded (session-only; collapses reset on modal close)
 const _pvExpanded = new Set();
+// Current sort order for provider list: "keyed" | "cost" | "name"
+let _pvSort = "keyed";
 
 // Keyboard shortcuts for the models modal
 document.addEventListener("keydown", (e) => {
@@ -815,8 +817,11 @@ async function loadProviders() {
     return "t2";
   };
 
-  // Sort providers: keyed ones first (by cost asc = tier order), then unkeyless
+  // Sort providers by current sort mode
   const sortedProviders = [...d.providers].sort((a, b) => {
+    if (_pvSort === "cost") return a.out - b.out;
+    if (_pvSort === "name") return a.label.localeCompare(b.label);
+    // "keyed": keyed first, then by cost
     if (a.has_key !== b.has_key) return a.has_key ? -1 : 1;
     return a.out - b.out;
   });
@@ -864,7 +869,8 @@ async function loadProviders() {
           title="${expanded ? "Collapse" : "Expand"}">${expanded ? "▼" : "▶"}</button>
         <button data-id="${esc(p.id)}" class="pv-main ${isMain ? "text-[var(--gold-bright)]" : "text-slate-600"} hover:text-[var(--gold)]" title="Use as main (when Auto is off)">★</button>
         <span class="${dotColor}" title="${esc(dotTitle)}">●</span>
-        <b class="pv-label-edit ${isMain ? "text-[var(--gold-bright)]" : "text-slate-200"}" data-id="${esc(p.id)}" title="Double-click to rename">${esc(p.label)}</b>
+        <b class="pv-label-edit ${isMain ? "text-[var(--gold-bright)]" : "text-slate-200"}" data-id="${esc(p.id)}"
+          title="${p.notes ? esc(p.notes) : "Double-click to rename"}">${esc(p.label)}</b>
         ${allModels.length > 0 ? `<span class="text-slate-600 text-xs">(${allModels.length})</span>` : ""}
         <span class="flex-1"></span>
         ${(() => { const t = _tierOf(p.id); return t
@@ -891,16 +897,24 @@ async function loadProviders() {
         <select class="pv-model input rounded px-1 py-0.5 flex-1" data-id="${esc(p.id)}">${opts}</select>
         <input type="password" class="pv-key input rounded px-1 py-0.5 flex-1" data-id="${esc(p.id)}"
           placeholder="${p.has_key ? "key set ✓ (type to replace)" : "paste API key"}">
+        <input type="text" class="pv-notes input rounded px-1 py-0.5 w-32 text-xs" data-id="${esc(p.id)}"
+          placeholder="notes…" value="${esc(p.notes || "")}" title="Freeform notes (shown as label tooltip)">
         <button data-id="${esc(p.id)}" class="pv-savekey gold-btn rounded px-2 py-0.5">save</button>
         <span class="text-slate-600">$${p.out}/M</span>
         ${catAgeStr ? `<span class="text-slate-600 text-xs" title="Catalog last fetched">↻ ${esc(catAgeStr)}</span>` : ""}
       </div>
       <div class="pv-detail flex flex-wrap items-center gap-1 mt-1 pl-6 ${expanded ? "" : "hidden"}">
-        ${allModels.length >= 2 ? allModels.map((m) =>
-          `<span class="inline-flex items-center gap-0.5 bg-slate-800 rounded px-1 text-xs text-slate-400">${esc(m)}`
-          + `<button class="pv-cpmodel text-slate-500/60 hover:text-slate-300 ml-0.5" data-mid="${esc(m)}" title="Copy model ID">⎘</button>`
-          + `<button class="pv-rmmodel text-red-500/50 hover:text-red-400 ml-0.5" data-pid="${esc(p.id)}" data-mid="${esc(m)}" title="Remove model">×</button></span>`
-        ).join("") : ""}
+        ${allModels.length >= 2 ? allModels.map((m) => {
+          const mc = cat[m];
+          const pillTag = mc
+            ? (mc.in === 0 && mc.out === 0
+                ? `<span class="text-green-400 text-[.6rem]">⚡</span>`
+                : `<span class="text-slate-500 text-[.6rem]">$${mc.out}/M</span>`)
+            : "";
+          return `<span class="inline-flex items-center gap-0.5 bg-slate-800 rounded px-1 text-xs text-slate-400">${esc(m)}${pillTag}`
+            + `<button class="pv-cpmodel text-slate-500/60 hover:text-slate-300 ml-0.5" data-mid="${esc(m)}" title="Copy model ID">⎘</button>`
+            + `<button class="pv-rmmodel text-red-500/50 hover:text-red-400 ml-0.5" data-pid="${esc(p.id)}" data-mid="${esc(m)}" title="Remove model">×</button></span>`;
+        }).join("") : ""}
         <input type="text" class="pv-addmodel input rounded px-1 py-0.5 text-xs w-44" data-id="${esc(p.id)}"
           placeholder="+ add model id…">
         <button class="pv-addmodel-btn text-slate-500 hover:text-[var(--gold)] text-xs border border-slate-700 rounded px-2 py-0.5" data-id="${esc(p.id)}">add</button>
@@ -933,14 +947,18 @@ async function loadProviders() {
     const key = document.querySelector(`.pv-key[data-id="${id}"]`).value;
     const model = document.querySelector(`.pv-model[data-id="${id}"]`).value;
     const auto = document.querySelector(`.pv-auto[data-id="${id}"]`).checked;
+    const notes = document.querySelector(`.pv-notes[data-id="${id}"]`)?.value || "";
     try {
       await api("/api/models", "POST", {
         id, label: prov.label, kind: prov.kind, base_url: prov.base_url,
-        model, models: prov.models, key,
+        model, models: prov.models, key, notes,
         input_cost_per_m: prov.in, output_cost_per_m: prov.out, auto,
       });
-      // auto-collapse the row after a successful key save
-      if (key) _pvExpanded.delete(id);
+      // auto-collapse the row after a successful key save; auto-refresh OR catalog
+      if (key) {
+        _pvExpanded.delete(id);
+        if (id === "openrouter") setTimeout(() => $("btn-or-refresh")?.click(), 400);
+      }
       loadProviders();
     } catch (e) { alert(e.message); }
   }));
@@ -1017,6 +1035,18 @@ async function loadProviders() {
   if ($("btn-collapse-all")) $("btn-collapse-all").onclick = () => _setAllExpanded(false);
   if ($("btn-expand-all")) $("btn-expand-all").onclick = () => _setAllExpanded(true);
 
+  // Sort toggle buttons
+  ["keyed", "cost", "name"].forEach((mode) => {
+    const btn = $(`btn-sort-${mode}`);
+    if (!btn) return;
+    btn.className = `text-xs border rounded px-2 py-0.5 ${
+      _pvSort === mode
+        ? "border-[var(--gold)] text-[var(--gold-bright)]"
+        : "border-slate-700 text-slate-500 hover:text-slate-300"
+    }`;
+    btn.onclick = () => { _pvSort = mode; loadProviders(); };
+  });
+
   // Global model search: show only rows whose label or model IDs match
   const searchInput = $("provider-search");
   if (searchInput) {
@@ -1046,7 +1076,7 @@ async function loadProviders() {
       await api("/api/models", "POST", {
         id: p.id, label: newLabel.trim(), kind: p.kind,
         base_url: p.base_url, model: p.model,
-        models: p.models, key: "",
+        models: p.models, key: "", notes: p.notes || "",
         input_cost_per_m: p.in, output_cost_per_m: p.out, auto: p.auto,
       });
       loadProviders();

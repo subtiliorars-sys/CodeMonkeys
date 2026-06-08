@@ -1684,6 +1684,7 @@ class ProviderUpsert(BaseModel):
     input_cost_per_m: float = 0.0
     output_cost_per_m: float = 0.0
     auto: bool = True
+    notes: str = ""
 
 
 class SelectModel(BaseModel):
@@ -1710,7 +1711,8 @@ def models_get(_: str = Depends(verify_owner)):
                          for e in p.get("catalog", [])},
              "catalog_refreshed_at": p.get("catalog_refreshed_at"),
              "last_error": p.get("last_error"),
-             "last_error_at": p.get("last_error_at")}
+             "last_error_at": p.get("last_error_at"),
+             "notes": p.get("notes", "")}
             for pid, p in cfg["providers"].items()],
     }
 
@@ -1729,6 +1731,7 @@ def models_upsert(req: ProviderUpsert, _: str = Depends(verify_owner)):
         "base_url": req.base_url, "model": req.model or prov.get("model", ""),
         "models": req.models or prov.get("models", []),
         "in": req.input_cost_per_m, "out": req.output_cost_per_m, "auto": req.auto,
+        "notes": req.notes or prov.get("notes", ""),
     })
     if req.key:                    # blank key = keep existing
         prov["key"] = req.key

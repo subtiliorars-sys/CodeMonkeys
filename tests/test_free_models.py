@@ -572,3 +572,42 @@ def test_export_requires_owner():
     """GET /api/models/export is owner-only."""
     r = client.get("/api/models/export")
     assert r.status_code == 401
+
+
+def test_provider_notes_roundtrip():
+    """Notes field is saved and returned by GET /api/models."""
+    _override_owner()
+    try:
+        client.post("/api/models", json={
+            "id": "openrouter", "label": "OpenRouter", "kind": "openai",
+            "base_url": "https://openrouter.ai/api/v1",
+            "model": "qwen/qwen3-coder:free", "models": [],
+            "key": "", "notes": "use for cheap tasks",
+            "input_cost_per_m": 0, "output_cost_per_m": 0, "auto": True,
+        })
+        r = client.get("/api/models")
+        or_prov = next(p for p in r.json()["providers"] if p["id"] == "openrouter")
+        assert or_prov["notes"] == "use for cheap tasks"
+    finally:
+        _remove_override()
+
+
+def test_provider_notes_blank_preserves_existing():
+    """Sending empty notes string keeps existing notes (not overwrite)."""
+    cfg = server.load_models()
+    cfg["providers"]["openrouter"]["notes"] = "pre-existing note"
+    server.save_models(cfg)
+    _override_owner()
+    try:
+        # POST with empty notes — should keep existing
+        client.post("/api/models", json={
+            "id": "openrouter", "label": "OpenRouter", "kind": "openai",
+            "base_url": "https://openrouter.ai/api/v1",
+            "model": "qwen/qwen3-coder:free", "models": [],
+            "key": "", "notes": "",
+            "input_cost_per_m": 0, "output_cost_per_m": 0, "auto": True,
+        })
+        prov = server.load_models()["providers"]["openrouter"]
+        assert prov.get("notes") == "pre-existing note"
+    finally:
+        _remove_override()
