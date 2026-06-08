@@ -491,3 +491,60 @@ def test_key_save_blank_preserves_catalog_refreshed_at():
         assert prov.get("catalog_refreshed_at") == 1_000_001
     finally:
         _remove_override()
+
+
+def test_refresh_stores_last_error_on_network_failure(monkeypatch):
+    """Failed refresh stores last_error + last_error_at on the provider."""
+    _reset_or_cooldown()
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **kw: (_ for _ in ()).throw(OSError("timeout")))
+    _override_owner()
+    try:
+        r = client.post("/api/models/openrouter/refresh")
+        assert r.status_code == 502
+        prov = server.load_models()["providers"]["openrouter"]
+        assert "timeout" in prov.get("last_error", "")
+        assert prov.get("last_error_at") is not None
+    finally:
+        _remove_override()
+
+
+def test_refresh_clears_last_error_on_success(monkeypatch):
+    """Successful refresh removes last_error and last_error_at."""
+    _reset_or_cooldown()
+    # Pre-seed a previous error
+    cfg = server.load_models()
+    cfg["providers"]["openrouter"]["last_error"] = "old error"
+    cfg["providers"]["openrouter"]["last_error_at"] = 1
+    server.save_models(cfg)
+
+    payload = _or_response([_model("free/model", 0, 0)])
+    class _Resp:
+        def read(self): return payload
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **kw: _Resp())
+    _override_owner()
+    try:
+        r = client.post("/api/models/openrouter/refresh")
+        assert r.status_code == 200
+        prov = server.load_models()["providers"]["openrouter"]
+        assert "last_error" not in prov
+        assert "last_error_at" not in prov
+    finally:
+        _remove_override()
+
+
+def test_models_get_exposes_last_error_fields():
+    """GET /api/models includes last_error and last_error_at when set."""
+    cfg = server.load_models()
+    cfg["providers"]["openrouter"]["last_error"] = "network down"
+    cfg["providers"]["openrouter"]["last_error_at"] = 9999
+    server.save_models(cfg)
+    _override_owner()
+    try:
+        r = client.get("/api/models")
+        or_prov = next(p for p in r.json()["providers"] if p["id"] == "openrouter")
+        assert or_prov["last_error"] == "network down"
+        assert or_prov["last_error_at"] == 9999
+    finally:
+        _remove_override()

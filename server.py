@@ -1708,7 +1708,9 @@ def models_get(_: str = Depends(verify_owner)):
              "in": p.get("in", 0), "out": p.get("out", 0), "auto": p.get("auto", False),
              "catalog": {e["id"]: {"in": e["in"], "out": e["out"]}
                          for e in p.get("catalog", [])},
-             "catalog_refreshed_at": p.get("catalog_refreshed_at")}
+             "catalog_refreshed_at": p.get("catalog_refreshed_at"),
+             "last_error": p.get("last_error"),
+             "last_error_at": p.get("last_error_at")}
             for pid, p in cfg["providers"].items()],
     }
 
@@ -1823,6 +1825,10 @@ def models_openrouter_refresh(_: str = Depends(verify_owner)):
         with urllib.request.urlopen(req_obj, timeout=20) as resp:
             data = json.loads(resp.read())
     except Exception as exc:
+        prov["last_error"] = str(exc)
+        prov["last_error_at"] = int(time.time())
+        cfg["providers"]["openrouter"] = prov
+        save_models(cfg)
         raise HTTPException(502, f"OpenRouter fetch failed: {exc}") from exc
     catalog = []
     for m in data.get("data", []):
@@ -1840,6 +1846,8 @@ def models_openrouter_refresh(_: str = Depends(verify_owner)):
         catalog.append({"id": mid, "name": m.get("name", mid), "in": p_in, "out": p_out})
     prov["catalog"] = catalog
     prov["catalog_refreshed_at"] = int(time.time())
+    prov.pop("last_error", None)
+    prov.pop("last_error_at", None)
     cfg["providers"]["openrouter"] = prov
     save_models(cfg)
     free_count = sum(1 for e in catalog if e["in"] == 0 and e["out"] == 0)
