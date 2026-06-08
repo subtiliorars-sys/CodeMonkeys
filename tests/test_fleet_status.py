@@ -214,3 +214,20 @@ def test_truncates_to_cap_newest_first(monkeypatch):
     # newest-first: the cap keeps the most recent sessions
     kept = {w["name"] for w in body["workers"]}
     assert f"session-{ids[-1]}" in kept
+
+
+def test_response_under_1mb_with_max_workers(monkeypatch):
+    # Contract bound: ≤200 workers, ≤1 MB total response. Create 200 sessions
+    # with long-ish titles + a repo to maximize per-worker payload size.
+    _enable(monkeypatch)
+    for i in range(server.FLEET_MAX_WORKERS):
+        s = server.new_session(title=f"feature-{i:03d}: " + "x" * 150, repo="owner/feature-branch")
+        s["status"] = "running"
+        server.emit(s, "tool_call", name="bash")
+    r = client.get("/fleet-status.json", headers=_hdr())
+    assert r.status_code == 200
+    assert len(r.content) <= 1_048_576, (
+        f"Response body {len(r.content)} bytes exceeds 1 MB contract bound"
+    )
+    body = r.json()
+    assert len(body["workers"]) == server.FLEET_MAX_WORKERS
