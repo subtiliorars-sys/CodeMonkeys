@@ -775,6 +775,20 @@ $("modal-close").onclick = () => $("modal-models").classList.add("hidden");
 // Track which provider rows are expanded (session-only; collapses reset on modal close)
 const _pvExpanded = new Set();
 
+// Keyboard shortcuts for the models modal
+document.addEventListener("keydown", (e) => {
+  const modalOpen = !$("modal-models")?.classList.contains("hidden");
+  if (e.key === "Escape" && modalOpen) {
+    $("modal-models").classList.add("hidden");
+    return;
+  }
+  if (!modalOpen) return;
+  // Don't fire when user is typing in an input
+  if (["INPUT","TEXTAREA","SELECT"].includes(e.target.tagName)) return;
+  if (e.key === "r") $("btn-or-refresh")?.click();
+  if (e.key === "a" && !$("btn-add-all-free")?.classList.contains("hidden")) $("btn-add-all-free")?.click();
+});
+
 async function loadProviders() {
   const d = await api("/api/models");
   $("auto-cheapest").checked = !!d.auto_cheapest;
@@ -925,6 +939,8 @@ async function loadProviders() {
         model, models: prov.models, key,
         input_cost_per_m: prov.in, output_cost_per_m: prov.out, auto,
       });
+      // auto-collapse the row after a successful key save
+      if (key) _pvExpanded.delete(id);
       loadProviders();
     } catch (e) { alert(e.message); }
   }));
@@ -1000,6 +1016,23 @@ async function loadProviders() {
   };
   if ($("btn-collapse-all")) $("btn-collapse-all").onclick = () => _setAllExpanded(false);
   if ($("btn-expand-all")) $("btn-expand-all").onclick = () => _setAllExpanded(true);
+
+  // Global model search: show only rows whose label or model IDs match
+  const searchInput = $("provider-search");
+  if (searchInput) {
+    const applySearch = () => {
+      const q = searchInput.value.toLowerCase();
+      document.querySelectorAll("#provider-rows > div").forEach((row, i) => {
+        if (!q) { row.style.display = ""; return; }
+        const p = sortedProviders[i];
+        if (!p) { row.style.display = ""; return; }
+        const haystack = [p.label, p.id, ...(p.models || [])].join(" ").toLowerCase();
+        row.style.display = haystack.includes(q) ? "" : "none";
+      });
+    };
+    searchInput.oninput = applySearch;
+    applySearch(); // apply on re-render if search text persists
+  }
 
   // Provider label inline rename: double-click the <b> label to edit
   document.querySelectorAll(".pv-label-edit").forEach((b) => {
@@ -1165,11 +1198,20 @@ $("btn-or-refresh").onclick = async () => {
   } catch (e) {
     const msg = e.message || "refresh failed";
     $("free-models-msg").textContent = msg;
-    // show cooldown remaining in button label
+    // live countdown in button label for cooldown errors
     const wait = msg.match(/wait (\d+)s/);
     if (wait) {
-      $("btn-or-refresh").textContent = `↻ ${wait[1]}s`;
-      setTimeout(() => { $("btn-or-refresh").textContent = "↻ Refresh"; }, parseInt(wait[1]) * 1000);
+      let remaining = parseInt(wait[1]);
+      const tick = setInterval(() => {
+        remaining--;
+        if (remaining <= 0) {
+          clearInterval(tick);
+          $("btn-or-refresh").textContent = "↻ Refresh";
+          $("btn-or-refresh").disabled = false;
+        } else {
+          $("btn-or-refresh").textContent = `↻ ${remaining}s`;
+        }
+      }, 1000);
     }
   } finally {
     $("btn-or-refresh").disabled = false;
