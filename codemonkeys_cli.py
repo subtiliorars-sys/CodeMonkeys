@@ -449,6 +449,284 @@ def cmd_user(args_str):
             print(f"  ❌ Failed to set user: {new_user}")
 
 
+# ── GitHub Commands ────────────────────────────────────────────
+
+def cmd_github(args_str):
+    """/github <subcommand> [args...] — GitHub integration.
+    
+    Subcommands:
+      login <token> [name]    → Store a GitHub PAT and test connection
+      status                  → Show GitHub connection and git status
+      push [remote] [branch]  → Push current branch to GitHub
+      pull [remote] [branch]  → Pull from GitHub
+      repos                   → List user repos on GitHub
+      token list              → List stored tokens
+      token add <token> [name] → Add a token
+      token remove <id>       → Remove a token
+      branch <name>           → Create and switch to a new branch
+      commit <message>        → Stage all and commit
+      remote [name]           → Show remote URL
+    """
+    from github_bridge import (
+        validate_token, add_token, get_tokens, get_active_token,
+        delete_token, get_git_status, git_push, git_pull,
+        list_user_repos, get_git_remote_url, git_add_all,
+        git_commit, git_create_branch, push_current_branch,
+    )
+    from config_manager import get_current_user
+    
+    parts = args_str.strip().split(maxsplit=2)
+    subcmd = parts[0].lower() if parts else ""
+    
+    if not subcmd or subcmd in ("help", "--help"):
+        print()
+        print("  🐙 GitHub Integration Commands")
+        print("  ────────────────────────────────")
+        print("  /github login <token> [name]   Store & test a GitHub PAT")
+        print("  /github status                 Show git + GitHub status")
+        print("  /github push [remote] [branch]  Push to GitHub")
+        print("  /github pull [remote] [branch]  Pull from GitHub")
+        print("  /github repos                  List your GitHub repos")
+        print("  /github token list             Show stored tokens")
+        print("  /github token add <token> [n]  Store a token")
+        print("  /github token remove <id>      Remove a token")
+        print("  /github commit <message>       Stage all & commit locally")
+        print("  /github branch <name>          Create & switch branch")
+        print("  /github remote [name]          Show remote URL")
+        print()
+        return
+    
+    user_id = get_current_user()
+    
+    if subcmd == "login":
+        token = parts[1] if len(parts) > 1 else ""
+        if not token:
+            print("  ❌ Usage: /github login <token> [name]")
+            return
+        name = parts[2] if len(parts) > 2 else "GitHub PAT"
+        print("  🔑 Validating token...")
+        validation = validate_token(token)
+        if validation.get("valid"):
+            # Store it
+            token_obj = add_token(user_id, name, token)
+            if token_obj:
+                print(f"  ✅ Logged in as: {validation.get('user')} ({validation.get('name', '')})")
+                print(f"     Scopes: {', '.join(validation.get('scopes', ['unknown']))}")
+                print(f"     Rate limit remaining: {validation.get('rate_limit_remaining', '?')}")
+                print(f"     Token saved: {token_obj['id'][:8]}")
+            else:
+                print("  ❌ Failed to save token")
+        else:
+            print(f"  ❌ {validation.get('error', 'Token validation failed')}")
+        return
+    
+    elif subcmd == "status":
+        print()
+        # GitHub connection status
+        token = get_active_token(user_id)
+        if token:
+            validation = validate_token(token)
+            if validation.get("valid"):
+                print(f"  ✅ GitHub: connected as {validation.get('user')}")
+                print(f"     Scopes: {', '.join(validation.get('scopes', ['unknown']))}")
+            else:
+                print(f"  ❌ GitHub: token invalid — {validation.get('error')}")
+        else:
+            print(f"  ⚠️  GitHub: no token configured")
+            print(f"     Use: /github login <token>")
+        
+        # Local git status
+        print()
+        status = get_git_status()
+        if status.get("error"):
+            print(f"  ❌ Git: {status['error']}")
+        else:
+            print(f"  📂 Git: branch={status.get('branch')}")
+            print(f"     Clean: {'✅' if status.get('is_clean') else '❌'}")
+            if status.get("ahead") or status.get("behind"):
+                print(f"     Ahead: {status.get('ahead')} | Behind: {status.get('behind')}")
+            if not status.get("is_clean"):
+                mods = status.get("modified", [])
+                staged = status.get("staged", [])
+                untracked = status.get("untracked", [])
+                if staged:
+                    print(f"     Staged: {len(staged)} file(s)")
+                if mods:
+                    print(f"     Modified: {len(mods)} file(s)")
+                if untracked:
+                    print(f"     Untracked: {len(untracked)} file(s)")
+            
+            # Remote info
+            remote_url = get_git_remote_url("origin")
+            if remote_url:
+                print(f"     Remote origin: {_mask_url(remote_url)}")
+        
+        # Token list
+        tokens = get_tokens(user_id)
+        if tokens:
+            print(f"\n  🔑 Stored tokens ({len(tokens)}):")
+            for t in tokens:
+                active = "✅" if t.get("is_active", True) else "⏸️"
+                print(f"     {active} [{t['id'][:8]}] {t['name']}")
+        print()
+        return
+    
+    elif subcmd == "push":
+        remote = parts[1] if len(parts) > 1 else "origin"
+        branch = parts[2] if len(parts) > 2 else None
+        print(f"  📤 Pushing {remote}/{branch or 'current'}...")
+        result = push_current_branch(user_id, remote, branch)
+        if result.get("success"):
+            print(f"  ✅ Pushed to {result.get('pushed_to', remote)}")
+            if result.get("output"):
+                print(f"     {result['output']}")
+        else:
+            print(f"  ❌ Push failed: {result.get('error', 'Unknown error')}")
+        return
+    
+    elif subcmd == "pull":
+        remote = parts[1] if len(parts) > 1 else "origin"
+        branch = parts[2] if len(parts) > 2 else None
+        token = get_active_token(user_id)
+        if not token:
+            print("  ❌ No GitHub token configured. Use /github login <token>")
+            return
+        print(f"  📥 Pulling {remote}/{branch or 'current'}...")
+        result = git_pull(remote, branch, token)
+        if result.get("success"):
+            print(f"  ✅ Pulled successfully")
+            if result.get("output"):
+                for line in result["output"].split("\n"):
+                    print(f"     {line}")
+        else:
+            print(f"  ❌ Pull failed: {result.get('error', 'Unknown error')}")
+        return
+    
+    elif subcmd == "repos":
+        token = get_active_token(user_id)
+        if not token:
+            print("  ❌ No GitHub token configured. Use /github login <token>")
+            return
+        print("  📋 Fetching repos...")
+        result = list_user_repos(token)
+        if result.get("error"):
+            print(f"  ❌ {result['error']}")
+        else:
+            repos = result.get("repos", [])
+            if not repos:
+                print("  📭 No repos found")
+            else:
+                print(f"  📋 Repos ({len(repos)}):")
+                for r in repos:
+                    icon = "🔒" if r.get("private") else "🌍"
+                    lang = r.get("language") or "?"
+                    print(f"     {icon} {r['full_name']} ({lang})")
+        return
+    
+    elif subcmd == "token":
+        action = parts[1].lower() if len(parts) > 1 else ""
+        if action == "list":
+            tokens = get_tokens(user_id)
+            if not tokens:
+                print("  📭 No tokens stored")
+            else:
+                print(f"  🔑 Stored tokens ({len(tokens)}):")
+                for t in tokens:
+                    active = "✅" if t.get("is_active", True) else "⏸️"
+                    created = t.get("created_at", "?")[:10]
+                    print(f"     {active} [{t['id'][:8]}] {t['name']} (added {created})")
+        elif action == "add":
+            token = parts[2] if len(parts) > 2 else ""
+            if not token:
+                print("  ❌ Usage: /github token add <token> [name]")
+                return
+            name = parts[3] if len(parts) > 3 else "GitHub PAT"
+            # Validate first
+            validation = validate_token(token)
+            if not validation.get("valid"):
+                print(f"  ❌ Token invalid: {validation.get('error')}")
+                return
+            token_obj = add_token(user_id, name, token)
+            if token_obj:
+                print(f"  ✅ Token saved [{token_obj['id'][:8]}] as '{name}'")
+                print(f"     GitHub user: {validation.get('user')}")
+            else:
+                print("  ❌ Failed to save token")
+        elif action == "remove":
+            tid = parts[2] if len(parts) > 2 else ""
+            if not tid:
+                print("  ❌ Usage: /github token remove <id>")
+                return
+            if delete_token(user_id, tid):
+                print(f"  ✅ Token [{tid[:8]}] removed")
+            else:
+                print(f"  ❌ Token not found: {tid}")
+        else:
+            print("  ❌ Usage: /github token list | add <token> [name] | remove <id>")
+        return
+    
+    elif subcmd == "commit":
+        message = parts[1] if len(parts) > 1 else ""
+        if not message:
+            print("  ❌ Usage: /github commit <message>")
+            return
+        # Stage all first
+        stage_result = git_add_all()
+        if not stage_result.get("success"):
+            print(f"  ❌ Stage failed: {stage_result.get('error')}")
+            return
+        commit_result = git_commit(message)
+        if commit_result.get("success"):
+            sha = commit_result.get("sha")
+            if sha:
+                print(f"  ✅ Committed [{sha[:8]}] {message}")
+            else:
+                print(f"  ℹ️  Nothing to commit")
+        else:
+            print(f"  ❌ Commit failed: {commit_result.get('error')}")
+        return
+    
+    elif subcmd == "branch":
+        name = parts[1] if len(parts) > 1 else ""
+        if not name:
+            print("  ❌ Usage: /github branch <name>")
+            return
+        base = parts[2] if len(parts) > 2 else None
+        result = git_create_branch(name, base)
+        if result.get("success"):
+            print(f"  🌿 Switched to new branch: {name}")
+        else:
+            print(f"  ❌ Branch failed: {result.get('error')}")
+        return
+    
+    elif subcmd == "remote":
+        remote_name = parts[1] if len(parts) > 1 else "origin"
+        url = get_git_remote_url(remote_name)
+        if url:
+            print(f"  🌐 {remote_name}: {_mask_url(url)}")
+        else:
+            print(f"  ⚠️  No remote '{remote_name}' configured")
+        return
+    
+    else:
+        print(f"  ❌ Unknown github subcommand: {subcmd}")
+        print("     Type /github help for available commands")
+
+
+def _mask_url(url: str) -> str:
+    """Mask credentials in a URL for display."""
+    if "@" in url:
+        # https://user:pass@host/path → https://***@host/path
+        scheme_rest = url.split("://", 1)
+        if len(scheme_rest) == 2:
+            scheme, rest = scheme_rest
+            if "@" in rest:
+                # Hide everything before @
+                host_part = rest.split("@", 1)[1]
+                return f"{scheme}://***@{host_part}"
+    return url
+
+
 def cmd_report_spend(args_str):
     """/report_spend <amount> — Agent self-reports API spend for session tracking.
     This is how the Daystrom agent tells the system how much it cost to run.
@@ -493,7 +771,8 @@ def cmd_help():
     print("  /feedback         Submit change request to the Change Forge")
     print("  /forge            Show Change Forge status / manage solutions")
     print("  /user [id]        Show or set current user identity")
-    print("  /help             Show this help")
+    print("  /github           GitHub integration (login, push, pull, repos, tokens)
+  /help             Show this help")
     print("  Ctrl+C / Ctrl+D   Exit")
     print()
 
@@ -590,6 +869,8 @@ def dispatch_command(line):
             cmd_forge(args)
         elif cmd == "/user":
             cmd_user(args)
+        elif cmd == "/github":
+            cmd_github(args)
         elif cmd == "/help":
             cmd_help()
         else:

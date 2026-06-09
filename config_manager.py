@@ -51,10 +51,10 @@ DEFAULT_CONFIG = {
     "model_selection_mode": "auto",
     "openrouter_base_model": "",
     # ── Budget (MONTHLY system-wide cap) ────────────────────
-    "budget_limit": 1.0,            # Monthly system-wide spend cap in USD
+    "budget_limit": 200.0,          # Monthly system-wide spend cap in USD
     "budget_spent": 0.0,            # Spent this month (all sources)
     "budget_month": "",             # Current tracking month "YYYY-MM"
-    "session_budget": 0.50,         # Per-session cap in USD (agent self-reports)
+    "session_budget": 50.0,         # Per-session cap in USD (agent self-reports)
     "session_spent": 0.0,           # Spent this session (agent self-reports)
     "provider": "openrouter",
     # ── User system ─────────────────────────────────────────
@@ -314,7 +314,7 @@ def get_budget_info():
     limit, spent, remaining, month.
     """
     config = load_config()
-    limit = config.get("budget_limit", 1.0)
+    limit = config.get("budget_limit", 200.0)
     spent = config.get("budget_spent", 0.0)
     month = config.get("budget_month", "")
     remaining = max(0.0, limit - spent)
@@ -352,8 +352,7 @@ def record_spend(amount):
 def is_budget_exhausted():
     """Return True if monthly budget_spent >= budget_limit."""
     config = load_config()
-    limit = config.get("budget_limit", 1.0)
-    spent = config.get("budget_spent", 0.0)
+    limit = config.get("budget_limit", 200.0)
     return spent >= limit
 
 
@@ -365,7 +364,7 @@ def get_session_budget_info():
     limit, spent, remaining.
     """
     config = load_config()
-    limit = config.get("session_budget", 0.50)
+    limit = config.get("session_budget", 50.0)
     spent = config.get("session_spent", 0.0)
     remaining = max(0.0, limit - spent)
     return {
@@ -398,8 +397,8 @@ def record_session_spend(amount):
 
     if save_config(config):
         return (
-            max(0.0, config.get("session_budget", 0.50) - session_spent),
-            max(0.0, config.get("budget_limit", 1.0) - config["budget_spent"]),
+            max(0.0, config.get("session_budget", 50.0) - session_spent),
+            max(0.0, config.get("budget_limit", 200.0) - config["budget_spent"]),
         )
     return None
 
@@ -407,7 +406,7 @@ def record_session_spend(amount):
 def is_session_exhausted():
     """Return True if session_spent >= session_budget."""
     config = load_config()
-    limit = config.get("session_budget", 0.50)
+    limit = config.get("session_budget", 50.0)
     spent = config.get("session_spent", 0.0)
     return spent >= limit
 
@@ -513,6 +512,7 @@ DEFAULT_USER_PROFILE = {
     "tier": "howler",
     "display_name": "",
     "openrouter_api_keys": [],
+    "github_tokens": [],           # GitHub Personal Access Tokens
     "budget": {
         "monthly_limit": 5.00,
         "per_change_max": 0.50,

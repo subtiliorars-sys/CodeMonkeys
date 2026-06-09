@@ -38,6 +38,10 @@ from config_manager import (
     check_user_permission, USER_TIERS, set_user_tier,
 )
 from forge_ui import get_forge_html
+from github_bridge import (
+    validate_token, get_active_token, get_tokens, add_token,
+    delete_token, list_user_repos, get_git_status, get_git_remote_url,
+)
 from feedback_engine import (
     create_issue, list_issues, quote_user_for_feedback, load_issue,
     classify_risk,
@@ -287,6 +291,42 @@ HTML_PAGE = r"""<!DOCTYPE html>
   </div>
 
   <div class="card">
+    <h2>🐙 GitHub Integration</h2>
+    <p class="note" style="margin-bottom:1rem;">
+      Connect your GitHub account to push code, create repos, and manage
+      branches — all from CodeMonkeys.
+    </p>
+    <div class="field-group">
+      <label for="github-token">GitHub Personal Access Token</label>
+      <input type="text" id="github-token" class="api-key"
+             placeholder="Paste your GitHub PAT here..."
+             autocomplete="off"
+             data-1p-ignore=""
+             data-lpignore="true"
+             data-form-type="other"
+             spellcheck="false">
+      <p class="note">
+        🔒 Requires <code>repo</code> scope for private repos, <code>workflow</code> for Actions.
+        Stored in your user profile with restricted permissions.
+      </p>
+    </div>
+    <div id="github-status" class="status-row" style="display:none;">
+      <span class="dot"></span>
+      <span id="github-status-text"></span>
+    </div>
+    <div id="github-repos" style="margin-top:0.5rem; display:none;">
+      <label style="font-size:0.85rem;color:var(--muted);font-weight:600;text-transform:uppercase;">Your Repos</label>
+      <div id="github-repo-list" style="margin-top:0.3rem;"></div>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="saveGithubToken()">💾 Save Token</button>
+      <button class="btn btn-secondary" onclick="testGithubToken()">🧪 Test Connection</button>
+      <button class="btn btn-secondary" onclick="listGithubRepos()">📋 List Repos</button>
+      <button class="btn btn-danger" onclick="clearGithubToken()">🗑️ Clear</button>
+    </div>
+  </div>
+
+  <div class="card">
     <h2>📋 Config File</h2>
     <p class="note">
       Location: <code id="config-path">~/.banana_shelter/config.json</code><br>
@@ -429,8 +469,145 @@ function hideMessage() {
   document.getElementById('message').style.display = 'none';
 }
 
+// ── GitHub Functions ────────────────────────────────────────────
+
+async function loadGithubStatus() {
+  try {
+    const resp = await fetch('/api/github/status');
+    const result = await resp.json();
+    const statusDiv = document.getElementById('github-status');
+    const statusText = document.getElementById('github-status-text');
+    const dot = statusDiv.querySelector('.dot');
+    
+    if (result.connected) {
+      statusDiv.style.display = 'flex';
+      dot.className = 'dot green';
+      statusText.textContent = `Connected as ${result.user} | ${result.scopes.length} scopes`;
+      
+      if (result.repos_count !== undefined) {
+        const repoInfo = document.getElementById('github-repos');
+        repoInfo.style.display = 'block';
+        document.getElementById('github-repo-list').innerHTML =
+          `<span style="color:var(--muted);font-size:0.85rem;">${result.repos_count} repos | Remaining: ${result.rate_limit_remaining || '?'} req/hr</span>`;
+      }
+    } else {
+      statusDiv.style.display = 'flex';
+      dot.className = result.token_configured ? 'dot red' : 'dot yellow';
+      statusText.textContent = result.message || 'Not connected';
+    }
+  } catch(e) {
+    // Ignore, token not configured yet
+  }
+}
+
+async function saveGithubToken() {
+  const token = document.getElementById('github-token').value.trim();
+  if (!token) {
+    showMessage('Please enter a GitHub token.', 'error');
+    return;
+  }
+  
+  try {
+    const resp = await fetch('/api/github/token', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ token: token })
+    });
+    const result = await resp.json();
+    if (result.success) {
+      showMessage('✅ GitHub token saved! Connected as ' + result.user, 'success');
+      document.getElementById('github-token').value = '';
+      loadGithubStatus();
+    } else {
+      showMessage('❌ ' + (result.error || 'Failed to save token'), 'error');
+    }
+  } catch(e) {
+    showMessage('❌ Error: ' + e.message, 'error');
+  }
+}
+
+async function testGithubToken() {
+  const statusDiv = document.getElementById('github-status');
+  const statusText = document.getElementById('github-status-text');
+  const dot = statusDiv.querySelector('.dot');
+  statusDiv.style.display = 'flex';
+  dot.className = 'dot yellow';
+  
+  const token = document.getElementById('github-token').value.trim();
+  if (!token) {
+    statusText.textContent = 'Enter a token first';
+    return;
+  }
+  
+  try {
+    const resp = await fetch('/api/github/test', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ token: token })
+    });
+    const result = await resp.json();
+    if (result.valid) {
+      dot.className = 'dot green';
+      statusText.textContent = `✅ Connected as ${result.user} — ${result.scopes.length} scopes, ${result.rate_limit_remaining} req/hr`;
+    } else {
+      dot.className = 'dot red';
+      statusText.textContent = '❌ ' + (result.error || 'Invalid token');
+    }
+  } catch(e) {
+    dot.className = 'dot red';
+    statusText.textContent = '❌ Error: ' + e.message;
+  }
+}
+
+async function listGithubRepos() {
+  const repoDiv = document.getElementById('github-repos');
+  const repoList = document.getElementById('github-repo-list');
+  repoDiv.style.display = 'block';
+  repoList.innerHTML = '<span style="color:var(--muted);">Loading repos...</span>';
+  
+  try {
+    const resp = await fetch('/api/github/repos');
+    const result = await resp.json();
+    if (result.repos) {
+      let html = '';
+      for (const r of result.repos) {
+        const icon = r.private ? '🔒' : '🌍';
+        html += `<div style="padding:0.2rem 0;font-size:0.85rem;">
+          ${icon} <strong>${r.name}</strong>
+          <span style="color:var(--muted);">(${r.language || '?'})</span>
+          ${r.fork ? '<span style="color:var(--accent);">fork</span>' : ''}
+        </div>`;
+      }
+      repoList.innerHTML = html || '<span style="color:var(--muted);">No repos found</span>';
+    } else {
+      repoList.innerHTML = `<span style="color:var(--danger);">${result.error || 'Failed to load'}</span>`;
+    }
+  } catch(e) {
+    repoList.innerHTML = `<span style="color:var(--danger);">Error: ${e.message}</span>`;
+  }
+}
+
+async function clearGithubToken() {
+  if (!confirm('Clear GitHub token?')) return;
+  try {
+    const resp = await fetch('/api/github/token', {
+      method: 'DELETE'
+    });
+    const result = await resp.json();
+    if (result.success) {
+      showMessage('🗑️ GitHub token cleared.', 'success');
+      document.getElementById('github-status').style.display = 'none';
+      document.getElementById('github-repos').style.display = 'none';
+      loadGithubStatus();
+    }
+  } catch(e) {
+    showMessage('❌ Error: ' + e.message, 'error');
+  }
+}
+
 // Load on startup
 loadConfig();
+loadGithubStatus();
 </script>
 </body>
 </html>"""
@@ -484,9 +661,25 @@ class SettingsHandler(BaseHTTPRequestHandler):
             issue_id = path.split("/")[-1]
             self._handle_forge_screenshot(issue_id)
         
+        # ── GitHub API ──
+        elif path == "/api/github/status":
+            self._handle_github_status()
+        elif path == "/api/github/repos":
+            self._handle_github_repos()
+        
         else:
             self._send_json(404, {"error": "Not found"})
     
+    def do_DELETE(self):
+        """Handle DELETE requests."""
+        parsed = urlparse(self.path)
+        path = parsed.path
+        
+        if path == "/api/github/token":
+            self._handle_github_token({})
+        else:
+            self._send_json(404, {"success": False, "error": "Not found"})
+
     def do_POST(self):
         parsed = urlparse(self.path)
         path = parsed.path
@@ -511,6 +704,12 @@ class SettingsHandler(BaseHTTPRequestHandler):
             self._handle_forge_edit(data)
         elif path == "/api/forge/reroll":
             self._handle_forge_reroll(data)
+        
+        # ── GitHub API ──
+        elif path == "/api/github/token":
+            self._handle_github_token(data)
+        elif path == "/api/github/test":
+            self._handle_github_test(data)
         
         else:
             self._send_json(404, {"success": False, "error": "Not found"})
@@ -818,6 +1017,120 @@ class SettingsHandler(BaseHTTPRequestHandler):
                 "cards": cards,
             })
     
+    # ── GitHub API Handlers ──────────────────────────────────────────
+
+    def _handle_github_status(self):
+        """Check GitHub connection status for current user."""
+        user_id = self._get_user()
+        token = get_active_token(user_id)
+        tokens = get_tokens(user_id)
+
+        if not token:
+            self._send_json(200, {
+                "connected": False,
+                "token_configured": False,
+                "message": "No GitHub token configured",
+                "tokens_count": len(tokens),
+            })
+            return
+
+        validation = validate_token(token)
+        if validation.get("valid"):
+            # Get repo count
+            all_repos = list_user_repos(token, per_page=100)
+            repo_count = len(all_repos.get("repos", [])) if not all_repos.get("error") else "?"
+
+            self._send_json(200, {
+                "connected": True,
+                "token_configured": True,
+                "user": validation.get("user"),
+                "name": validation.get("name", ""),
+                "scopes": validation.get("scopes", []),
+                "rate_limit_remaining": validation.get("rate_limit_remaining", 0),
+                "repos_count": repo_count,
+                "tokens_count": len(tokens),
+            })
+        else:
+            self._send_json(200, {
+                "connected": False,
+                "token_configured": True,
+                "message": validation.get("error", "Token invalid"),
+                "tokens_count": len(tokens),
+            })
+
+    def _handle_github_repos(self):
+        """List GitHub repos for current user."""
+        user_id = self._get_user()
+        token = get_active_token(user_id)
+
+        if not token:
+            self._send_json(200, {"repos": [], "error": "No token configured"})
+            return
+
+        result = list_user_repos(token)
+        if result.get("error"):
+            self._send_json(200, {"repos": [], "error": result["error"]})
+        else:
+            repos = []
+            for r in result.get("repos", []):
+                repos.append({
+                    "name": r.get("name"),
+                    "full_name": r.get("full_name"),
+                    "private": r.get("private", False),
+                    "fork": r.get("fork", False),
+                    "language": r.get("language"),
+                    "description": r.get("description", ""),
+                })
+            self._send_json(200, {"repos": repos})
+
+    def _handle_github_token(self, data):
+        """Save or delete GitHub token."""
+        user_id = self._get_user()
+
+        if self.command == "DELETE":
+            tokens = get_tokens(user_id)
+            for t in tokens:
+                delete_token(user_id, t["id"])
+            self._send_json(200, {"success": True, "message": "Tokens cleared"})
+            return
+
+        # POST: Save token
+        token_value = data.get("token", "").strip()
+        if not token_value:
+            self._send_json(400, {"success": False, "error": "Token is required"})
+            return
+
+        # Validate first
+        validation = validate_token(token_value)
+        if not validation.get("valid"):
+            self._send_json(400, {
+                "success": False,
+                "error": validation.get("error", "Invalid token"),
+            })
+            return
+
+        # Store it
+        token_obj = add_token(user_id, "Web UI Token", token_value)
+        if token_obj:
+            self._send_json(200, {
+                "success": True,
+                "user": validation.get("user"),
+                "scopes": validation.get("scopes", []),
+                "token_id": token_obj["id"][:8],
+            })
+        else:
+            self._send_json(500, {"success": False, "error": "Failed to save token"})
+
+    def _handle_github_test(self, data):
+        """Test a GitHub token (not saved, just validate)."""
+        token_value = data.get("token", "").strip()
+        if not token_value:
+            self._send_json(400, {"valid": False, "error": "Token is required"})
+            return
+
+        validation = validate_token(token_value)
+        self._send_json(200, validation)
+
     def _send_json(self, status, data):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
