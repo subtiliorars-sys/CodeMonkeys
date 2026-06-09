@@ -6479,34 +6479,70 @@ def repos_clone(req: RepoClone, _: str = Depends(verify_user)):
 # ----------------------------------------------------------------- swarm viz feed
 
 @app.get("/api/swarm/state")
-def swarm_state(_: str = Depends(verify_user)):
+def swarm_state():
+    """Live backend feed for the Colony swarm visualizer.
+
+    No auth required — mirrors the open /swarm page (demo-safe; no keys or PII
+    in the response).  One agent entry per session; activity pulled from recent
+    events so the visualizer can animate banana projectiles between nodes.
+
+    State mapping (per session fields):
+      stop_flag set or status=="interrupted"  → "blocked"
+      status == "running"                     → "running"
+      status == "idle" with prior spend       → "done"
+      default                                 → "idle"
+    """
     agents, activity = [], []
-    for s in SESSIONS.values():
+    with _SESSIONS_LOCK:
+        snapshot = list(SESSIONS.values())
+
+    for s in snapshot:
+        # State mapping from session fields
+        if s["stop_flag"].is_set() or s.get("status") == "interrupted":
+            status = "blocked"
+        elif s.get("status") == "running":
+            status = "running"
+        elif s.get("status") == "idle" and s.get("spent_usd", 0) > 0:
+            status = "done"
+        else:
+            status = "idle"
+
+        agents.append({
+            "id":      f"session-{s['id']}",
+            "name":    s["title"],
+            "status":  status,
+            "tier":    "t1",
+        })
+
+        # Collect activity packets from recent events (last 40)
         with s["lock"]:
             recent = s["events"][-40:]
-        live = {}
         for e in recent:
-            if e["type"] == "agent_start":
-                live[e["agent"]] = {"id": f"{s['id']}:{e['agent']}", "name": e["agent"],
-                                    "tier": e.get("tier", "t1"), "status": "running",
-                                    "session": s["title"]}
-            elif e["type"] == "agent_end":
-                if e.get("agent") in live:
-                    live[e["agent"]]["status"] = "done"
-            elif e["type"] in ("tool", "text"):
-                activity.append({"type": e["type"], "from": e.get("agent") or "core",
+            if e["type"] in ("tool", "text"):
+                activity.append({"type": e["type"], "from": s["title"],
                                  "detail": e.get("name", "") or (e.get("text", "")[:60]),
                                  "ts": e["ts"]})
-        agents += list(live.values())
+
+    # Active model name — best-effort; empty string if no provider configured
+    try:
+        prov = main_provider(load_models())
+        model_label = prov["model"] if prov else ""
+    except Exception:
+        model_label = ""
+
+    active = sum(1 for a in agents if a["status"] == "running")
+    done   = sum(1 for a in agents if a["status"] == "done")
+
     return {
         "orchestrator": {"id": "core", "name": "CodeMonkeys", "tier": "orchestrate"},
         "agents": agents,
         "activity": activity[-30:],
         "stats": {
-            "sessions": len(SESSIONS),
-            "running": sum(1 for s in SESSIONS.values() if s["status"] != "idle"),
-            "spend_today_usd": round(daily_total_usd(), 4),   # N2: authoritative daily counter
+            "sessions":              len(agents),
+            "running":               active,
+            "spend_today_usd":       round(daily_total_usd(), 4),
             "budget_per_session_usd": SESSION_BUDGET_USD,
+            "model":                 model_label,
         },
     }
 
