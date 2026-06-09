@@ -393,7 +393,11 @@ async function refreshSessions() {
         spendEl.classList.add("hidden");
       }
     }
-    $("session-list").innerHTML = d.sessions.map((s) =>
+    const filterQ = ($("session-filter")?.value || "").toLowerCase();
+    const visibleSessions = filterQ
+      ? d.sessions.filter((s) => s.title.toLowerCase().includes(filterQ) || s.id.includes(filterQ))
+      : d.sessions;
+    $("session-list").innerHTML = visibleSessions.map((s) =>
       `<div class="group flex items-center gap-1 rounded px-2 py-1 hover:bg-yellow-900/20 ${s.id === state.sid ? "bg-yellow-900/30" : ""}">
          <span data-sid="${s.id}" class="session-item flex-1 cursor-pointer truncate ${s.id === state.sid ? "text-[var(--gold-bright)]" : "text-slate-300"}"
            title="Double-click to rename">
@@ -527,9 +531,42 @@ function openSession(sid) {
   refreshSessions();
   startPolling(true);
   $("btn-export-transcript")?.classList.remove("hidden");
+  $("btn-copy-transcript")?.classList.remove("hidden");
 }
 
 $("btn-export-transcript").onclick = _exportTranscript;
+
+$("btn-copy-transcript").onclick = async () => {
+  const btn = $("btn-copy-transcript");
+  if (!state.sid) return;
+  try {
+    const d = await api(`/api/sessions/${state.sid}/events?after=-1`);
+    const sess = document.querySelector(`[data-sid="${state.sid}"]`);
+    const title = sess ? sess.textContent.split("$")[0].trim() : state.sid;
+    const lines = [`# ${title}`, `session: ${state.sid}`, ""];
+    for (const e of (d.events || [])) {
+      if (e.type === "user") lines.push(`**user:** ${e.text || ""}`, "");
+      else if (e.type === "assistant") lines.push(`**assistant:** ${e.text || ""}`, "");
+      else if (e.type === "cost") lines.push(`*cost: $${e.usd}*`, "");
+    }
+    await navigator.clipboard.writeText(lines.join("\n"));
+    const orig = btn.textContent; btn.textContent = "✓ copied";
+    setTimeout(() => { btn.textContent = orig; }, 1500);
+  } catch (e) { alert("Copy failed: " + e.message); }
+};
+
+// Session filter: re-render session list on input
+$("session-filter").oninput = () => refreshSessions();
+
+// Provider preset buttons: fill in add-provider form fields
+document.querySelectorAll(".pv-preset").forEach((b) => {
+  b.onclick = () => {
+    $("pv-id").value = b.dataset.id;
+    $("pv-base").value = b.dataset.base;
+    $("pv-kind").value = b.dataset.kind;
+    $("pv-model").focus();
+  };
+});
 
 /* ---------------- event stream ---------------- */
 
@@ -1654,6 +1691,18 @@ $("btn-compare").onclick = () => {
   };
 });
 
+function _orRefreshCountdown(seconds) {
+  const btn = $("btn-or-refresh");
+  btn.disabled = true;
+  let remaining = seconds;
+  btn.textContent = `↻ ${remaining}s`;
+  const tick = setInterval(() => {
+    remaining--;
+    if (remaining <= 0) { clearInterval(tick); btn.textContent = "↻ Refresh"; btn.disabled = false; }
+    else btn.textContent = `↻ ${remaining}s`;
+  }, 1000);
+}
+
 $("btn-or-refresh").onclick = async () => {
   $("free-models-msg").textContent = "refreshing…";
   $("btn-or-refresh").disabled = true;
@@ -1662,33 +1711,19 @@ $("btn-or-refresh").onclick = async () => {
     _pvHealthRecord("openrouter", true);
     $("free-models-msg").textContent = `✓ ${r.total} models, ${r.free} free`;
     await loadFreeModels();
-    // auto-add free if checkbox is ticked
     if ($("chk-auto-add-free")?.checked && r.free > 0) {
       await api("/api/models/free/add_all", "POST", {});
       $("free-models-msg").textContent = `✓ ${r.total} models, ${r.free} free (auto-added)`;
       loadProviders();
     }
+    _orRefreshCountdown(60); // mirrors server-side _OR_REFRESH_COOLDOWN_S
   } catch (e) {
     _pvHealthRecord("openrouter", false);
     const msg = e.message || "refresh failed";
     $("free-models-msg").textContent = msg;
-    // live countdown in button label for cooldown errors
     const wait = msg.match(/wait (\d+)s/);
-    if (wait) {
-      let remaining = parseInt(wait[1]);
-      const tick = setInterval(() => {
-        remaining--;
-        if (remaining <= 0) {
-          clearInterval(tick);
-          $("btn-or-refresh").textContent = "↻ Refresh";
-          $("btn-or-refresh").disabled = false;
-        } else {
-          $("btn-or-refresh").textContent = `↻ ${remaining}s`;
-        }
-      }, 1000);
-    }
-  } finally {
-    $("btn-or-refresh").disabled = false;
+    if (wait) _orRefreshCountdown(parseInt(wait[1]));
+    else { $("btn-or-refresh").textContent = "↻ Refresh"; $("btn-or-refresh").disabled = false; }
   }
 };
 
