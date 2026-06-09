@@ -44,6 +44,8 @@
   .dot.waiting_approval { background: var(--gold); animation: pulse .6s infinite; }
   .dot.interrupted { background: #f59e0b; }
   @keyframes pulse { 50% { opacity: .35; } }
+  @keyframes free-glow { 0%,100% { text-shadow: none; } 50% { text-shadow: 0 0 6px #4ade80; } }
+  .free-pulse { animation: free-glow 2s ease-in-out infinite; }
   .scanlines::after { content: ""; pointer-events: none; position: fixed; inset: 0;
     background: repeating-linear-gradient(0deg, rgba(0,0,0,.16) 0 1px, transparent 1px 3px); opacity:.5; }
   .monkey { image-rendering: pixelated; filter: drop-shadow(0 0 8px rgba(212,175,55,.5)); }
@@ -138,7 +140,9 @@
         <span class="text-slate-500 uppercase tracking-wider">Sessions</span>
         <button id="btn-new-session" class="text-[var(--gold)] hover:text-[var(--gold-bright)]">+ new</button>
       </div>
-      <div id="session-list" class="space-y-1 mb-4"></div>
+      <input id="session-filter" type="text" class="input rounded px-2 py-0.5 text-[.7rem] w-full mb-1" placeholder="filter sessions…">
+      <div id="session-list" class="space-y-1 mb-1"></div>
+      <div id="sidebar-spend-today" class="owner-only text-slate-600 text-[.65rem] mb-3 hidden"></div>
       <div class="flex justify-between items-center mb-1">
         <span class="text-slate-500 uppercase tracking-wider">Saved Plans</span>
         <button id="btn-refresh-specs" class="text-[var(--gold)] hover:text-[var(--gold-bright)]" title="Refresh list">↻</button>
@@ -179,8 +183,19 @@
       <span id="hdr-title" class="text-slate-300 font-bold">no session</span>
       <span id="hdr-status" class="text-slate-500"></span>
       <span class="flex-1"></span>
+      <button id="btn-copy-transcript" class="hidden text-slate-500 hover:text-slate-300 text-[.65rem] border border-slate-800 rounded px-1.5 py-0.5" title="Copy session as Markdown to clipboard">⎘ copy</button>
+      <button id="btn-export-transcript" class="hidden text-slate-500 hover:text-slate-300 text-[.65rem] border border-slate-800 rounded px-1.5 py-0.5" title="Download session as Markdown file">⎘ md</button>
       <span id="hdr-spend" class="text-[var(--gold)]"></span>
     </header>
+    <!-- session budget progress bar -->
+    <div id="budget-bar-wrap" class="hidden owner-only h-1 bg-slate-800/60">
+      <div id="budget-bar-fill" class="h-full bg-green-500 transition-all" style="width:0%" title=""></div>
+    </div>
+    <!-- budget alert banner -->
+    <div id="budget-alert" class="hidden owner-only px-4 py-1 text-xs bg-red-900/30 border-b border-red-700/50 text-red-300 flex items-center gap-2">
+      <span id="budget-alert-msg"></span>
+      <button id="budget-alert-close" class="ml-auto text-red-500 hover:text-red-200">✕</button>
+    </div>
     <!-- encryption banner: shown when keys are unencrypted or failed to decrypt -->
     <div id="enc-banner" class="hidden owner-only px-4 py-2 text-xs bg-yellow-900/30 border-b border-yellow-700/50 text-yellow-300 flex items-center gap-2">
       <span id="enc-banner-msg"></span>
@@ -212,19 +227,96 @@
 <!-- ============ MODELS MODAL ============ -->
 <div id="modal-models" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
   <div class="panel gold-border rounded-lg p-5 w-full max-w-2xl max-h-[90vh] overflow-y-auto text-sm">
-    <div class="flex justify-between items-center mb-3">
-      <h2 class="wordmark font-bold">Models &amp; API keys</h2>
-      <button id="modal-close" class="text-slate-400 hover:text-white">✕</button>
+    <div class="flex items-center gap-2 mb-3">
+      <h2 class="wordmark font-bold flex-1">Models &amp; API keys <span id="modal-active-model" class="text-slate-500 font-normal text-xs"></span></h2>
+      <button id="btn-clear-errors" class="hidden text-red-400/70 hover:text-red-400 text-xs border border-red-900/40 rounded px-2 py-0.5" title="Clear last_error on all providers">✕ errors</button>
+      <button id="btn-cost-calc" class="text-slate-500 hover:text-slate-300 text-xs border border-slate-700 rounded px-2 py-0.5" title="Estimate cost for given token counts">⊕ calc</button>
+      <button id="btn-compare" class="text-slate-500 hover:text-slate-300 text-xs border border-slate-700 rounded px-2 py-0.5" title="Side-by-side model comparison table">⊞ compare</button>
+      <button id="btn-export-config" class="text-slate-500 hover:text-slate-300 text-xs border border-slate-700 rounded px-2 py-0.5" title="Copy config JSON to clipboard (keys excluded)">⎘ export</button>
+      <button id="btn-import-config" class="text-slate-500 hover:text-slate-300 text-xs border border-slate-700 rounded px-2 py-0.5" title="Paste exported JSON to restore providers (keys not overwritten)">⤵ import</button>
+      <span id="export-msg" class="text-xs text-slate-500"></span>
+      <button id="modal-close" class="text-slate-400 hover:text-white ml-1">✕</button>
+    </div>
+    <div id="spend-sparkline-wrap" class="owner-only hidden mb-3 text-xs">
+      <div class="flex items-end gap-0.5 h-8" id="spend-sparkline-bars" title="7-day spend"></div>
+      <div id="spend-sparkline-label" class="text-slate-600 mt-0.5"></div>
     </div>
     <label class="flex items-center gap-2 mb-3 text-xs bg-yellow-900/10 gold-border rounded px-3 py-2">
       <input id="auto-cheapest" type="checkbox" class="accent-yellow-500">
       <span><b class="text-[var(--gold-bright)]">Auto · cheapest-first</b> — start with the cheapest provider you've keyed
         (✓ in the cascade) and use pricier ones only when needed. Turn off to always use the ★ provider.</span>
+      <span id="ac-preview"></span>
     </label>
-    <p class="text-xs text-slate-500 mb-2">One API key per provider — then pick any model from it. ★ = main provider (when Auto is off). ✓ = include in the cheapest-first cascade.</p>
+    <div class="flex items-center gap-2 mb-1">
+      <p class="text-xs text-slate-500 flex-1">One API key per provider — then pick any model from it. ★ = main provider (when Auto is off). ✓ = include in the cheapest-first cascade.</p>
+      <input id="provider-search" type="text" class="input rounded px-2 py-0.5 text-xs w-28" placeholder="search models…" title="Filter providers by model name (global)">
+      <button id="btn-filter-all" class="text-xs border rounded px-2 py-0.5" title="Show all providers">all</button>
+      <button id="btn-filter-free" class="text-xs border rounded px-2 py-0.5" title="Show only providers with free models">⚡</button>
+      <button id="btn-filter-keyed" class="text-xs border rounded px-2 py-0.5" title="Show only providers with a key set">keyed</button>
+      <button id="btn-filter-auto" class="text-xs border rounded px-2 py-0.5" title="Show only auto-cascade providers">auto</button>
+      <span class="text-slate-700 text-xs">|</span>
+      <button id="btn-sort-keyed" class="text-xs border rounded px-2 py-0.5" title="Sort: keyed first, then cost">keyed</button>
+      <button id="btn-sort-cost" class="text-xs border rounded px-2 py-0.5" title="Sort by cost (cheapest first)">cost</button>
+      <button id="btn-sort-name" class="text-xs border rounded px-2 py-0.5" title="Sort alphabetically">A-Z</button>
+      <button id="btn-sort-used" class="text-xs border rounded px-2 py-0.5" title="Sort by last manually selected">recent</button>
+      <button id="btn-collapse-all" class="text-slate-500 hover:text-slate-300 text-xs border border-slate-700 rounded px-2 py-0.5" title="Collapse all">▶▶</button>
+      <button id="btn-expand-all" class="text-slate-500 hover:text-slate-300 text-xs border border-slate-700 rounded px-2 py-0.5" title="Expand all">▼▼</button>
+    </div>
     <div id="provider-rows" class="space-y-1 mb-4 text-xs"></div>
+    <div id="cost-calc-section" class="hidden border-t border-slate-800 pt-3 mb-3">
+      <div class="flex items-center gap-3 mb-2">
+        <span class="text-slate-400 font-semibold text-xs">Cost estimate</span>
+        <label class="flex items-center gap-1 text-xs text-slate-500">In <input id="calc-in" type="number" class="input rounded px-1 py-0.5 w-20 text-xs" value="1000" min="0"></label>
+        <label class="flex items-center gap-1 text-xs text-slate-500">Out <input id="calc-out" type="number" class="input rounded px-1 py-0.5 w-20 text-xs" value="500" min="0"></label>
+        <span class="text-slate-600 text-xs">tokens</span>
+      </div>
+      <div id="calc-results" class="text-xs space-y-0.5"></div>
+    </div>
+    <div id="compare-section" class="hidden border-t border-slate-800 pt-3 mb-3">
+      <p class="text-slate-400 font-semibold text-xs mb-2">Model comparison</p>
+      <div id="compare-table" class="text-xs"></div>
+    </div>
+    <div id="free-models-section" class="border-t border-slate-800 pt-3 mb-4">
+      <div class="flex items-center gap-2 mb-2">
+        <button id="btn-toggle-free" class="text-slate-500 hover:text-slate-300 text-xs w-4" title="Toggle section">▼</button>
+        <span class="text-[var(--gold-bright)] font-semibold">⚡ Free models</span>
+        <button id="btn-or-refresh" class="text-slate-400 hover:text-[var(--gold)] text-xs border border-slate-700 rounded px-2 py-0.5">↻ Refresh</button>
+        <span id="free-models-msg" class="text-xs text-slate-500 flex-1"></span>
+        <label class="flex items-center gap-1 text-xs text-slate-500 cursor-pointer" title="Automatically add all free models after each refresh">
+          <input id="chk-auto-add-free" type="checkbox" class="accent-yellow-500">auto-add
+        </label>
+        <button id="btn-add-all-free" class="hidden gold-btn rounded px-3 py-0.5 text-xs">Add all free →</button>
+        <button id="btn-use-cheapest-free" class="hidden text-green-400/80 hover:text-green-300 text-xs border border-green-900/40 rounded px-2 py-0.5" title="Set active model to cheapest free model in OR's list">★ use cheapest</button>
+        <button id="btn-remove-free" class="hidden text-red-500/60 hover:text-red-400 text-xs border border-slate-700 rounded px-2 py-0.5">Remove :free</button>
+      </div>
+      <div id="free-models-list" class="text-xs text-slate-500 italic">Click ↻ Refresh to fetch free models from OpenRouter.</div>
+    </div>
+    <div class="border-t border-slate-800 pt-3 mb-4">
+      <p class="text-xs text-slate-500 mb-2">Quick-add free-tier providers (paste your key after pre-filling):</p>
+      <div id="preset-btns" class="flex flex-wrap gap-1 text-xs"></div>
+    </div>
+    <div class="border-t border-slate-800 pt-3 mb-4">
+      <p class="text-xs text-slate-500 mb-2">Bulk-add model IDs to a provider (one per line):</p>
+      <div class="flex gap-2 text-xs">
+        <select id="bulk-add-pid" class="input rounded px-2 py-1 w-36"></select>
+        <textarea id="bulk-add-models" class="input rounded px-2 py-1 flex-1 h-16 resize-none text-xs"
+          placeholder="model-id-1&#10;model-id-2&#10;…"></textarea>
+        <div class="flex flex-col gap-1">
+          <button id="btn-bulk-add" class="gold-btn rounded px-3 py-1">Add</button>
+          <span id="bulk-add-msg" class="text-slate-500 text-[.65rem]"></span>
+        </div>
+      </div>
+    </div>
     <div class="border-t border-slate-800 pt-3">
-      <p class="text-xs text-slate-500 mb-2">Add a custom provider (any OpenAI-compatible endpoint):</p>
+      <p class="text-xs text-slate-500 mb-1">Add a custom provider (any OpenAI-compatible endpoint):</p>
+      <div class="flex flex-wrap gap-1 mb-2">
+        <button class="pv-preset text-[.6rem] border border-slate-700/60 rounded px-1.5 py-0.5 text-slate-400 hover:text-[var(--gold)]" data-id="groq" data-base="https://api.groq.com/openai/v1" data-kind="openai">Groq</button>
+        <button class="pv-preset text-[.6rem] border border-slate-700/60 rounded px-1.5 py-0.5 text-slate-400 hover:text-[var(--gold)]" data-id="together" data-base="https://api.together.xyz/v1" data-kind="openai">Together</button>
+        <button class="pv-preset text-[.6rem] border border-slate-700/60 rounded px-1.5 py-0.5 text-slate-400 hover:text-[var(--gold)]" data-id="fireworks" data-base="https://api.fireworks.ai/inference/v1" data-kind="openai">Fireworks</button>
+        <button class="pv-preset text-[.6rem] border border-slate-700/60 rounded px-1.5 py-0.5 text-slate-400 hover:text-[var(--gold)]" data-id="mistral" data-base="https://api.mistral.ai/v1" data-kind="openai">Mistral</button>
+        <button class="pv-preset text-[.6rem] border border-slate-700/60 rounded px-1.5 py-0.5 text-slate-400 hover:text-[var(--gold)]" data-id="deepseek" data-base="https://api.deepseek.com" data-kind="openai">DeepSeek</button>
+        <button class="pv-preset text-[.6rem] border border-slate-700/60 rounded px-1.5 py-0.5 text-slate-400 hover:text-[var(--gold)]" data-id="anthropic" data-base="" data-kind="anthropic">Anthropic</button>
+      </div>
       <div class="grid grid-cols-2 gap-2 text-xs">
         <input id="pv-id" class="input rounded px-2 py-1" placeholder="id (e.g. groq)">
         <select id="pv-kind" class="input rounded px-2 py-1"><option value="openai">openai-compatible</option><option value="anthropic">anthropic</option></select>

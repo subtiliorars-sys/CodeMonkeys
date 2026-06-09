@@ -33,6 +33,7 @@ import tempfile
 import threading
 import time
 import urllib.parse
+import urllib.request
 import uuid
 
 _log = logging.getLogger(__name__)
@@ -131,6 +132,12 @@ SUBAGENT_MAX_TURNS = int(os.environ.get("SUBAGENT_MAX_TURNS", "25"))
 # abort the run after N_STOP identical failures to stop budget burn on stuck loops.
 N_NUDGE = int(os.environ.get("N_NUDGE", "2"))
 N_STOP  = int(os.environ.get("N_STOP",  "4"))
+# N8 — context auto-compaction. When estimated token count of system+history
+# exceeds COMPACT_AT_FRAC of the model's context window, replace the oldest turns
+# (past KEEP_RECENT) with a single synthetic digest note. Deterministic, no model call.
+COMPACT_AT_FRAC = float(os.environ.get("COMPACT_AT_FRAC", "0.7"))
+KEEP_RECENT     = int(os.environ.get("KEEP_RECENT", "12"))
+COMPACT_CONTEXT_WINDOW_DEFAULT = 128000   # safe fallback when model is unknown
 MAX_SUBAGENTS = 8          # Campaign cap from CORPS_COMMANDER.md
 BASH_TIMEOUT = 180
 OUTPUT_CAP = 16000         # chars of tool output fed back to the model
@@ -1486,29 +1493,35 @@ DEFAULT_PROVIDERS = {
     "gemini": {"label": "Google Gemini", "kind": "openai", "base_url": GEMINI_BASE,
                "key": "", "model": "gemini-2.5-flash",
                "models": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
-               "in": 0.30, "out": 2.50, "auto": True},
+               "in": 0.30, "out": 2.50, "auto": True,
+               "context_window": 1048576},
     "openrouter": {"label": "OpenRouter", "kind": "openai",
                    "base_url": "https://openrouter.ai/api/v1", "key": "",
                    "model": "qwen/qwen3-coder:free",
                    "models": ["qwen/qwen3-coder:free", "deepseek/deepseek-r1:free",
                               "openai/gpt-oss-120b:free", "anthropic/claude-sonnet-4.6",
                               "google/gemini-2.5-flash"],
-                   "in": 0.0, "out": 0.0, "auto": True},
+                   "in": 0.0, "out": 0.0, "auto": True,
+                   "context_window": 128000},
     "anthropic": {"label": "Anthropic Claude", "kind": "anthropic", "base_url": "",
                   "key": "", "model": "claude-sonnet-4-6",
                   "models": ["claude-haiku-4-5", "claude-sonnet-4-6", "claude-opus-4-8"],
-                  "in": 3.0, "out": 15.0, "auto": False},
+                  "in": 3.0, "out": 15.0, "auto": False,
+                  "context_window": 200000},
     "openai": {"label": "OpenAI", "kind": "openai", "base_url": "https://api.openai.com/v1",
                "key": "", "model": "gpt-4o-mini",
                "models": ["gpt-4o-mini", "gpt-4o", "o4-mini"],
-               "in": 0.15, "out": 0.60, "auto": False},
+               "in": 0.15, "out": 0.60, "auto": False,
+               "context_window": 128000},
     "deepseek": {"label": "DeepSeek", "kind": "openai", "base_url": "https://api.deepseek.com/v1",
                  "key": "", "model": "deepseek-chat",
                  "models": ["deepseek-chat", "deepseek-reasoner"],
-                 "in": 0.28, "out": 0.42, "auto": False},
+                 "in": 0.28, "out": 0.42, "auto": False,
+                 "context_window": 64000},
     "xai": {"label": "xAI Grok", "kind": "openai", "base_url": "https://api.x.ai/v1",
             "key": "", "model": "grok-4-fast",
-            "models": ["grok-4-fast", "grok-4"], "in": 0.20, "out": 0.50, "auto": False},
+            "models": ["grok-4-fast", "grok-4"], "in": 0.20, "out": 0.50, "auto": False,
+            "context_window": 131072},
 }
 _GEMINI_BASES = {GEMINI_BASE}
 
@@ -1612,7 +1625,8 @@ def _resolve(prov, pid=None):
     return {"pid": pid, "name": prov.get("label", "?"), "kind": prov["kind"],
             "base_url": prov.get("base_url", ""), "model": prov.get("model", ""),
             "api_key": prov.get("key", ""),
-            "input_cost_per_m": prov.get("in", 0), "output_cost_per_m": prov.get("out", 0)}
+            "input_cost_per_m": prov.get("in", 0), "output_cost_per_m": prov.get("out", 0),
+            "context_window": prov.get("context_window", COMPACT_CONTEXT_WINDOW_DEFAULT)}
 
 
 def _callable_provider(p):
@@ -1683,6 +1697,7 @@ class ProviderUpsert(BaseModel):
     input_cost_per_m: float = 0.0
     output_cost_per_m: float = 0.0
     auto: bool = True
+    notes: str = ""
 
 
 class SelectModel(BaseModel):
@@ -1703,7 +1718,14 @@ def models_get(_: str = Depends(verify_owner)):
             {"id": pid, "label": p.get("label", pid), "kind": p["kind"],
              "base_url": p.get("base_url", ""), "model": p.get("model", ""),
              "models": p.get("models", []), "has_key": bool(p.get("key")),
-             "in": p.get("in", 0), "out": p.get("out", 0), "auto": p.get("auto", False)}
+             "key_hint": ("…" + p["key"][-4:]) if p.get("key") else "",
+             "in": p.get("in", 0), "out": p.get("out", 0), "auto": p.get("auto", False),
+             "catalog": {e["id"]: {"in": e["in"], "out": e["out"]}
+                         for e in p.get("catalog", [])},
+             "catalog_refreshed_at": p.get("catalog_refreshed_at"),
+             "last_error": p.get("last_error"),
+             "last_error_at": p.get("last_error_at"),
+             "notes": p.get("notes", "")}
             for pid, p in cfg["providers"].items()],
     }
 
@@ -1722,9 +1744,11 @@ def models_upsert(req: ProviderUpsert, _: str = Depends(verify_owner)):
         "base_url": req.base_url, "model": req.model or prov.get("model", ""),
         "models": req.models or prov.get("models", []),
         "in": req.input_cost_per_m, "out": req.output_cost_per_m, "auto": req.auto,
+        "notes": req.notes or prov.get("notes", ""),
     })
     if req.key:                    # blank key = keep existing
         prov["key"] = req.key
+        prov.pop("catalog_refreshed_at", None)  # key changed → age indicator resets
     prov.setdefault("key", "")
     if req.model and req.model not in prov["models"]:
         prov["models"].append(req.model)
@@ -1736,9 +1760,33 @@ def models_upsert(req: ProviderUpsert, _: str = Depends(verify_owner)):
 @app.delete("/api/models/{pid}")
 def models_delete(pid: str, _: str = Depends(verify_owner)):
     cfg = load_models()
+    if pid not in cfg["providers"]:
+        raise HTTPException(404, f"Provider '{pid}' not found")
     cfg["providers"].pop(pid, None)
     if cfg.get("selected") == pid:
         cfg["selected"] = "auto"
+    save_models(cfg)
+    return {"ok": True}
+
+
+@app.delete("/api/models/{pid}/models/{mid}")
+def model_entry_delete(pid: str, mid: str, _: str = Depends(verify_owner)):
+    """Remove a single model entry from a provider's models list.
+
+    If the removed model was the provider's active model, falls back to the
+    first remaining model (or empty string if none left).
+    """
+    cfg = load_models()
+    prov = cfg["providers"].get(pid)
+    if not prov:
+        raise HTTPException(404, f"Provider '{pid}' not found")
+    models = prov.get("models", [])
+    if mid not in models:
+        raise HTTPException(404, f"Model '{mid}' not in provider '{pid}'")
+    prov["models"] = [m for m in models if m != mid]
+    if prov.get("model") == mid:
+        prov["model"] = prov["models"][0] if prov["models"] else ""
+    cfg["providers"][pid] = prov
     save_models(cfg)
     return {"ok": True}
 
@@ -1759,6 +1807,231 @@ def models_settings(req: ModelSettings, _: str = Depends(verify_owner)):
     cfg["auto_cheapest"] = req.auto_cheapest
     save_models(cfg)
     return {"ok": True}
+
+
+_OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
+_OR_REFRESH_COOLDOWN_S = 60
+_or_last_refresh: float = 0.0
+_or_refresh_lock = threading.Lock()
+
+
+@app.post("/api/models/openrouter/refresh")
+def models_openrouter_refresh(_: str = Depends(verify_owner)):
+    """Fetch OpenRouter's model catalog with per-model pricing and cache it on the provider.
+
+    Converts per-token pricing (USD/token) → per-million (USD/1M).
+    Never touches key, selected, or the active model field.
+    """
+    global _or_last_refresh
+    with _or_refresh_lock:
+        since = time.time() - _or_last_refresh
+        if since < _OR_REFRESH_COOLDOWN_S:
+            raise HTTPException(429, f"Refresh cooldown: wait {int(_OR_REFRESH_COOLDOWN_S - since)}s")
+        _or_last_refresh = time.time()
+    cfg = load_models()
+    prov = cfg["providers"].get("openrouter")
+    if not prov:
+        raise HTTPException(404, "OpenRouter provider not configured")
+    key = prov.get("key", "")
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    req_obj = urllib.request.Request(_OPENROUTER_MODELS_URL, headers=headers)
+    try:
+        with urllib.request.urlopen(req_obj, timeout=20) as resp:
+            data = json.loads(resp.read())
+    except Exception as exc:
+        prov["last_error"] = str(exc)
+        prov["last_error_at"] = int(time.time())
+        cfg["providers"]["openrouter"] = prov
+        save_models(cfg)
+        raise HTTPException(502, f"OpenRouter fetch failed: {exc}") from exc
+    catalog = []
+    for m in data.get("data", []):
+        mid = m.get("id", "")
+        if not mid:
+            continue
+        pricing = m.get("pricing") or {}
+        try:
+            p_in = float(pricing.get("prompt") or 0) * 1_000_000
+            p_out = float(pricing.get("completion") or 0) * 1_000_000
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(p_in) and math.isfinite(p_out) and p_in >= 0 and p_out >= 0):
+            continue
+        catalog.append({"id": mid, "name": m.get("name", mid), "in": p_in, "out": p_out})
+    prov["catalog"] = catalog
+    prov["catalog_refreshed_at"] = int(time.time())
+    prov.pop("last_error", None)
+    prov.pop("last_error_at", None)
+    cfg["providers"]["openrouter"] = prov
+    save_models(cfg)
+    free_count = sum(1 for e in catalog if e["in"] == 0 and e["out"] == 0)
+    return {"ok": True, "total": len(catalog), "free": free_count,
+            "refreshed_at": prov["catalog_refreshed_at"]}
+
+
+@app.get("/api/models/export")
+def models_export(_: str = Depends(verify_owner)):
+    """Return a sanitized snapshot of provider config (keys stripped) for backup/import."""
+    cfg = load_models()
+    export = {
+        "selected": cfg.get("selected", "auto"),
+        "auto_cheapest": cfg.get("auto_cheapest", True),
+        "providers": [
+            {"id": pid, "label": p.get("label", pid), "kind": p["kind"],
+             "base_url": p.get("base_url", ""), "model": p.get("model", ""),
+             "models": p.get("models", []), "has_key": bool(p.get("key")),
+             "in": p.get("in", 0), "out": p.get("out", 0), "auto": p.get("auto", False)}
+            for pid, p in cfg["providers"].items()
+        ],
+    }
+    return export
+
+
+class ImportPayload(BaseModel):
+    selected: str = ""
+    auto_cheapest: bool = True
+    providers: list[dict] = []
+
+
+@app.post("/api/models/import")
+def models_import(payload: ImportPayload, _: str = Depends(verify_owner)):
+    """Upsert providers from an exported snapshot. Never overwrites stored keys."""
+    if not isinstance(payload.providers, list):
+        raise HTTPException(400, "providers must be a list")
+    cfg = load_models()
+    imported = skipped = 0
+    for p in payload.providers:
+        pid = p.get("id", "").strip()
+        kind = p.get("kind", "openai")
+        if not pid or kind not in ("openai", "anthropic"):
+            skipped += 1
+            continue
+        existing = cfg["providers"].get(pid, {})
+        existing.update({
+            "label": p.get("label", existing.get("label", pid)),
+            "kind": kind,
+            "base_url": p.get("base_url", existing.get("base_url", "")),
+            "model": p.get("model", existing.get("model", "")),
+            "models": p.get("models", existing.get("models", [])),
+            "in": float(p.get("in", existing.get("in", 0))),
+            "out": float(p.get("out", existing.get("out", 0))),
+            "auto": bool(p.get("auto", existing.get("auto", True))),
+            "notes": p.get("notes", existing.get("notes", "")),
+        })
+        existing.setdefault("key", "")
+        cfg["providers"][pid] = existing
+        imported += 1
+    if payload.selected:
+        cfg["selected"] = payload.selected
+    if payload.auto_cheapest is not None:
+        cfg["auto_cheapest"] = payload.auto_cheapest
+    save_models(cfg)
+    return {"ok": True, "imported": imported, "skipped": skipped}
+
+
+@app.post("/api/models/clear_errors")
+def models_clear_errors(_: str = Depends(verify_owner)):
+    """Remove last_error and last_error_at from every provider."""
+    cfg = load_models()
+    cleared = 0
+    for prov in cfg["providers"].values():
+        if "last_error" in prov or "last_error_at" in prov:
+            prov.pop("last_error", None)
+            prov.pop("last_error_at", None)
+            cleared += 1
+    save_models(cfg)
+    return {"ok": True, "cleared": cleared}
+
+
+@app.post("/api/models/{pid}/ping")
+def ping_provider(pid: str, _: str = Depends(verify_owner)):
+    """Fire a 1-token request to a provider and return latency_ms + ok/error.
+    Uses the stored base_url — no user-supplied URLs."""
+    cfg = load_models()
+    p = cfg["providers"].get(pid)
+    if not p:
+        raise HTTPException(404, "Provider not found")
+    if not p.get("key"):
+        raise HTTPException(400, "No API key configured for this provider")
+    model = p.get("model", "")
+    if not model:
+        raise HTTPException(400, "No model configured for this provider")
+    kind = p.get("kind", "openai")
+    start = time.time()
+    try:
+        if kind == "openai":
+            base_url = str(p.get("base_url") or "").strip()
+            if not base_url:
+                raise HTTPException(400, "No base_url configured for this provider")
+            r = requests.post(
+                base_url.rstrip("/") + "/chat/completions",
+                headers={"Authorization": f"Bearer {p['key']}",
+                         "Content-Type": "application/json"},
+                json={"model": model,
+                      "messages": [{"role": "user", "content": "hi"}],
+                      "max_tokens": 1},
+                timeout=15,
+            )
+            r.raise_for_status()
+        elif kind == "anthropic":
+            r = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": p["key"], "anthropic-version": "2023-06-01",
+                         "Content-Type": "application/json"},
+                json={"model": model,
+                      "messages": [{"role": "user", "content": "hi"}],
+                      "max_tokens": 1},
+                timeout=15,
+            )
+            r.raise_for_status()
+        else:
+            raise HTTPException(400, f"Unsupported provider kind: {kind}")
+        return {"ok": True, "latency_ms": int((time.time() - start) * 1000),
+                "model": model}
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"ok": False, "latency_ms": int((time.time() - start) * 1000),
+                "error": str(e)[:200], "model": model}
+
+
+@app.get("/api/models/openrouter/free")
+def models_openrouter_free(_: str = Depends(verify_owner)):
+    """Return the zero-cost models from the cached OpenRouter catalog."""
+    cfg = load_models()
+    prov = cfg["providers"].get("openrouter", {})
+    catalog = prov.get("catalog", [])
+    free = [e for e in catalog if e.get("in", -1) == 0 and e.get("out", -1) == 0]
+    return {"free": free, "refreshed_at": prov.get("catalog_refreshed_at")}
+
+
+@app.post("/api/models/free/add_all")
+def models_free_add_all(_: str = Depends(verify_owner)):
+    """Upsert all zero-cost OpenRouter catalog models into the provider's models list.
+
+    Idempotent: safe to call repeatedly.
+    Never touches key, selected, or costs (provider is already in=0/out=0).
+    """
+    cfg = load_models()
+    prov = cfg["providers"].get("openrouter")
+    if not prov:
+        raise HTTPException(404, "OpenRouter provider not configured")
+    catalog = prov.get("catalog", [])
+    free = [e for e in catalog if e.get("in", -1) == 0 and e.get("out", -1) == 0]
+    if not free:
+        raise HTTPException(400, "No free models in catalog — run ↻ Refresh first")
+    existing = set(prov.get("models", []))
+    added = 0
+    for m in free:
+        if m["id"] not in existing:
+            prov.setdefault("models", []).append(m["id"])
+            existing.add(m["id"])
+            added += 1
+    cfg["providers"]["openrouter"] = prov
+    save_models(cfg)
+    return {"ok": True, "added": added, "total": len(free)}
 
 
 @app.get("/api/cooldowns")
@@ -4147,6 +4420,7 @@ def _persist_index():
                  "budget_usd": s.get("budget_usd"),
                  "status": s.get("status", "idle"), "mode": s.get("mode", "default")}
            for sid, s in SESSIONS.items()}
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
     _save_json(_session_index_path(), idx)
 
 
@@ -4474,6 +4748,98 @@ def make_executor(session, allowed, agent_label=None, depth=0):
     return execute
 
 
+# ---- N8: context auto-compaction -----------------------------------------------
+# Estimates tokens cheaply (len/4) and, when the window is getting full, replaces
+# the oldest turn-groups with a single deterministic digest note (no model call).
+# Key invariant: never break a tool_call / tool_result pair.
+
+def _context_window_for(provider) -> int:
+    """Return the effective context window size for *provider*.
+    Reads the `context_window` field set by _resolve(); falls back to the
+    module-level constant if absent or zero."""
+    w = provider.get("context_window") if isinstance(provider, dict) else None
+    if w and isinstance(w, int) and w > 0:
+        return w
+    return COMPACT_CONTEXT_WINDOW_DEFAULT
+
+
+def _estimate_tokens(system: str, history: list) -> int:
+    """Cheap over-estimate of token count: len(text)/4 rounded up, summed over
+    all text fields, tool-call args, and tool-result content.
+    Over-estimates by design (conservative) so compaction fires early rather
+    than on context-overflow."""
+    total = len(system or "") // 4 + 1
+    for h in history:
+        text = h.get("text") or ""
+        total += len(text) // 4 + 1
+        for tc in (h.get("tool_calls") or []):
+            arg_str = json.dumps(tc.get("args") or {})
+            total += len(arg_str) // 4 + 1
+        content = h.get("content") or ""
+        if isinstance(content, str):
+            total += len(content) // 4 + 1
+        elif isinstance(content, list):
+            for block in content:
+                total += len(str(block)) // 4 + 1
+    return total
+
+
+def _compact_history(history: list, system: str, provider, session, agent_label) -> list:
+    """Replace the oldest compactable turn-groups with a single synthetic
+    [earlier context, compacted] note.
+
+    Rules:
+    - Never drop the first user turn (task framing).
+    - Always keep the most recent KEEP_RECENT turns verbatim.
+    - Only compact at complete turn-group boundaries: an assistant turn with
+      tool_calls must be compacted together with all its following tool-result
+      turns; never split a pair.
+    - Any existing compaction note(s) in the span are folded in too (don't stack).
+    - Returns the new history (the passed-in list is not mutated).
+    """
+    n = len(history)
+    if n == 0:
+        return history
+
+    # Identify the safe verbatim tail: the last KEEP_RECENT turns, but must
+    # start on a clean boundary — back up to find one.
+    tail_start = max(1, n - KEEP_RECENT)  # always keep first turn (index 0)
+    # Align tail_start to a group boundary: skip backward past any dangling
+    # tool-result runs so the tail window begins right at an assistant turn or a
+    # user turn, never mid-group.
+    while tail_start < n and history[tail_start].get("role") == "tool":
+        tail_start += 1
+    # If alignment consumed everything, keep the last entry at minimum.
+    if tail_start >= n:
+        tail_start = max(1, n - 1)
+
+    # The compactable span is [1 .. tail_start) — skipping index 0 (first user).
+    span = history[1:tail_start]
+    if not span:
+        return history   # nothing to compact
+
+    # Build the digest from the span (+ first user turn for context framing).
+    pseudo_session = {"title": session.get("title", ""), "history": [history[0]] + span}
+    digest_md = _digest_markdown(pseudo_session)
+
+    synthetic = {
+        "role": "user",
+        "text": "[earlier context, compacted]\n" + digest_md,
+    }
+
+    new_history = [history[0], synthetic] + history[tail_start:]
+
+    est_before = _estimate_tokens(system, history)
+    est_after  = _estimate_tokens(system, new_history)
+    emit(session, "compaction",
+         turns_compacted=len(span),
+         turns_kept=len(new_history),
+         est_tokens_before=est_before,
+         est_tokens_after=est_after,
+         agent=agent_label)
+    return new_history
+
+
 def agent_loop(session, provider, system, history, tool_names, max_turns,
                agent_label=None, depth=0):
     _mcp_schemas = mcp_tool_schemas() if depth == 0 else {}
@@ -4525,6 +4891,10 @@ def agent_loop(session, provider, system, history, tool_names, max_turns,
                          "or raise the budget.")
             _set_outcome("budget")
             break
+        # N8: compact history if approaching the context window.
+        _cw = _context_window_for(provider)
+        if _estimate_tokens(system, history) > COMPACT_AT_FRAC * _cw:
+            history[:] = _compact_history(history, system, provider, session, agent_label)
         try:
             # N5: pass session+agent_label so streaming can emit text_delta events.
             resp = call_model(provider, system, history, tools,
@@ -5868,6 +6238,25 @@ def session_delete(sid: str, _: str = Depends(verify_user)):
         except OSError:
             pass
     return {"ok": True}
+
+
+class SessionRename(BaseModel):
+    title: str
+
+
+@app.patch("/api/sessions/{sid}")
+def session_rename(sid: str, req: SessionRename, _: str = Depends(verify_user)):
+    """Update the session title (in-memory + index)."""
+    s = SESSIONS.get(sid)
+    if not s:
+        raise HTTPException(404, "No such session")
+    title = req.title.strip()[:120]
+    if not title:
+        raise HTTPException(400, "Title cannot be empty")
+    with s["lock"]:
+        s["title"] = title
+    _persist_index()
+    return {"ok": True, "title": title}
 
 
 # ---- Fleet Deck status feed (~/fleet/contracts/fleetdeck-codemonkeys.md) ------

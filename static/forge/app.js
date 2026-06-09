@@ -9,7 +9,7 @@ const state = {
   token: localStorage.getItem("cm_token") || "",
   username: localStorage.getItem("cm_username") || "",
   role: localStorage.getItem("cm_role") || "",
-  sid: null, after: -1, status: "idle", timer: null, pollMs: 0,
+  sid: null, after: -1, status: "idle", timer: null, pollMs: 0, budget_usd: null,
   files: [], registering: false,
   mode: localStorage.getItem("cm_mode") || "default",
 };
@@ -72,6 +72,7 @@ async function checkEncryptionBanner() {
   }
 }
 $("enc-banner-close").onclick = () => $("enc-banner").classList.add("hidden");
+$("budget-alert-close").onclick = () => $("budget-alert").classList.add("hidden");
 function logout() {
   ["cm_token", "cm_username", "cm_role"].forEach((k) => localStorage.removeItem(k));
   state.token = ""; stopPolling(); showLogin();
@@ -377,10 +378,30 @@ async function listPasskeys() {
 async function refreshSessions() {
   try {
     const d = await api("/api/sessions");
-    $("session-list").innerHTML = d.sessions.map((s) =>
+    if (state.sid) {
+      const cur = d.sessions.find((s) => s.id === state.sid);
+      if (cur) state.budget_usd = cur.budget_usd || null;
+    }
+    // Compute today's total spend from sessions
+    const todaySpend = d.sessions.reduce((sum, s) => sum + (s.spent_usd || 0), 0);
+    const spendEl = $("sidebar-spend-today");
+    if (spendEl) {
+      if (todaySpend > 0) {
+        spendEl.textContent = `total: $${todaySpend.toFixed(4)}`;
+        spendEl.classList.remove("hidden");
+      } else {
+        spendEl.classList.add("hidden");
+      }
+    }
+    const filterQ = ($("session-filter")?.value || "").toLowerCase();
+    const visibleSessions = filterQ
+      ? d.sessions.filter((s) => s.title.toLowerCase().includes(filterQ) || s.id.includes(filterQ))
+      : d.sessions;
+    $("session-list").innerHTML = visibleSessions.map((s) =>
       `<div class="group flex items-center gap-1 rounded px-2 py-1 hover:bg-yellow-900/20 ${s.id === state.sid ? "bg-yellow-900/30" : ""}">
-         <span data-sid="${s.id}" class="session-item flex-1 cursor-pointer truncate ${s.id === state.sid ? "text-[var(--gold-bright)]" : "text-slate-300"}">
-           ${esc(s.title)} <span class="text-slate-600">$${s.spent_usd}</span></span>
+         <span data-sid="${s.id}" class="session-item flex-1 cursor-pointer truncate ${s.id === state.sid ? "text-[var(--gold-bright)]" : "text-slate-300"}"
+           title="Double-click to rename">
+           <span class="session-title" data-sid="${s.id}">${esc(s.title)}</span> <span class="text-slate-600">$${s.spent_usd}</span></span>
          ${s.status === "interrupted"
            ? `<button data-resume="${s.id}" class="session-resume text-amber-400 hover:text-amber-300 text-[.65rem] px-1 opacity-0 group-hover:opacity-100" title="Resume interrupted session">resume</button>`
            : ""}
@@ -389,6 +410,28 @@ async function refreshSessions() {
       || '<div class="text-slate-600">none yet</div>';
     document.querySelectorAll(".session-item").forEach((el) =>
       (el.onclick = () => openSession(el.dataset.sid)));
+    // inline rename on double-click of title span
+    document.querySelectorAll(".session-title").forEach((el) => {
+      el.ondblclick = (e) => {
+        e.stopPropagation();
+        const sid = el.dataset.sid;
+        const input = document.createElement("input");
+        input.value = el.textContent;
+        input.className = "input rounded px-1 py-0 text-[.7rem] w-full";
+        el.replaceWith(input);
+        input.focus(); input.select();
+        const commit = async () => {
+          const title = input.value.trim();
+          if (title && title !== el.textContent) {
+            try { await api(`/api/sessions/${sid}`, "PATCH", { title }); }
+            catch (_) {}
+          }
+          refreshSessions();
+        };
+        input.onblur = commit;
+        input.onkeydown = (ev) => { if (ev.key === "Enter") input.blur(); if (ev.key === "Escape") { input.value = el.textContent; input.blur(); } };
+      };
+    });
     // N6: resume button for interrupted sessions
     document.querySelectorAll(".session-resume").forEach((el) => (el.onclick = async (e) => {
       e.stopPropagation();
@@ -481,11 +524,49 @@ $("btn-clone").onclick = async () => {
 };
 
 function openSession(sid) {
-  state.sid = sid; state.after = -1;
+  state.sid = sid; state.after = -1; state.budget_usd = null;
+  _budgetAlertShownAt = 0;
+  $("budget-alert")?.classList.add("hidden");
   $("stream").innerHTML = "";
   refreshSessions();
   startPolling(true);
+  $("btn-export-transcript")?.classList.remove("hidden");
+  $("btn-copy-transcript")?.classList.remove("hidden");
 }
+
+$("btn-export-transcript").onclick = _exportTranscript;
+
+$("btn-copy-transcript").onclick = async () => {
+  const btn = $("btn-copy-transcript");
+  if (!state.sid) return;
+  try {
+    const d = await api(`/api/sessions/${state.sid}/events?after=-1`);
+    const sess = document.querySelector(`[data-sid="${state.sid}"]`);
+    const title = sess ? sess.textContent.split("$")[0].trim() : state.sid;
+    const lines = [`# ${title}`, `session: ${state.sid}`, ""];
+    for (const e of (d.events || [])) {
+      if (e.type === "user") lines.push(`**user:** ${e.text || ""}`, "");
+      else if (e.type === "assistant") lines.push(`**assistant:** ${e.text || ""}`, "");
+      else if (e.type === "cost") lines.push(`*cost: $${e.usd}*`, "");
+    }
+    await navigator.clipboard.writeText(lines.join("\n"));
+    const orig = btn.textContent; btn.textContent = "✓ copied";
+    setTimeout(() => { btn.textContent = orig; }, 1500);
+  } catch (e) { alert("Copy failed: " + e.message); }
+};
+
+// Session filter: re-render session list on input
+$("session-filter").oninput = () => refreshSessions();
+
+// Provider preset buttons: fill in add-provider form fields
+document.querySelectorAll(".pv-preset").forEach((b) => {
+  b.onclick = () => {
+    $("pv-id").value = b.dataset.id;
+    $("pv-base").value = b.dataset.base;
+    $("pv-kind").value = b.dataset.kind;
+    $("pv-model").focus();
+  };
+});
 
 /* ---------------- event stream ---------------- */
 
@@ -583,7 +664,10 @@ async function poll() {
     state.status = d.status;
     $("hdr-dot").className = "dot " + d.status;
     $("hdr-status").textContent = d.status;
-    $("hdr-spend").textContent = `$${d.spent_usd} / session`;
+    $("hdr-spend").textContent = state.budget_usd
+      ? `$${d.spent_usd} / $${state.budget_usd}`
+      : `$${d.spent_usd}`;
+    _updateBudgetBar(d.spent_usd, state.budget_usd);
     const sess = document.querySelector(`[data-sid="${state.sid}"]`);
     $("hdr-title").textContent = sess ? sess.textContent.split("$")[0].trim() : state.sid;
     $("btn-stop").classList.toggle("hidden", d.status === "idle");
@@ -760,45 +844,263 @@ else {
 
 /* ---------------- models modal ---------------- */
 
-$("btn-models").onclick = () => { $("modal-models").classList.remove("hidden"); loadProviders(); };
+$("btn-models").onclick = () => {
+  $("modal-models").classList.remove("hidden");
+  // Restore persisted auto-add preference
+  const chk = $("chk-auto-add-free");
+  if (chk) {
+    chk.checked = localStorage.getItem("cm_auto_add_free") === "1";
+    chk.onchange = () => localStorage.setItem("cm_auto_add_free", chk.checked ? "1" : "0");
+  }
+  loadProviders();
+  _loadSpendSparkline();
+};
 $("modal-close").onclick = () => $("modal-models").classList.add("hidden");
+
+// Track which provider rows are expanded (session-only; collapses reset on modal close)
+const _pvExpanded = new Set();
+// Current sort order for provider list: "keyed" | "cost" | "name" | "used"
+let _pvSort = "keyed";
+// Last-used timestamps per provider id (localStorage-backed)
+const _pvLastUsed = JSON.parse(localStorage.getItem("cm_pv_last_used") || "{}");
+const _pvSaveLastUsed = () => localStorage.setItem("cm_pv_last_used", JSON.stringify(_pvLastUsed));
+// Favorite model IDs, stored as "{pid}:{mid}" strings (localStorage-backed)
+const _pvFavorites = new Set(JSON.parse(localStorage.getItem("cm_pv_favorites") || "[]"));
+const _pvSaveFavorites = () => localStorage.setItem("cm_pv_favorites", JSON.stringify([..._pvFavorites]));
+// Active provider filter: "" | "free" | "keyed" | "auto"
+let _pvFilter = "";
+// Per-provider health history: { pid: [true, false, ...] } max 5 entries (in-memory, reset on reload)
+const _pvHealth = {};
+
+// Keyboard shortcuts for the models modal
+document.addEventListener("keydown", (e) => {
+  const modalOpen = !$("modal-models")?.classList.contains("hidden");
+  if (e.key === "Escape" && modalOpen) {
+    $("modal-models").classList.add("hidden");
+    return;
+  }
+  if (!modalOpen) return;
+  // Don't fire when user is typing in an input
+  if (["INPUT","TEXTAREA","SELECT"].includes(e.target.tagName)) return;
+  if (e.key === "r") $("btn-or-refresh")?.click();
+  if (e.key === "a" && !$("btn-add-all-free")?.classList.contains("hidden")) $("btn-add-all-free")?.click();
+});
+
+function _pvHealthRecord(pid, ok) {
+  if (!_pvHealth[pid]) _pvHealth[pid] = [];
+  _pvHealth[pid].push(ok);
+  if (_pvHealth[pid].length > 5) _pvHealth[pid].shift();
+}
+function _pvHealthDots(pid) {
+  const h = _pvHealth[pid];
+  if (!h || !h.length) return "";
+  return h.map((ok) => `<span class="${ok ? "text-green-500" : "text-red-500"}" title="${ok ? "ok" : "fail"}">●</span>`).join("");
+}
 
 async function loadProviders() {
   const d = await api("/api/models");
   $("auto-cheapest").checked = !!d.auto_cheapest;
-  $("provider-rows").innerHTML = d.providers.map((p) => {
-    const opts = (p.models || []).map((m) =>
-      `<option value="${esc(m)}" ${m === p.model ? "selected" : ""}>${esc(m)}</option>`).join("");
+  // Auto-expand the selected/main provider on first load; don't collapse manually-opened rows
+  if (_pvExpanded.size === 0 && d.selected && d.selected !== "auto") {
+    _pvExpanded.add(d.selected);
+  } else if (_pvExpanded.size === 0) {
+    // auto mode: expand the cheapest auto-flagged provider
+    const autoP = d.providers.find((p) => p.auto && p.has_key);
+    if (autoP) _pvExpanded.add(autoP.id);
+  }
+  // Compute client-side tier labels (mirrors provider_for_tier logic: sort by out cost)
+  // callable = keyed+auto providers sorted by cost; cascadeOrder = 1-based call order
+  const callable = d.providers.filter((p) => p.has_key).sort((a, b) => a.out - b.out);
+  const cascadeOrder = {};
+  callable.filter((p) => p.auto).forEach((p, i) => { cascadeOrder[p.id] = i + 1; });
+  const n = callable.length;
+  const _tierOf = (pid) => {
+    const idx = callable.findIndex((p) => p.id === pid);
+    if (idx < 0) return null;
+    if (idx === 0) return "t0";
+    if (idx === n - 1) return "t3";
+    if (idx <= Math.floor(n / 3)) return "t1";
+    return "t2";
+  };
+
+  // Apply active filter then sort
+  const filteredProviders = _pvFilter === "free"
+    // filter by active models list, not catalog — shows providers you can use free RIGHT NOW
+    ? d.providers.filter((p) => (p.models || []).some((m) => { const c = (p.catalog || {})[m]; return c && c.in === 0 && c.out === 0; }))
+    : _pvFilter === "keyed"
+    ? d.providers.filter((p) => p.has_key)
+    : _pvFilter === "auto"
+    ? d.providers.filter((p) => p.auto)
+    : d.providers;
+  const sortedProviders = [...filteredProviders].sort((a, b) => {
+    if (_pvSort === "cost") return a.out - b.out;
+    if (_pvSort === "name") return a.label.localeCompare(b.label);
+    if (_pvSort === "used") {
+      const ta = _pvLastUsed[a.id] || 0, tb = _pvLastUsed[b.id] || 0;
+      return tb - ta; // most-recently-used first
+    }
+    // "keyed": keyed first, then by cost
+    if (a.has_key !== b.has_key) return a.has_key ? -1 : 1;
+    return a.out - b.out;
+  });
+
+  $("provider-rows").innerHTML = sortedProviders.map((p) => {
+    const allModels = p.models || [];
+    const cat = p.catalog || {};
+    const _costHint = (m) => {
+      const c = cat[m]; if (!c) return "";
+      if (c.in === 0 && c.out === 0) return " ⚡free";
+      return ` $${c.in}/$${c.out}/M`;
+    };
+    const _isFree = (m) => { const c = cat[m]; return c && c.in === 0 && c.out === 0; };
+    const _isFav = (m) => _pvFavorites.has(`${p.id}:${m}`);
+    const sortedModels = [...allModels].sort((a, b) => {
+      if (_isFav(a) !== _isFav(b)) return _isFav(a) ? -1 : 1;
+      if (_isFree(a) !== _isFree(b)) return _isFree(a) ? -1 : 1;
+      return a.localeCompare(b);
+    });
+    const activeModel = (d.auto_cheapest || d.selected === p.id) ? p.model : null;
+    const opts = sortedModels.map((m) =>
+      `<option value="${esc(m)}" ${m === p.model ? "selected" : ""}>${m === activeModel ? "★ " : ""}${esc(m)}${_costHint(m)}</option>`).join("");
     const isMain = p.id === d.selected && !d.auto_cheapest;
+    const manyModels = allModels.length > 5;
+    const expanded = _pvExpanded.has(p.id);
+    const now = Math.floor(Date.now() / 1000);
+    const errAge = p.last_error_at ? now - p.last_error_at : null;
+    const dotColor = !p.last_error_at
+      ? (p.has_key ? "text-green-400" : "text-slate-600")
+      : (errAge < 3600 ? "text-red-400" : "text-yellow-500");
+    const dotTitle = p.last_error
+      ? `Error ${errAge < 60 ? "just now" : errAge < 3600 ? Math.round(errAge/60)+"m ago" : Math.round(errAge/3600)+"h ago"}: ${p.last_error}`
+      : (p.has_key
+          ? (p.id === "openrouter"
+              ? `key set ${p.key_hint} — authenticated (higher rate limits)`
+              : `key set ${p.key_hint}`)
+          : (p.id === "openrouter" ? "no key — unauthenticated (rate-limited free tier)" : "no key"));
+    const catAge = p.catalog_refreshed_at ? now - p.catalog_refreshed_at : null;
+    const catAgeStr = catAge === null ? null
+      : catAge < 60 ? "just now"
+      : catAge < 3600 ? Math.round(catAge/60)+"m ago"
+      : catAge < 86400 ? Math.round(catAge/3600)+"h ago"
+      : Math.round(catAge/86400)+"d ago";
     return `
-    <div class="border-b border-slate-800/60 py-2 ${isMain ? "bg-yellow-900/10 rounded" : ""}">
+    <div class="border-b border-slate-800/60 py-2 ${isMain ? "bg-yellow-900/10 rounded" : ""} ${!p.has_key ? "opacity-50" : ""}">
       <div class="flex items-center gap-2">
+        <button data-id="${esc(p.id)}" class="pv-toggle text-slate-500 hover:text-slate-300 text-xs w-4"
+          title="${expanded ? "Collapse" : "Expand"}">${expanded ? "▼" : "▶"}</button>
         <button data-id="${esc(p.id)}" class="pv-main ${isMain ? "text-[var(--gold-bright)]" : "text-slate-600"} hover:text-[var(--gold)]" title="Use as main (when Auto is off)">★</button>
-        <span class="${p.has_key ? "text-green-400" : "text-slate-600"}">●</span>
-        <b class="flex-1 ${isMain ? "text-[var(--gold-bright)]" : "text-slate-200"}">${esc(p.label)}</b>
+        <span class="${dotColor}" title="${esc(dotTitle)}">●</span>
+        <b class="pv-label-edit ${isMain ? "text-[var(--gold-bright)]" : "text-slate-200"}" data-id="${esc(p.id)}"
+          title="${p.notes ? esc(p.notes) : "Double-click to rename"}">${esc(p.label)}</b>
+        ${allModels.length > 0 ? `<span class="text-slate-600 text-xs">(${allModels.length})</span>` : ""}
+        <span class="text-[.55rem] tracking-tighter flex items-center gap-px">${_pvHealthDots(p.id)}</span>
+        <span class="flex-1"></span>
+        ${(() => { const t = _tierOf(p.id); return t
+          ? `<span class="text-[.6rem] px-1 rounded border ${
+              t === "t0" ? "text-green-400 border-green-900/40" :
+              t === "t1" ? "text-blue-400 border-blue-900/40" :
+              t === "t2" ? "text-yellow-500 border-yellow-900/40" :
+                           "text-red-400 border-red-900/40"
+            }" title="Tier ${t} — position in cheapest-first routing">${t}</span>`
+          : ""; })()}
+        <span class="text-slate-600 text-xs">${p.model ? esc(p.model) : ""}</span>
+        ${d.auto_cheapest && cascadeOrder[p.id]
+          ? `<span class="text-[.6rem] text-slate-500 border border-slate-700 rounded px-1"
+              title="Auto-cheapest call order">#${cascadeOrder[p.id]}</span>` : ""}
         <label class="flex items-center gap-1 text-slate-400" title="Include in cheapest-first cascade">
           <input type="checkbox" class="pv-auto accent-yellow-500" data-id="${esc(p.id)}" ${p.auto ? "checked" : ""}>✓auto</label>
+        ${p.has_key ? `<button data-id="${esc(p.id)}" class="pv-ping text-slate-500/60 hover:text-slate-300 text-[.65rem] border border-slate-700/50 rounded px-1.5" title="Send 1-token request to measure latency">ping</button>` : ""}
+        <span class="pv-ping-result text-[.65rem]" data-id="${esc(p.id)}"></span>
         <button data-id="${esc(p.id)}" class="pv-del text-red-500/60 hover:text-red-400">remove</button>
       </div>
-      <div class="flex items-center gap-2 mt-1 pl-6">
+      ${p.last_error ? `<div class="pl-6 mt-0.5 text-red-400/80 text-xs truncate" title="${esc(p.last_error)}">⚠ ${esc(p.last_error.slice(0, 80))}${p.last_error.length > 80 ? "…" : ""}</div>` : ""}
+      ${p.has_key && allModels.length === 0 ? `<div class="pl-6 mt-0.5 text-yellow-500/80 text-xs">⚠ No models configured — add at least one model to use this provider.</div>` : ""}
+      <div class="pv-detail flex items-center gap-2 mt-1 pl-6 ${expanded ? "" : "hidden"}">
+        ${manyModels ? `<input type="text" class="pv-filter input rounded px-1 py-0.5 w-28 text-xs" data-id="${esc(p.id)}"
+          data-models="${esc(JSON.stringify(sortedModels))}" data-current="${esc(p.model)}"
+          placeholder="filter…" title="Filter models">` : ""}
         <select class="pv-model input rounded px-1 py-0.5 flex-1" data-id="${esc(p.id)}">${opts}</select>
         <input type="password" class="pv-key input rounded px-1 py-0.5 flex-1" data-id="${esc(p.id)}"
           placeholder="${p.has_key ? "key set ✓ (type to replace)" : "paste API key"}">
+        <input type="text" class="pv-notes input rounded px-1 py-0.5 w-32 text-xs" data-id="${esc(p.id)}"
+          placeholder="notes…" value="${esc(p.notes || "")}" title="Freeform notes (shown as label tooltip)">
         <button data-id="${esc(p.id)}" class="pv-savekey gold-btn rounded px-2 py-0.5">save</button>
         <span class="text-slate-600">$${p.out}/M</span>
+        ${catAgeStr ? `<span class="text-slate-600 text-xs" title="Catalog last fetched">↻ ${esc(catAgeStr)}</span>` : ""}
+      </div>
+      <div class="pv-detail flex flex-wrap items-center gap-1 mt-1 pl-6 ${expanded ? "" : "hidden"}">
+        ${allModels.length >= 2 ? allModels.map((m) => {
+          const mc = cat[m];
+          const ctxBadge = mc?.context_length
+            ? `<span class="text-slate-600 text-[.55rem]" title="context window">${mc.context_length >= 1000 ? Math.round(mc.context_length/1000)+"k" : mc.context_length}</span>`
+            : "";
+          const pillTag = mc
+            ? (mc.in === 0 && mc.out === 0
+                ? `<span class="text-green-400 text-[.6rem]">⚡</span>`
+                : `<span class="text-slate-500 text-[.6rem]">$${mc.out}/M</span>`)
+            : "";
+          const fav = _isFav(m);
+          return `<span class="inline-flex items-center gap-0.5 bg-slate-800 rounded px-1 text-xs text-slate-400">`
+            + `<button class="pv-setmodel text-slate-300 hover:text-[var(--gold)]" data-pid="${esc(p.id)}" data-mid="${esc(m)}" title="Set as active model">${esc(m)}</button>${pillTag}${ctxBadge}`
+            + `<button class="pv-fav ${fav ? "text-yellow-400" : "text-slate-600/60"} hover:text-yellow-400 ml-0.5" data-pid="${esc(p.id)}" data-mid="${esc(m)}" title="${fav ? "Unpin" : "Pin to top"}">★</button>`
+            + `<button class="pv-cpmodel text-slate-500/60 hover:text-slate-300 ml-0.5" data-mid="${esc(m)}" title="Copy model ID">⎘</button>`
+            + `<button class="pv-rmmodel text-red-500/50 hover:text-red-400 ml-0.5" data-pid="${esc(p.id)}" data-mid="${esc(m)}" title="Remove model">×</button></span>`;
+        }).join("") : ""}
+        ${allModels.length >= 2
+          ? `<button class="pv-cplist text-slate-500/60 hover:text-slate-300 text-xs border border-slate-700/50 rounded px-1.5 py-0.5" data-pid="${esc(p.id)}" data-models="${esc(JSON.stringify(allModels))}" title="Copy all model IDs as newline-separated list">⎘ list</button>`
+          : ""}
+        ${Object.keys(cat).length > 0
+          ? `<datalist id="dl-${esc(p.id)}">${Object.keys(cat).map((m) =>
+              `<option value="${esc(m)}">`).join("")}</datalist>`
+          : ""}
+        <input type="text" class="pv-addmodel input rounded px-1 py-0.5 text-xs w-44" data-id="${esc(p.id)}"
+          placeholder="+ add model id…" ${Object.keys(cat).length > 0 ? `list="dl-${esc(p.id)}"` : ""}>
+        <button class="pv-addmodel-btn text-slate-500 hover:text-[var(--gold)] text-xs border border-slate-700 rounded px-2 py-0.5" data-id="${esc(p.id)}">add</button>
+        <span class="pv-addmodel-msg text-xs text-slate-600" data-id="${esc(p.id)}"></span>
       </div>
     </div>`;
   }).join("");
 
+  document.querySelectorAll(".pv-toggle").forEach((b) => (b.onclick = () => {
+    const id = b.dataset.id;
+    if (_pvExpanded.has(id)) _pvExpanded.delete(id); else _pvExpanded.add(id);
+    const row = b.closest("div[class*='border-b']");
+    row.querySelectorAll(".pv-detail").forEach((el) => el.classList.toggle("hidden"));
+    b.textContent = _pvExpanded.has(id) ? "▼" : "▶";
+    b.title = _pvExpanded.has(id) ? "Collapse" : "Expand";
+  }));
   document.querySelectorAll(".pv-main").forEach((b) => (b.onclick = async () => {
     await api("/api/models/select", "POST", { id: b.dataset.id });
     await api("/api/models/settings", "POST", { auto_cheapest: false });
+    // Record last-used timestamp for sort-by-used
+    _pvLastUsed[b.dataset.id] = Math.floor(Date.now() / 1000);
+    _pvSaveLastUsed();
     loadProviders();
   }));
   document.querySelectorAll(".pv-del").forEach((b) => (b.onclick = async () => {
-    if (confirm(`Remove provider ${b.dataset.id}?`)) {
+    const pDel = d.providers.find((x) => x.id === b.dataset.id);
+    const warn = pDel?.has_key ? `\n⚠ This provider has a key stored — it will be deleted too.` : "";
+    if (confirm(`Remove provider ${b.dataset.id}?${warn}`)) {
       await api(`/api/models/${encodeURIComponent(b.dataset.id)}`, "DELETE"); loadProviders();
     }
+  }));
+  // ping handler
+  document.querySelectorAll(".pv-ping").forEach((b) => (b.onclick = async () => {
+    const id = b.dataset.id;
+    const result = document.querySelector(`.pv-ping-result[data-id="${id}"]`);
+    b.disabled = true; b.textContent = "…";
+    if (result) result.textContent = "";
+    try {
+      const r = await api(`/api/models/${encodeURIComponent(id)}/ping`, "POST", {});
+      if (result) {
+        result.textContent = r.ok ? `✓ ${r.latency_ms}ms` : `✗ ${(r.error || "fail").slice(0, 40)}`;
+        result.className = `pv-ping-result text-[.65rem] ${r.ok ? "text-green-400" : "text-red-400"}`;
+      }
+      if (r.ok) _pvHealthRecord(id, true); else _pvHealthRecord(id, false);
+    } catch (e) {
+      if (result) { result.textContent = `✗ ${e.message.slice(0, 40)}`; result.className = "pv-ping-result text-[.65rem] text-red-400"; }
+      _pvHealthRecord(id, false);
+    } finally { b.disabled = false; b.textContent = "ping"; }
   }));
   document.querySelectorAll(".pv-savekey").forEach((b) => (b.onclick = async () => {
     const id = b.dataset.id;
@@ -806,19 +1108,263 @@ async function loadProviders() {
     const key = document.querySelector(`.pv-key[data-id="${id}"]`).value;
     const model = document.querySelector(`.pv-model[data-id="${id}"]`).value;
     const auto = document.querySelector(`.pv-auto[data-id="${id}"]`).checked;
+    const notes = document.querySelector(`.pv-notes[data-id="${id}"]`)?.value || "";
     try {
       await api("/api/models", "POST", {
         id, label: prov.label, kind: prov.kind, base_url: prov.base_url,
-        model, models: prov.models, key,
+        model, models: prov.models, key, notes,
         input_cost_per_m: prov.in, output_cost_per_m: prov.out, auto,
+      });
+      _pvHealthRecord(id, true);
+      // auto-collapse the row after a successful key save; auto-refresh OR catalog
+      if (key) {
+        _pvExpanded.delete(id);
+        if (id === "openrouter") setTimeout(() => $("btn-or-refresh")?.click(), 400);
+      }
+      loadProviders();
+    } catch (e) { _pvHealthRecord(id, false); alert(e.message); }
+  }));
+  // set model as active via pill click
+  document.querySelectorAll(".pv-setmodel").forEach((btn) => (btn.onclick = async () => {
+    const { pid, mid } = btn.dataset;
+    const prov = d.providers.find((x) => x.id === pid);
+    if (!prov) return;
+    try {
+      await api("/api/models", "POST", {
+        id: prov.id, label: prov.label, kind: prov.kind, base_url: prov.base_url,
+        model: mid, models: prov.models, key: "", notes: prov.notes || "",
+        input_cost_per_m: prov.in, output_cost_per_m: prov.out, auto: prov.auto,
       });
       loadProviders();
     } catch (e) { alert(e.message); }
+  }));
+  // copy model ID to clipboard
+  document.querySelectorAll(".pv-cpmodel").forEach((btn) => (btn.onclick = () => {
+    navigator.clipboard?.writeText(btn.dataset.mid).then(() => {
+      const orig = btn.textContent;
+      btn.textContent = "✓";
+      setTimeout(() => { btn.textContent = orig; }, 1200);
+    });
+  }));
+  // copy all model IDs as newline-separated list
+  document.querySelectorAll(".pv-cplist").forEach((btn) => (btn.onclick = () => {
+    const models = JSON.parse(btn.dataset.models || "[]");
+    navigator.clipboard?.writeText(models.join("\n")).then(() => {
+      const orig = btn.textContent;
+      btn.textContent = "✓";
+      setTimeout(() => { btn.textContent = orig; }, 1200);
+    });
+  }));
+  // inline remove-model handler
+  document.querySelectorAll(".pv-rmmodel").forEach((btn) => (btn.onclick = async () => {
+    const { pid, mid } = btn.dataset;
+    if (!confirm(`Remove model ${mid} from ${pid}?`)) return;
+    try {
+      await api(`/api/models/${encodeURIComponent(pid)}/models/${encodeURIComponent(mid)}`, "DELETE");
+      loadProviders();
+    } catch (e) { alert(e.message); }
+  }));
+  // inline add-model handler
+  document.querySelectorAll(".pv-addmodel-btn").forEach((btn) => (btn.onclick = async () => {
+    const id = btn.dataset.id;
+    const input = document.querySelector(`.pv-addmodel[data-id="${id}"]`);
+    const msg = document.querySelector(`.pv-addmodel-msg[data-id="${id}"]`);
+    const newModel = input.value.trim();
+    if (!newModel) return;
+    const prov = d.providers.find((x) => x.id === id);
+    if (!prov) return;
+    const updatedModels = [...new Set([...(prov.models || []), newModel])];
+    try {
+      await api("/api/models", "POST", {
+        id, label: prov.label, kind: prov.kind, base_url: prov.base_url,
+        model: prov.model, models: updatedModels,
+        input_cost_per_m: prov.in, output_cost_per_m: prov.out, auto: prov.auto,
+      });
+      input.value = "";
+      msg.textContent = "✓";
+      setTimeout(() => { msg.textContent = ""; }, 2000);
+      loadProviders();
+    } catch (e) { msg.textContent = e.message; }
+  }));
+  document.querySelectorAll(".pv-addmodel").forEach((el) => (el.onkeydown = (e) => {
+    if (e.key === "Enter") document.querySelector(`.pv-addmodel-btn[data-id="${el.dataset.id}"]`).click();
   }));
   // model dropdown / auto checkbox auto-save on change
   document.querySelectorAll(".pv-model, .pv-auto").forEach((el) => (el.onchange = () => {
     document.querySelector(`.pv-savekey[data-id="${el.dataset.id}"]`).click();
   }));
+  // model filter: rebuilds dropdown options on each keystroke
+  document.querySelectorAll(".pv-filter").forEach((input) => {
+    input.oninput = () => {
+      const q = input.value.toLowerCase();
+      const allModels = JSON.parse(input.dataset.models);
+      const current = input.dataset.current;
+      const sel = document.querySelector(`.pv-model[data-id="${input.dataset.id}"]`);
+      const filtered = q ? allModels.filter((m) => m.toLowerCase().includes(q)) : allModels;
+      sel.innerHTML = filtered.map((m) =>
+        `<option value="${esc(m)}" ${m === current ? "selected" : ""}>${esc(m)}</option>`
+      ).join("");
+    };
+  });
+  // Collapse-all / expand-all
+  const _setAllExpanded = (expand) => {
+    document.querySelectorAll(".pv-toggle").forEach((b) => {
+      const id = b.dataset.id;
+      if (expand) _pvExpanded.add(id); else _pvExpanded.delete(id);
+      b.closest("div[class*='border-b']")?.querySelectorAll(".pv-detail")
+        .forEach((el) => el.classList.toggle("hidden", !expand));
+      b.textContent = expand ? "▼" : "▶";
+      b.title = expand ? "Collapse" : "Expand";
+    });
+  };
+  if ($("btn-collapse-all")) $("btn-collapse-all").onclick = () => _setAllExpanded(false);
+  if ($("btn-expand-all")) $("btn-expand-all").onclick = () => _setAllExpanded(true);
+
+  // Sort toggle buttons (keyed / cost / A-Z / used)
+  ["keyed", "cost", "name", "used"].forEach((mode) => {
+    const btn = $(`btn-sort-${mode}`);
+    if (!btn) return;
+    btn.className = `text-xs border rounded px-2 py-0.5 ${
+      _pvSort === mode
+        ? "border-[var(--gold)] text-[var(--gold-bright)]"
+        : "border-slate-700 text-slate-500 hover:text-slate-300"
+    }`;
+    btn.onclick = () => { _pvSort = mode; loadProviders(); };
+  });
+
+  // Quick-filter buttons
+  ["", "free", "keyed", "auto"].forEach((f) => {
+    const btn = $(`btn-filter-${f || "all"}`);
+    if (!btn) return;
+    btn.className = `text-xs border rounded px-2 py-0.5 ${
+      _pvFilter === f
+        ? "border-cyan-600 text-cyan-300"
+        : "border-slate-700 text-slate-500 hover:text-slate-300"
+    }`;
+    btn.onclick = () => { _pvFilter = f; loadProviders(); };
+  });
+
+  // Favorite model toggle
+  document.querySelectorAll(".pv-fav").forEach((btn) => (btn.onclick = () => {
+    const key = `${btn.dataset.pid}:${btn.dataset.mid}`;
+    if (_pvFavorites.has(key)) _pvFavorites.delete(key); else _pvFavorites.add(key);
+    _pvSaveFavorites();
+    loadProviders();
+  }));
+
+  // Global model search: show only rows whose label or model IDs match
+  const searchInput = $("provider-search");
+  if (searchInput) {
+    const applySearch = () => {
+      const q = searchInput.value.toLowerCase();
+      document.querySelectorAll("#provider-rows > div").forEach((row, i) => {
+        if (!q) { row.style.display = ""; return; }
+        const p = sortedProviders[i];
+        if (!p) { row.style.display = ""; return; }
+        const haystack = [p.label, p.id, ...(p.models || [])].join(" ").toLowerCase();
+        row.style.display = haystack.includes(q) ? "" : "none";
+      });
+    };
+    searchInput.oninput = applySearch;
+    applySearch(); // apply on re-render if search text persists
+  }
+
+  // Provider label inline rename: double-click the <b> label to edit
+  document.querySelectorAll(".pv-label-edit").forEach((b) => {
+    b.ondblclick = async () => {
+      const id = b.dataset.id;
+      const newLabel = prompt("Rename provider:", b.textContent.trim());
+      if (!newLabel || newLabel === b.textContent.trim()) return;
+      const cfg = await api("/api/models");
+      const p = cfg.providers.find((x) => x.id === id);
+      if (!p) return;
+      await api("/api/models", "POST", {
+        id: p.id, label: newLabel.trim(), kind: p.kind,
+        base_url: p.base_url, model: p.model,
+        models: p.models, key: "", notes: p.notes || "",
+        input_cost_per_m: p.in, output_cost_per_m: p.out, auto: p.auto,
+      });
+      loadProviders();
+    };
+  });
+
+  // Duplicate model ID warning
+  const _allModelIds = d.providers.flatMap((p) => (p.models || []).map((m) => ({ m, pid: p.id })));
+  const _midCounts = {};
+  _allModelIds.forEach(({ m }) => { _midCounts[m] = (_midCounts[m] || 0) + 1; });
+  const _dupes = Object.keys(_midCounts).filter((m) => _midCounts[m] > 1);
+  let _dupWarn = $("dup-model-warn");
+  if (!_dupWarn) {
+    _dupWarn = document.createElement("p");
+    _dupWarn.id = "dup-model-warn";
+    _dupWarn.className = "text-xs text-yellow-500 mb-2";
+    $("provider-rows").after(_dupWarn);
+  }
+  _dupWarn.textContent = _dupes.length
+    ? `⚠ Duplicate model IDs across providers: ${_dupes.slice(0, 3).join(", ")}${_dupes.length > 3 ? " …" : ""}`
+    : "";
+
+  // Show/hide "✕ clear errors" button based on whether any provider has an error
+  const hasErrors = d.providers.some((p) => p.last_error);
+  const btnClearErr = $("btn-clear-errors");
+  if (btnClearErr) btnClearErr.classList.toggle("hidden", !hasErrors);
+
+  // Auto-cheapest preview: show which provider+model would actually be called
+  const acPreview = $("ac-preview");
+  if (acPreview) {
+    if (d.auto_cheapest) {
+      const t0 = d.providers.filter((p) => p.has_key && p.auto).sort((a, b) => a.out - b.out)[0];
+      acPreview.textContent = t0 ? `→ would call: ${t0.label} · ${t0.model || "(no model set)"}` : "→ no keyed auto-providers";
+      acPreview.className = "text-xs text-slate-500 ml-2";
+    } else {
+      acPreview.textContent = "";
+    }
+  }
+
+  // Populate bulk-add provider selector
+  const bulkPid = $("bulk-add-pid");
+  if (bulkPid) {
+    const prev = bulkPid.value;
+    bulkPid.innerHTML = d.providers.map((p) =>
+      `<option value="${esc(p.id)}" ${p.id === prev ? "selected" : ""}>${esc(p.label)}</option>`
+    ).join("");
+  }
+
+  // Pass OR catalog data as a hint to loadFreeModels to skip the extra API call
+  const orProv = d.providers.find((p) => p.id === "openrouter");
+  const freeCount = orProv
+    ? Object.values(orProv.catalog || {}).filter((c) => c.in === 0 && c.out === 0).length
+    : 0;
+  // Update sidebar badge with pulse when free models are available
+  const btnModels = $("btn-models");
+  if (btnModels) {
+    const freeSpan = freeCount > 0
+      ? `<span class="text-green-400 text-[.65rem] free-pulse">⚡${freeCount}</span>`
+      : "";
+    btnModels.innerHTML = freeCount > 0
+      ? `⚙ Models &amp; keys ${freeSpan}`
+      : "⚙ Models &amp; keys";
+  }
+  if (orProv) {
+    const catalogEntries = Object.entries(orProv.catalog || {});
+    const freeHint = {
+      free: catalogEntries.filter(([, c]) => c.in === 0 && c.out === 0).map(([id]) => ({ id })),
+      refreshed_at: orProv.catalog_refreshed_at || null,
+      totalInCatalog: catalogEntries.length,
+    };
+    loadFreeModels(freeHint);
+  } else {
+    loadFreeModels();
+  }
+  // Update calc/compare if visible
+  _renderCostCalc(d.providers);
+  _renderCompareTable(d.providers);
+  // Update active model in modal title
+  const activeProv = d.auto_cheapest
+    ? d.providers.filter((p) => p.has_key && p.auto).sort((a, b) => a.out - b.out)[0]
+    : d.providers.find((p) => p.id === d.selected);
+  const modalModel = $("modal-active-model");
+  if (modalModel) modalModel.textContent = activeProv?.model ? `· ${activeProv.model}` : "";
 }
 
 $("auto-cheapest").onchange = async () => {
@@ -826,9 +1372,431 @@ $("auto-cheapest").onchange = async () => {
   loadProviders();
 };
 
+/* ---------------- session budget bar ---------------- */
+let _budgetAlertShownAt = 0; // pct threshold at which alert was last shown (75 or 95)
+
+function _updateBudgetBar(spent, cap) {
+  const wrap = $("budget-bar-wrap");
+  const fill = $("budget-bar-fill");
+  if (!wrap || !fill) return;
+  if (!cap || cap <= 0) { wrap.classList.add("hidden"); return; }
+  const pct = Math.min(100, (spent / cap) * 100);
+  const color = pct < 50 ? "bg-green-500" : pct < 80 ? "bg-yellow-500" : "bg-red-500";
+  wrap.classList.remove("hidden");
+  fill.className = `h-full transition-all ${color}`;
+  fill.style.width = `${pct.toFixed(1)}%`;
+  fill.title = `$${spent.toFixed(4)} spent / $${cap.toFixed(2)} cap (${Math.round(pct)}%)`;
+  // Budget alert at 75% and 95%
+  const alertEl = $("budget-alert");
+  const alertMsg = $("budget-alert-msg");
+  if (alertEl && alertMsg) {
+    const threshold = pct >= 95 ? 95 : pct >= 75 ? 75 : 0;
+    if (threshold && threshold > _budgetAlertShownAt) {
+      _budgetAlertShownAt = threshold;
+      alertMsg.textContent = `Budget ${Math.round(pct)}% used — $${spent.toFixed(4)} / $${cap.toFixed(2)}`;
+      alertEl.classList.remove("hidden");
+    }
+  }
+}
+
+/* ---------------- cost calculator ---------------- */
+function _renderCostCalc(providers) {
+  const section = $("cost-calc-section");
+  if (!section || section.classList.contains("hidden")) return;
+  const inTok = parseFloat($("calc-in")?.value) || 0;
+  const outTok = parseFloat($("calc-out")?.value) || 0;
+  const rows = providers
+    .filter((p) => p.has_key && p.models && p.models.length > 0)
+    .map((p) => {
+      const cost = (inTok / 1e6) * p.in + (outTok / 1e6) * p.out;
+      return `<div class="flex items-center gap-2 text-xs py-0.5">
+        <span class="text-slate-400 w-28 truncate" title="${esc(p.label)}">${esc(p.label)}</span>
+        <span class="text-slate-500 flex-1 text-[.6rem]">${esc(p.model || p.models[0] || "")}</span>
+        <span class="text-[var(--gold)]">$${cost < 0.0001 ? cost.toExponential(2) : cost.toFixed(5)}</span>
+      </div>`;
+    });
+  $("calc-results").innerHTML = rows.length
+    ? rows.join("")
+    : `<span class="text-slate-600">No keyed providers with models configured.</span>`;
+}
+
+/* ---------------- model comparison table ---------------- */
+function _renderCompareTable(providers) {
+  const section = $("compare-section");
+  if (!section || section.classList.contains("hidden")) return;
+  const rows = [];
+  for (const p of providers) {
+    const cat = p.catalog || {};
+    for (const m of (p.models || [])) {
+      const c = cat[m] || {};
+      rows.push({ provider: p.label, model: m,
+        in: c.in != null ? c.in : p.in,
+        out: c.out != null ? c.out : p.out,
+        ctx: c.context_length || null,
+        free: c.in === 0 && c.out === 0 });
+    }
+  }
+  if (!rows.length) {
+    $("compare-table").innerHTML = `<span class="text-slate-600 text-xs">Add models to providers to compare.</span>`;
+    return;
+  }
+  rows.sort((a, b) => a.out - b.out);
+  $("compare-table").innerHTML =
+    `<table class="w-full text-xs border-collapse"><thead><tr class="text-slate-500 border-b border-slate-800">
+      <th class="text-left py-0.5 pr-2">Provider</th>
+      <th class="text-left py-0.5 pr-2">Model</th>
+      <th class="text-right py-0.5 pr-2">$/M in</th>
+      <th class="text-right py-0.5 pr-2">$/M out</th>
+      <th class="text-right py-0.5">Context</th>
+    </tr></thead><tbody>` +
+    rows.map((r) =>
+      `<tr class="border-b border-slate-800/40 ${r.free ? "text-green-400/80" : "text-slate-300"}">
+        <td class="py-0.5 pr-2 truncate max-w-[6rem]" title="${esc(r.provider)}">${esc(r.provider)}</td>
+        <td class="py-0.5 pr-2 truncate max-w-[12rem]" title="${esc(r.model)}">${esc(r.model)}</td>
+        <td class="py-0.5 pr-2 text-right">${r.in === 0 ? "free" : "$"+r.in}</td>
+        <td class="py-0.5 pr-2 text-right">${r.out === 0 ? "free" : "$"+r.out}</td>
+        <td class="py-0.5 text-right text-slate-500">${r.ctx ? (r.ctx >= 1000 ? Math.round(r.ctx/1000)+"k" : r.ctx) : "—"}</td>
+      </tr>`).join("") +
+    `</tbody></table>`;
+}
+
+/* ---------------- spend sparkline (7-day bar chart) ---------------- */
+async function _loadSpendSparkline() {
+  const wrap = $("spend-sparkline-wrap");
+  if (!wrap) return;
+  try {
+    const d = await api("/api/usage");
+    const byDay = d.by_day || [];
+    // Build last-7-days date list
+    const days = [];
+    const now = new Date();
+    for (let i = 6; i >= 0; i--) {
+      const dt = new Date(now);
+      dt.setUTCDate(now.getUTCDate() - i);
+      days.push(dt.toISOString().slice(0, 10));
+    }
+    const map = {};
+    byDay.forEach((r) => { map[r.day] = r.usd; });
+    const vals = days.map((d) => map[d] || 0);
+    const maxVal = Math.max(...vals, 0.0001);
+    const barsEl = $("spend-sparkline-bars");
+    const labelEl = $("spend-sparkline-label");
+    if (barsEl) {
+      barsEl.innerHTML = vals.map((v, i) => {
+        const pct = Math.max(4, Math.round((v / maxVal) * 100));
+        const isToday = days[i] === days[6];
+        return `<div class="w-5 ${isToday ? "bg-[var(--gold)]/70" : "bg-slate-600/60"} rounded-t"
+          style="height:${pct}%" title="${days[i]}: $${v.toFixed(5)}"></div>`;
+      }).join("");
+    }
+    if (labelEl) {
+      const total7 = vals.reduce((a, b) => a + b, 0);
+      labelEl.textContent = `7-day: $${total7.toFixed(4)} total`;
+    }
+    wrap.classList.remove("hidden");
+  } catch (_) { /* ignore — owner may not be logged in yet */ }
+}
+
+/* ---------------- transcript export ---------------- */
+async function _exportTranscript() {
+  if (!state.sid) return;
+  try {
+    const d = await api(`/api/sessions/${state.sid}/events?after=-1`);
+    const sess = document.querySelector(`[data-sid="${state.sid}"]`);
+    const title = sess ? sess.textContent.split("$")[0].trim() : state.sid;
+    const lines = [`# ${title}`, `session: ${state.sid}`, ""];
+    for (const e of (d.events || [])) {
+      const t = e.type;
+      if (t === "user") lines.push(`**user:** ${e.text || ""}`, "");
+      else if (t === "assistant") lines.push(`**assistant:** ${e.text || ""}`, "");
+      else if (t === "tool_call") lines.push(`> tool: ${e.name} ${JSON.stringify(e.args || {}).slice(0, 80)}`, "");
+      else if (t === "tool_result") lines.push(`> result: ${String(e.content || "").slice(0, 120)}`, "");
+      else if (t === "cost") lines.push(`*cost: $${e.usd} | in:${e.in_tokens} out:${e.out_tokens}*`, "");
+    }
+    const blob = new Blob([lines.join("\n")], {type: "text/markdown"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = `session-${state.sid.slice(0, 8)}.md`;
+    a.click(); URL.revokeObjectURL(url);
+  } catch (e) { alert("Export failed: " + e.message); }
+}
+
+/* ---------------- free-model auto-lister (Layer A) ---------------- */
+
+function _catalogAge(refreshed_at) {
+  if (!refreshed_at) return null;
+  const secs = Math.floor(Date.now() / 1000) - refreshed_at;
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
+  return `${Math.floor(secs / 86400)}d ago`;
+}
+
+async function loadFreeModels(hint) {
+  // hint: optional {free, refreshed_at} pre-fetched from GET /api/models to save a round-trip
+  try {
+    const r = hint || await api("/api/models/openrouter/free");
+    const free = r.free || [];
+    const age = _catalogAge(r.refreshed_at);
+    const stale = r.refreshed_at && (Date.now() / 1000 - r.refreshed_at) > 86400;
+    if (age && !$("free-models-msg").textContent.startsWith("✓")) {
+      const total = r.totalInCatalog ? ` · ${r.totalInCatalog} total` : "";
+      $("free-models-msg").textContent = stale ? `⚠ catalog ${age}${total}` : `catalog ${age}${total}`;
+      if (stale) $("free-models-msg").classList.add("text-yellow-500");
+      else $("free-models-msg").classList.remove("text-yellow-500");
+    }
+    if (!free.length && !r.refreshed_at) {
+      // No catalog yet — auto-trigger a background refresh on first open
+      $("free-models-list").innerHTML = `<span class="not-italic">Fetching free models…</span>`;
+      $("btn-or-refresh").click();
+      return;
+    }
+    if (!free.length) {
+      $("free-models-list").innerHTML = `<span class="not-italic">No free models cached — click ↻ Refresh.</span>`;
+      $("btn-add-all-free").classList.add("hidden");
+      return;
+    }
+    $("free-models-list").innerHTML = free.map((m) =>
+      `<button class="free-pill inline-flex items-center gap-1 bg-green-900/20 text-green-400 border border-green-900/40 rounded px-1 mr-1 mb-1 hover:border-green-400/60" data-id="${esc(m.id)}" title="Click to copy model ID">`
+      + `<span class="not-italic text-xs">${esc(m.id)}</span>`
+      + `<span class="text-green-700 text-[.6rem]">⎘</span></button>`
+    ).join("");
+    $("free-models-list").querySelectorAll(".free-pill").forEach((btn) => (btn.onclick = () => {
+      navigator.clipboard.writeText(btn.dataset.id).then(() => {
+        const orig = btn.querySelector("span:last-child").textContent;
+        btn.querySelector("span:last-child").textContent = "✓";
+        setTimeout(() => { btn.querySelector("span:last-child").textContent = orig; }, 1200);
+      });
+    }));
+    $("btn-add-all-free").classList.remove("hidden");
+    // Show/hide "use cheapest" and "Remove :free" based on current OR config
+    try {
+      const cfg = await api("/api/models");
+      const or = cfg.providers.find((p) => p.id === "openrouter");
+      const hasFreeTagged = or && (or.models || []).some((m) => m.endsWith(":free"));
+      if (hasFreeTagged) $("btn-remove-free").classList.remove("hidden");
+      else $("btn-remove-free").classList.add("hidden");
+      // "★ use cheapest" — show when OR has free models in its active list
+      const hasFreeActive = or && (or.models || []).some((m) => {
+        const c = (or.catalog || {})[m];
+        return c && c.in === 0 && c.out === 0;
+      });
+      if (hasFreeActive) $("btn-use-cheapest-free")?.classList.remove("hidden");
+      else $("btn-use-cheapest-free")?.classList.add("hidden");
+    } catch (_) { /* non-critical */ }
+  } catch (_) {
+    $("free-models-list").textContent = "";
+  }
+}
+
+$("btn-remove-free").onclick = async () => {
+  if (!confirm("Remove all :free-tagged models from OpenRouter's list?")) return;
+  $("btn-remove-free").disabled = true;
+  try {
+    const cfg = await api("/api/models");
+    const or = cfg.providers.find((p) => p.id === "openrouter");
+    const toRemove = (or?.models || []).filter((m) => m.endsWith(":free"));
+    for (const mid of toRemove) {
+      await api(`/api/models/openrouter/models/${encodeURIComponent(mid)}`, "DELETE");
+    }
+    $("free-models-msg").textContent = `✓ removed ${toRemove.length} :free models`;
+    $("btn-remove-free").classList.add("hidden");
+    loadProviders();
+  } catch (e) {
+    $("free-models-msg").textContent = e.message || "remove failed";
+  } finally {
+    $("btn-remove-free").disabled = false;
+  }
+};
+
+$("btn-bulk-add").onclick = async () => {
+  const pid = $("bulk-add-pid").value;
+  const lines = ($("bulk-add-models").value || "").split("\n").map((s) => s.trim()).filter(Boolean);
+  if (!pid || !lines.length) { $("bulk-add-msg").textContent = "pick provider + enter IDs"; return; }
+  $("btn-bulk-add").disabled = true;
+  $("bulk-add-msg").textContent = "adding…";
+  try {
+    const cfg = await api("/api/models");
+    const prov = cfg.providers.find((p) => p.id === pid);
+    if (!prov) throw new Error("Provider not found");
+    const existing = new Set(prov.models || []);
+    const toAdd = lines.filter((m) => !existing.has(m));
+    const updatedModels = [...(prov.models || []), ...toAdd];
+    await api("/api/models", "POST", {
+      id: prov.id, label: prov.label, kind: prov.kind, base_url: prov.base_url,
+      model: prov.model, models: updatedModels, key: "", notes: prov.notes || "",
+      input_cost_per_m: prov.in, output_cost_per_m: prov.out, auto: prov.auto,
+    });
+    $("bulk-add-msg").textContent = `✓ +${toAdd.length} (${lines.length - toAdd.length} dupes skipped)`;
+    $("bulk-add-models").value = "";
+    loadProviders();
+  } catch (e) {
+    $("bulk-add-msg").textContent = e.message || "failed";
+  } finally {
+    $("btn-bulk-add").disabled = false;
+  }
+};
+
+$("btn-use-cheapest-free").onclick = async () => {
+  try {
+    const cfg = await api("/api/models");
+    const or = cfg.providers.find((p) => p.id === "openrouter");
+    if (!or) return;
+    // Find the free model with the shortest name (proxy for "official" / simplest) among active models
+    const freeModels = (or.models || []).filter((m) => {
+      const c = (or.catalog || {})[m]; return c && c.in === 0 && c.out === 0;
+    });
+    if (!freeModels.length) { $("free-models-msg").textContent = "no free models in OR list"; return; }
+    freeModels.sort((a, b) => a.length - b.length);
+    const chosen = freeModels[0];
+    await api("/api/models", "POST", {
+      id: or.id, label: or.label, kind: or.kind, base_url: or.base_url,
+      model: chosen, models: or.models, key: "", notes: or.notes || "",
+      input_cost_per_m: or.in, output_cost_per_m: or.out, auto: or.auto,
+    });
+    $("free-models-msg").textContent = `★ active: ${chosen}`;
+    loadProviders();
+  } catch (e) {
+    $("free-models-msg").textContent = e.message || "failed";
+  }
+};
+
+$("btn-toggle-free").onclick = () => {
+  const section = $("free-models-list");
+  const btn = $("btn-toggle-free");
+  const hidden = section.classList.toggle("hidden");
+  btn.textContent = hidden ? "▶" : "▼";
+};
+
+$("btn-cost-calc").onclick = () => {
+  const sec = $("cost-calc-section");
+  const visible = sec.classList.toggle("hidden");
+  $("btn-cost-calc").classList.toggle("text-[var(--gold)]", !visible);
+  if (!visible) loadProviders();
+};
+
+$("btn-compare").onclick = () => {
+  const sec = $("compare-section");
+  const visible = sec.classList.toggle("hidden");
+  $("btn-compare").classList.toggle("text-[var(--gold)]", !visible);
+  if (!visible) loadProviders();
+};
+
+// Re-compute cost when token counts change
+["calc-in", "calc-out"].forEach((id) => {
+  const el = $(id);
+  if (el) el.oninput = () => {
+    // Need providers; fetch last data from loadProviders cache or re-call
+    api("/api/models").then((d) => _renderCostCalc(d.providers)).catch(() => {});
+  };
+});
+
+function _orRefreshCountdown(seconds) {
+  const btn = $("btn-or-refresh");
+  btn.disabled = true;
+  let remaining = seconds;
+  btn.textContent = `↻ ${remaining}s`;
+  const tick = setInterval(() => {
+    remaining--;
+    if (remaining <= 0) { clearInterval(tick); btn.textContent = "↻ Refresh"; btn.disabled = false; }
+    else btn.textContent = `↻ ${remaining}s`;
+  }, 1000);
+}
+
+$("btn-or-refresh").onclick = async () => {
+  $("free-models-msg").textContent = "refreshing…";
+  $("btn-or-refresh").disabled = true;
+  try {
+    const r = await api("/api/models/openrouter/refresh", "POST", {});
+    _pvHealthRecord("openrouter", true);
+    $("free-models-msg").textContent = `✓ ${r.total} models, ${r.free} free`;
+    await loadFreeModels();
+    if ($("chk-auto-add-free")?.checked && r.free > 0) {
+      await api("/api/models/free/add_all", "POST", {});
+      $("free-models-msg").textContent = `✓ ${r.total} models, ${r.free} free (auto-added)`;
+      loadProviders();
+    }
+    _orRefreshCountdown(60); // mirrors server-side _OR_REFRESH_COOLDOWN_S
+  } catch (e) {
+    _pvHealthRecord("openrouter", false);
+    const msg = e.message || "refresh failed";
+    $("free-models-msg").textContent = msg;
+    const wait = msg.match(/wait (\d+)s/);
+    if (wait) _orRefreshCountdown(parseInt(wait[1]));
+    else { $("btn-or-refresh").textContent = "↻ Refresh"; $("btn-or-refresh").disabled = false; }
+  }
+};
+
+$("btn-add-all-free").onclick = async () => {
+  $("btn-add-all-free").disabled = true;
+  try {
+    const r = await api("/api/models/free/add_all", "POST", {});
+    $("free-models-msg").textContent = `✓ added ${r.added} (${r.total} free total)`;
+    loadProviders();
+  } catch (e) {
+    $("free-models-msg").textContent = e.message || "add failed";
+  } finally {
+    $("btn-add-all-free").disabled = false;
+  }
+};
+
+$("btn-clear-errors").onclick = async () => {
+  try {
+    const r = await api("/api/models/clear_errors", "POST", {});
+    $("export-msg").textContent = `✓ cleared ${r.cleared} error${r.cleared !== 1 ? "s" : ""}`;
+    setTimeout(() => { $("export-msg").textContent = ""; }, 2000);
+    loadProviders();
+  } catch (e) {
+    $("export-msg").textContent = e.message || "clear failed";
+  }
+};
+
+$("btn-import-config").onclick = async () => {
+  const raw = prompt("Paste exported config JSON:");
+  if (!raw) return;
+  try {
+    const payload = JSON.parse(raw);
+    const r = await api("/api/models/import", "POST", payload);
+    $("export-msg").textContent = `✓ imported ${r.imported} providers`;
+    setTimeout(() => { $("export-msg").textContent = ""; }, 3000);
+    loadProviders();
+  } catch (e) {
+    $("export-msg").textContent = e.message || "import failed";
+  }
+};
+
+$("btn-export-config").onclick = async () => {
+  try {
+    const data = await api("/api/models/export");
+    await navigator.clipboard?.writeText(JSON.stringify(data, null, 2));
+    $("export-msg").textContent = "✓ copied";
+    setTimeout(() => { $("export-msg").textContent = ""; }, 2000);
+  } catch (e) {
+    $("export-msg").textContent = e.message || "copy failed";
+  }
+};
+
+// Inline base_url validation for custom provider form
+const _validateBaseUrl = () => {
+  const kind = $("pv-kind").value;
+  const base = $("pv-base").value.trim();
+  const msg = $("pv-msg");
+  if (kind === "openai" && !base) {
+    msg.textContent = "⚠ base_url is required for OpenAI-compatible providers";
+    msg.className = "col-span-2 text-xs text-yellow-400";
+  } else {
+    if (msg.textContent.startsWith("⚠")) { msg.textContent = ""; msg.className = "col-span-2 text-xs text-slate-400"; }
+  }
+};
+$("pv-kind").addEventListener("change", _validateBaseUrl);
+$("pv-base").addEventListener("input", _validateBaseUrl);
+
 $("pv-save").onclick = async () => {
   const id = $("pv-id").value.trim();
   if (!id) { $("pv-msg").textContent = "Give the provider an id."; return; }
+  if ($("pv-kind").value === "openai" && !$("pv-base").value.trim()) {
+    $("pv-msg").textContent = "⚠ base_url is required for OpenAI-compatible providers."; return;
+  }
   try {
     await api("/api/models", "POST", {
       id, label: id, kind: $("pv-kind").value,
@@ -843,6 +1811,47 @@ $("pv-save").onclick = async () => {
     loadProviders();
   } catch (e) { $("pv-msg").textContent = e.message; }
 };
+
+/* ---------------- free-provider presets (#12) ---------------- */
+
+const _PROVIDER_PRESETS = [
+  { id: "groq",     label: "Groq",          base_url: "https://api.groq.com/openai/v1",
+    model: "llama-3.3-70b-versatile",
+    models: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"],
+    in: 0, out: 0 },
+  { id: "cerebras", label: "Cerebras",       base_url: "https://api.cerebras.ai/v1",
+    model: "llama3.1-8b",
+    models: ["llama3.1-8b", "llama3.1-70b"],
+    in: 0, out: 0 },
+  { id: "mistral",  label: "Mistral (free)", base_url: "https://api.mistral.ai/v1",
+    model: "mistral-small-latest",
+    models: ["mistral-small-latest", "open-mistral-nemo"],
+    in: 0, out: 0 },
+  { id: "github",   label: "GitHub Models",  base_url: "https://models.inference.ai.azure.com",
+    model: "gpt-4o-mini",
+    models: ["gpt-4o-mini", "Phi-3.5-mini-instruct", "Meta-Llama-3.1-8B-Instruct"],
+    in: 0, out: 0 },
+];
+
+(function () {
+  const box = $("preset-btns");
+  if (!box) return;
+  _PROVIDER_PRESETS.forEach((p) => {
+    const btn = document.createElement("button");
+    btn.className = "border border-slate-700 text-slate-300 hover:border-[var(--gold)] hover:text-[var(--gold)] rounded px-2 py-0.5";
+    btn.textContent = `+ ${p.label}`;
+    btn.onclick = () => {
+      $("pv-id").value = p.id;
+      $("pv-base").value = p.base_url;
+      $("pv-model").value = p.model;
+      $("pv-in").value = p.in;
+      $("pv-out").value = p.out;
+      $("pv-key").focus();
+      $("pv-msg").textContent = "Pre-filled — paste your API key and click Add provider.";
+    };
+    box.appendChild(btn);
+  });
+})();
 
 /* ---------------- MCP modal ---------------- */
 
