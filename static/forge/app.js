@@ -2119,6 +2119,109 @@ $("mcp-add").onclick = async () => {
   } catch (e) { $("mcp-msg").textContent = e.message; }
 };
 
+/* ---------------- GitHub PR Bridge ---------------- */
+
+$("btn-submit-pr").onclick = async () => {
+  if (!state.sid) { alert("Select an active session first."); return; }
+  const btn = $("btn-submit-pr");
+  const oldText = btn.textContent;
+  btn.textContent = "Summarizing...";
+  btn.disabled = true;
+
+  try {
+    // 1. Get session summary from the model
+    const summaryPrompt = "Create a concise, professional Pull Request title and body summarizing the work done in this session. Format as JSON: {\"title\": \"...\", \"body\": \"...\"}. Focus on technical changes and features implemented.";
+    const res = await api(`/api/sessions/${state.sid}/message`, "POST", { text: summaryPrompt });
+    
+    // Wait for model response in history (naive poll for simplicity here, 
+    // real app would wait for event 'message_done' or similar)
+    btn.textContent = "Creating PR...";
+    let summary;
+    // Heuristic: try to parse the last assistant message as JSON
+    const hist = await api(`/api/sessions/${state.sid}`);
+    const lastMsg = [...hist.history].reverse().find(h => h.role === "assistant" && h.text.includes("{"));
+    if (lastMsg) {
+      try {
+        const jsonMatch = lastMsg.text.match(/\{.*\}/s);
+        summary = JSON.parse(jsonMatch[0]);
+      } catch (e) {
+        summary = { title: "Automated update from CodeMonkeys", body: lastMsg.text };
+      }
+    } else {
+      summary = { title: "Automated update from CodeMonkeys", body: "Session work summary." };
+    }
+
+    // 2. Call the PR API
+    const prRes = await api("/api/github/pr", "POST", summary);
+    if (prRes.ok) {
+      alert(`Pull Request created successfully!\n${prRes.url}`);
+      window.open(prRes.url, "_blank");
+    }
+  } catch (e) {
+    alert("PR Creation failed: " + e.message);
+  } finally {
+    btn.textContent = oldText;
+    btn.disabled = false;
+  }
+};
+
+/* ---------------- Agent Corps Editor ---------------- */
+
+$("btn-corps").onclick = () => {
+  $("modal-corps").classList.remove("hidden");
+  loadCorpsFiles();
+};
+$("corps-close").onclick = () => $("modal-corps").classList.add("hidden");
+
+async function loadCorpsFiles() {
+  try {
+    const d = await api("/api/corps/list");
+    const list = $("corps-list");
+    list.innerHTML = '<p class="text-slate-500 text-[.65rem] uppercase mb-1">Agent Files</p>';
+    d.files.forEach(f => {
+      const b = document.createElement("button");
+      b.className = "w-full text-left px-2 py-1 rounded hover:bg-yellow-900/20 text-[.7rem] text-slate-400 truncate";
+      b.textContent = f;
+      b.onclick = () => loadPersona(f);
+      list.appendChild(b);
+    });
+  } catch (e) { $("corps-msg").textContent = e.message; }
+}
+
+async function loadPersona(name) {
+  try {
+    const d = await api(`/api/corps/read/${name}`);
+    $("corps-editor").value = d.content;
+    $("corps-current-file").textContent = name;
+    $("corps-save").classList.remove("hidden");
+    $("corps-msg").textContent = "";
+  } catch (e) { $("corps-msg").textContent = e.message; }
+}
+
+$("corps-save").onclick = async () => {
+  const name = $("corps-current-file").textContent;
+  const content = $("corps-editor").value;
+  $("corps-msg").className = "text-[.7rem] mt-2 text-slate-500";
+  $("corps-msg").textContent = "Saving...";
+  try {
+    await api("/api/corps/write", "POST", { name, content });
+    $("corps-msg").className = "text-[.7rem] mt-2 text-green-500";
+    $("corps-msg").textContent = "Saved ✓";
+    setTimeout(() => { if ($("corps-msg").textContent === "Saved ✓") $("corps-msg").textContent = ""; }, 2000);
+  } catch (e) {
+    $("corps-msg").className = "text-[.7rem] mt-2 text-red-500";
+    $("corps-msg").textContent = e.message;
+  }
+};
+
+/* ---------------- feedback ---------------- */
+
+$("btn-feedback-inbox").onclick = () => {
+  $("modal-feedback").classList.remove("hidden");
+  if (typeof FieldReport !== "undefined") FieldReport.init();
+};
+$("fb-inbox-close").onclick = () => $("modal-feedback").classList.add("hidden");
+
 /* ---------------- boot ---------------- */
 
 if (state.token) {

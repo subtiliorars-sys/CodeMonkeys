@@ -150,10 +150,11 @@
       <div id="spec-list" class="space-y-1 mb-4"><div class="text-slate-600">none yet</div></div>
       <div class="text-slate-500 uppercase tracking-wider mb-1">Repos</div>
       <div id="repo-list" class="space-y-1 mb-2"></div>
-      <div class="flex gap-1">
+      <div class="flex gap-1 mb-2">
         <input id="repo-url" class="input flex-1 rounded px-2 py-1 text-[.7rem]" placeholder="https://github.com/…">
         <button id="btn-clone" class="gold-btn rounded px-2 text-[.7rem]">clone</button>
       </div>
+      <button id="btn-submit-pr" class="owner-only w-full rounded py-1.5 text-[.7rem] gold-border text-[var(--gold-bright)] hover:bg-yellow-900/20 flex items-center justify-center gap-1">🚀 Submit Pull Request</button>
     </div>
     <div class="p-3 border-t border-yellow-900/40 text-xs space-y-2">
       <div class="relative">
@@ -161,6 +162,7 @@
           <span>⚙ Settings</span><span id="settings-caret" class="text-slate-600">▸</span></button>
         <div id="settings-menu" class="hidden mt-2 space-y-2 rounded border border-yellow-900/40 bg-black/40 p-2">
           <button id="btn-models" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">⚙ Models &amp; keys</button>
+          <button id="btn-corps" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">⚙ Agent Corps (Personas)</button>
           <button id="btn-mcp" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">🔌 MCP connectors</button>
           <button id="btn-passkey" class="w-full text-left text-slate-400 hover:text-[var(--gold)]">👆 Add passkey / biometric</button>
           <p id="passkey-msg" class="text-[.65rem] text-slate-500"></p>
@@ -169,6 +171,7 @@
           <button id="btn-memory" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">🧠 Memory boards</button>
           <div id="memory-list" class="space-y-1"></div>
           <button id="btn-cost-dashboard" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">💰 Cost dashboard</button>
+          <button id="btn-feedback-inbox" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">📥 Feedback inbox</button>
           <a href="/static/forge/swarm.html" class="block text-slate-400 hover:text-[var(--gold)]">🐵 Swarm view</a>
           <a href="/swarm" class="block text-slate-400 hover:text-[var(--gold)]">🌿 Colony (Phase 1)</a>
         </div>
@@ -446,6 +449,45 @@
   </div>
 </div>
 
+<!-- ============ AGENT CORPS MODAL ============ -->
+<div id="modal-corps" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+  <div class="panel gold-border rounded-lg p-5 w-full max-w-4xl h-[90vh] flex flex-col text-sm">
+    <div class="flex justify-between items-center mb-3">
+      <h2 class="wordmark font-bold">Agent Corps Personas</h2>
+      <button id="corps-close" class="text-slate-400 hover:text-white">✕</button>
+    </div>
+    <div class="flex flex-1 gap-4 overflow-hidden">
+      <!-- File List -->
+      <div class="w-48 border-r border-yellow-900/20 overflow-y-auto space-y-1 pr-2" id="corps-list">
+        <p class="text-slate-500 text-[.65rem] uppercase">Agent Files</p>
+      </div>
+      <!-- Editor -->
+      <div class="flex-1 flex flex-col gap-3">
+        <div class="flex justify-between items-center">
+          <code id="corps-current-file" class="text-xs text-yellow-500">no file selected</code>
+          <button id="corps-save" class="gold-btn rounded px-3 py-1 text-xs hidden">Save Changes</button>
+        </div>
+        <textarea id="corps-editor" class="flex-1 bg-black/40 border border-yellow-900/30 rounded p-3 font-mono text-xs text-slate-300 focus:outline-none focus:border-yellow-500/50 resize-none" spellcheck="false" placeholder="Select an agent file to edit..."></textarea>
+      </div>
+    </div>
+    <p id="corps-msg" class="text-[.7rem] mt-2 min-h-[1rem]"></p>
+  </div>
+</div>
+
+<!-- ============ FEEDBACK INBOX MODAL ============ -->
+<div id="modal-feedback" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+  <div class="panel gold-border rounded-lg p-5 w-full max-w-lg max-h-[90vh] overflow-y-auto text-sm">
+    <div class="flex justify-between items-center mb-3">
+      <h2 class="wordmark font-bold">Feedback Inbox</h2>
+      <button id="fb-inbox-close" class="text-slate-400 hover:text-white">✕</button>
+    </div>
+    <div id="field-report-panel"></div>
+  </div>
+</div>
+
+<script src="/static/forge/omni-search.js"></script>
 <script src="/static/forge/app.js"></script>
+<script src="/static/forge/field-report.js"></script>
+<script src="/static/forge/feedback.js"></script>
 </body>
 </html>

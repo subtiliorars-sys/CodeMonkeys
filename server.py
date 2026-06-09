@@ -78,6 +78,20 @@ except ImportError:
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(BASE_DIR, "data"))
 USERS_FILE = os.environ.get("USERS_FILE", os.path.join(DATA_DIR, "users.json"))
+FEEDBACK_FILE = os.path.join(DATA_DIR, "feedback.jsonl")
+FEEDBACK_SHOT_DIR = os.path.join(DATA_DIR, "feedback_shots")
+FEEDBACK_STATUS_FILE = os.path.join(DATA_DIR, "feedback_status.json")
+FEEDBACK_CATEGORIES = {"bug", "improvement", "question"}
+FEEDBACK_STATUSES = {"new", "planned", "fixed", "dismissed"}
+FEEDBACK_MAX_MESSAGE = 4000
+FEEDBACK_MAX_CONTEXT = 1000
+FEEDBACK_MAX_BYTES = 5 * 1024 * 1024
+FEEDBACK_SHOT_MAX_B64 = 2 * 1024 * 1024
+FEEDBACK_SHOT_DIR_MAX = 50 * 1024 * 1024
+FEEDBACK_RATE_MAX = 8
+FEEDBACK_RATE_WINDOW = 3600
+FEEDBACK_SHOT_PREFIXES = {"data:image/jpeg;base64,": ".jpg", "data:image/png;base64,": ".png"}
+_feedback_hits = {}  # user -> [timestamps]
 MODELS_FILE = os.path.join(DATA_DIR, "model_config.json")
 MCP_CONFIG_FILE = os.path.join(DATA_DIR, "mcp_config.json")
 SESSIONS_DIR = os.path.join(DATA_DIR, "sessions")
@@ -834,6 +848,74 @@ def parse_token(token: str):
     except Exception:
         return None
 
+
+def _load_feedback_statuses():
+    try:
+        if os.path.exists(FEEDBACK_STATUS_FILE):
+            with open(FEEDBACK_STATUS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f) or {}
+    except Exception:
+        pass
+    return {}
+
+def _feedback_rate_ok(user: str) -> bool:
+    now = time.time()
+    hits = [t for t in _feedback_hits.get(user, []) if now - t < FEEDBACK_RATE_WINDOW]
+    if len(hits) >= FEEDBACK_RATE_MAX:
+        _feedback_hits[user] = hits
+        return False
+    hits.append(now)
+    _feedback_hits[user] = hits
+    return True
+
+def _scrub_feedback(s, cap):
+    s = "" if s is None else str(s)
+    s = "".join(ch for ch in s if ch in ("\n", "\t") or ord(ch) >= 32)
+    return s.strip()[:cap]
+
+def _evict_orphan_shots():
+    try:
+        referenced = set()
+        for path in (FEEDBACK_FILE, FEEDBACK_FILE + ".1"):
+            if not os.path.exists(path): continue
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line: continue
+                    try:
+                        shot = json.loads(line).get("shot")
+                        if shot: referenced.add(shot)
+                    except Exception: continue
+        if os.path.exists(FEEDBACK_SHOT_DIR):
+            for e in os.scandir(FEEDBACK_SHOT_DIR):
+                if e.is_file() and e.name not in referenced:
+                    try: os.remove(e.path)
+                    except Exception: pass
+    except Exception: pass
+
+def _save_feedback_shot(data_url, report_id):
+    if not data_url: return None
+    ext, b64 = None, None
+    for prefix, e in FEEDBACK_SHOT_PREFIXES.items():
+        if data_url.startswith(prefix):
+            ext, b64 = e, data_url[len(prefix):]
+            break
+    if not ext or len(b64) > FEEDBACK_SHOT_MAX_B64: return None
+    try:
+        raw = base64.b64decode(b64, validate=True)
+        if ext == ".png" and not raw.startswith(b"\x89PNG\r\n\x1a\n"): return None
+        if ext == ".jpg" and not raw.startswith(b"\xff\xd8"): return None
+        os.makedirs(FEEDBACK_SHOT_DIR, exist_ok=True)
+        total = sum(e.stat().st_size for e in os.scandir(FEEDBACK_SHOT_DIR) if e.is_file())
+        if total >= FEEDBACK_SHOT_DIR_MAX:
+            _evict_orphan_shots()
+            total = sum(e.stat().st_size for e in os.scandir(FEEDBACK_SHOT_DIR) if e.is_file())
+        if total >= FEEDBACK_SHOT_DIR_MAX: return None
+        name = report_id + ext
+        with open(os.path.join(FEEDBACK_SHOT_DIR, name), "wb") as f:
+            f.write(raw)
+        return name
+    except Exception: return None
 
 def verify_token(authorization: str = Header(default="")):
     if not authorization.startswith("Bearer "):
@@ -4446,7 +4528,7 @@ def _session_index_path():
 
 
 def _persist_index():
-    idx = {sid: {"title": s["title"], "repo": s["repo"], "created": s["created"],
+    idx = {sid: {"title": s["title"], "repo": s.get("repo"), "created": s["created"],
                  "budget_usd": s.get("budget_usd"),
                  "status": s.get("status", "idle"), "mode": s.get("mode", "default")}
            for sid, s in SESSIONS.items()}
@@ -6301,6 +6383,17 @@ def session_delete(sid: str, _: str = Depends(verify_user)):
 class SessionRename(BaseModel):
     title: str
 
+class FeedbackRequest(BaseModel):
+    category: Optional[str] = "bug"
+    message: str
+    context: Optional[str] = ""
+    screenshot: Optional[str] = None  # data:image/...;base64,...
+
+class FeedbackStatusRequest(BaseModel):
+    id: str
+    status: str
+    note: Optional[str] = ""
+
 
 @app.patch("/api/sessions/{sid}")
 def session_rename(sid: str, req: SessionRename, _: str = Depends(verify_user)):
@@ -6408,6 +6501,173 @@ if FLEET_TOKEN:
 _terminal_lock = threading.Lock()
 _active_terminal_execs = 0
 
+
+FEEDBACK_STATUS_MAX = 1000
+
+@app.post("/api/feedback")
+def submit_feedback(req: FeedbackRequest, user: str = Depends(verify_user)):
+    category = (req.category or "").strip().lower()
+    if category not in FEEDBACK_CATEGORIES:
+        raise HTTPException(status_code=400, detail="Invalid report type.")
+    message = _scrub_feedback(req.message, FEEDBACK_MAX_MESSAGE)
+    if not message:
+        raise HTTPException(status_code=400, detail="Report is empty.")
+    if not _feedback_rate_ok(user):
+        raise HTTPException(status_code=429, detail="Too many reports — please try again later.")
+    record = {
+        "id": secrets.token_hex(8),
+        "ts": time.strftime("%Y-%m-%dT%H:00Z", time.gmtime()),
+        "category": category,
+        "message": message,
+        "context": _scrub_feedback(req.context, FEEDBACK_MAX_CONTEXT),
+    }
+    shot = _save_feedback_shot(req.screenshot, record["id"])
+    if shot: record["shot"] = shot
+    try:
+        if os.path.exists(FEEDBACK_FILE) and os.path.getsize(FEEDBACK_FILE) >= FEEDBACK_MAX_BYTES:
+            try: os.replace(FEEDBACK_FILE, FEEDBACK_FILE + ".1")
+            except Exception: pass
+        with open(FEEDBACK_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Could not save the report.")
+    return {"status": "received"}
+
+@app.get("/api/feedback/list")
+def list_feedback(user: str = Depends(verify_owner)):
+    records = []
+    for path in (FEEDBACK_FILE, FEEDBACK_FILE + ".1"):
+        if len(records) >= 200: break
+        try:
+            if not os.path.exists(path): continue
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    try: records.append(json.loads(line))
+                    except Exception: continue
+        except Exception: pass
+    records.sort(key=lambda r: r.get("ts", ""), reverse=True)
+    statuses = _load_feedback_statuses()
+    for r in records:
+        sid = r.get("id")
+        if sid and sid in statuses:
+            r["status"] = statuses[sid].get("status", "new")
+            r["status_note"] = statuses[sid].get("note", "")
+        else:
+            r["status"] = "new"
+    return {"reports": records[:200]}
+
+@app.post("/api/feedback/status")
+def set_feedback_status(req: FeedbackStatusRequest, user: str = Depends(verify_owner)):
+    if req.status not in FEEDBACK_STATUSES:
+        raise HTTPException(status_code=400, detail="Invalid status.")
+    if not re.fullmatch(r"[0-9a-f]{16}", req.id):
+        raise HTTPException(status_code=400, detail="Invalid id.")
+    statuses = _load_feedback_statuses()
+    statuses[req.id] = {"status": req.status, "note": (req.note or "")[:500]}
+    if len(statuses) > FEEDBACK_STATUS_MAX:
+        oldest = sorted(statuses.keys())[0]
+        statuses.pop(oldest)
+    try:
+        os.makedirs(os.path.dirname(FEEDBACK_STATUS_FILE), exist_ok=True)
+        with open(FEEDBACK_STATUS_FILE, "w", encoding="utf-8") as f:
+            json.dump(statuses, f)
+    except Exception:
+        raise HTTPException(status_code=500, detail="Could not save status.")
+    return {"status": "ok"}
+
+@app.get("/api/feedback/shot/{name}")
+def get_feedback_shot(name: str, user: str = Depends(verify_owner)):
+    if not re.fullmatch(r"[0-9a-f]{16}\.(jpg|png)", name):
+        raise HTTPException(status_code=404, detail="Not found")
+    path = os.path.join(FEEDBACK_SHOT_DIR, name)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="Not found")
+    return FileResponse(path)
+
+
+# ---- GitHub PR Bridge --------------------------------------------------------
+
+class PrRequest(BaseModel):
+    title: str
+    body: str
+
+@app.post("/api/github/pr")
+def create_pull_request(req: PrRequest, owner: str = Depends(verify_owner)):
+    token = GITHUB_TOKEN_VAL
+    if not token:
+        raise HTTPException(400, "GITHUB_TOKEN not configured on server")
+    
+    # Get repo from model config (heuristic: first provider with a repo)
+    conf = _load_json(MODELS_FILE, {})
+    repo = next((p.get("github_repo") for p in conf.get("providers", {}).values() if p.get("github_repo")), None)
+    if not repo:
+        raise HTTPException(400, "No GitHub repository configured in Settings > Models")
+
+    try:
+        # 1. Get current branch
+        branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], 
+                                         cwd=WORKSPACE_DIR).decode().strip()
+        if branch in ("main", "master"):
+            raise HTTPException(400, f"Cannot create PR from protected branch '{branch}'")
+
+        # 2. Push to origin (authenticated via token in URL or helper)
+        # Assuming git is configured with the token or helper; otherwise we'd use _auth_url()
+        subprocess.check_call(["git", "push", "origin", branch], cwd=WORKSPACE_DIR)
+
+        # 3. Create PR via GitHub API
+        url = f"https://api.github.com/repos/{repo}/pulls"
+        h = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+        # Assume base branch is 'main' or 'master'; detect default if possible
+        repo_info = requests.get(f"https://api.github.com/repos/{repo}", headers=h).json()
+        base = repo_info.get("default_branch", "main")
+        
+        pr_payload = {"title": req.title, "body": req.body, "head": branch, "base": base}
+        res = requests.post(url, json=pr_payload, headers=h)
+        if not res.ok:
+            raise HTTPException(res.status_code, f"GitHub PR failed: {res.text}")
+        
+        return {"ok": True, "url": res.json().get("html_url")}
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(500, f"Git error: {e.output.decode() if e.output else str(e)}")
+    except Exception as e:
+        raise HTTPException(500, f"Error: {str(e)}")
+
+
+# ---- Agent Corps Persona Editor ----------------------------------------------
+
+@app.get("/api/corps/list")
+def corps_list(owner: str = Depends(verify_owner)):
+    if not os.path.exists(CORPS_DIR):
+        return {"files": []}
+    files = [f for f in os.listdir(CORPS_DIR) if f.endswith(".md")]
+    return {"files": sorted(files)}
+
+@app.get("/api/corps/read/{name}")
+def corps_read(name: str, owner: str = Depends(verify_owner)):
+    if not re.fullmatch(r"[a-zA-Z0-9_-]+\.md", name):
+        raise HTTPException(400, "Invalid filename")
+    path = os.path.join(CORPS_DIR, name)
+    if not os.path.isfile(path):
+        raise HTTPException(404, "File not found")
+    with open(path, "r", encoding="utf-8") as f:
+        return {"name": name, "content": f.read()}
+
+class PersonaSave(BaseModel):
+    name: str
+    content: str
+
+@app.post("/api/corps/write")
+def corps_write(req: PersonaSave, owner: str = Depends(verify_owner)):
+    if not re.fullmatch(r"[a-zA-Z0-9_-]+\.md", req.name):
+        raise HTTPException(400, "Invalid filename")
+    path = os.path.join(CORPS_DIR, req.name)
+    try:
+        os.makedirs(CORPS_DIR, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(req.content)
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(500, f"Write error: {str(e)}")
 
 class TerminalExec(BaseModel):
     sid: str
