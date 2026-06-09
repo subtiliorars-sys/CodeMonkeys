@@ -4420,6 +4420,7 @@ def _persist_index():
                  "budget_usd": s.get("budget_usd"),
                  "status": s.get("status", "idle"), "mode": s.get("mode", "default")}
            for sid, s in SESSIONS.items()}
+    os.makedirs(SESSIONS_DIR, exist_ok=True)
     _save_json(_session_index_path(), idx)
 
 
