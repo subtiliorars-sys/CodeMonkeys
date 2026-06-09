@@ -9,7 +9,7 @@ primary_region = "dfw"
 
 [env]
   DATA_DIR = "/data"
-  SESSION_BUDGET_USD = "1.00"
+  SESSION_BUDGET_USD = "5.00"
 
 [[mounts]]
   source = "cm_data"

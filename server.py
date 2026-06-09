@@ -118,7 +118,7 @@ LOGIN_THROTTLE_FILE = os.path.join(DATA_DIR, "login_throttle.json")
 # owner-auditable erasure RECEIPT. Both live under DATA_DIR (/data) like users.json.
 ERASED_FILE = os.path.join(DATA_DIR, "erased_accounts.json")          # tombstone
 ERASURE_RECEIPTS_FILE = os.path.join(DATA_DIR, "erasure_receipts.jsonl")  # receipts
-SESSION_BUDGET_USD = float(os.environ.get("SESSION_BUDGET_USD", "1.00"))
+SESSION_BUDGET_USD = float(os.environ.get("SESSION_BUDGET_USD", "5.00"))
 # Ceiling for a per-session budget override (W10) — a client can't set a runaway cap.
 SESSION_BUDGET_MAX_USD = float(os.environ.get("SESSION_BUDGET_MAX_USD", "50.00"))
 # N2 rolling daily spend cap across ALL sessions. Unset or <=0 → no daily cap
@@ -126,6 +126,16 @@ SESSION_BUDGET_MAX_USD = float(os.environ.get("SESSION_BUDGET_MAX_USD", "50.00")
 # today's cumulative spend over the ceiling.
 _raw_daily_cap = os.environ.get("SPEND_DAILY_CAP_USD", "")
 SPEND_DAILY_CAP_USD: float = float(_raw_daily_cap) if _raw_daily_cap else 0.0
+# Budget fallback threshold — when session spend hits this, switch to a free
+# model so the session keeps running instead of dying at the budget ceiling.
+BUDGET_FALLBACK_USD = float(os.environ.get("BUDGET_FALLBACK_USD", "0.10"))
+# Free-tier fallback models, tried in order.  Gemini has rate limits but no
+# hard daily cap; OpenRouter free models have daily request limits.
+_FREE_FALLBACK = [
+    ("gemini", "gemini-2.5-flash"),        # generous rate limits, no daily cap
+    ("openrouter", "qwen/qwen3-coder:free"),
+    ("openrouter", "deepseek/deepseek-r1:free"),
+]
 MAX_TURNS = int(os.environ.get("MAX_TURNS", "60"))
 SUBAGENT_MAX_TURNS = int(os.environ.get("SUBAGENT_MAX_TURNS", "25"))
 # N9 — tool-error-repeat guard. Nudge the model after N_NUDGE identical failures;
@@ -1636,6 +1646,26 @@ def _callable_provider(p):
     if not p.get("key"):
         return False
     return p.get("kind") != "openai" or bool(str(p.get("base_url") or "").strip())
+
+
+def _find_free_provider(cfg):
+    """Find a callable zero-cost provider for budget fallback.
+
+    Tries providers in _FREE_FALLBACK order (Gemini first — rate-limited
+    but no hard daily cap — then OpenRouter free models).  Returns a
+    resolved provider dict with in/out costs zeroed so the session runs
+    free, or None if nothing is configured/usable.
+    """
+    for pid, model in _FREE_FALLBACK:
+        p = cfg.get("providers", {}).get(pid)
+        if not p or not _callable_provider(p):
+            continue
+        prov_copy = json.loads(json.dumps(p))
+        prov_copy["model"] = model
+        prov_copy["in"] = 0        # free tier — zero cost for budget tracking
+        prov_copy["out"] = 0
+        return _resolve(prov_copy, pid=pid)
+    return None
 
 
 def _usable(cfg):
@@ -4884,6 +4914,21 @@ def agent_loop(session, provider, system, history, tool_names, max_turns,
                 _set_outcome("daily_cap")
                 break
         _budget = session_budget(session)
+        # Budget fallback: when spend hits the threshold, switch to a free
+        # model so the session keeps running instead of dying.
+        if (not session.get("_fell_back")
+                and session["spent_usd"] >= BUDGET_FALLBACK_USD
+                and session["spent_usd"] < _budget):
+            cfg = load_models()
+            free_prov = _find_free_provider(cfg)
+            if free_prov is not None and provider.get("api_key") != free_prov.get("api_key"):
+                provider = free_prov
+                session["_fell_back"] = True
+                emit(session, "warning", agent=agent_label,
+                     message=f"Budget threshold ${BUDGET_FALLBACK_USD:.2f} reached "
+                             f"(spent ${session['spent_usd']:.2f}). "
+                             f"Switching to free model ({free_prov['model']}) "
+                             f"to keep going. Session budget is ${_budget:.2f}.")
         if session["spent_usd"] >= _budget:
             emit(session, "error", agent=agent_label,
                  message=f"Session budget ${_budget:.2f} reached "
@@ -4900,25 +4945,38 @@ def agent_loop(session, provider, system, history, tool_names, max_turns,
             resp = call_model(provider, system, history, tools,
                               session=session, agent_label=agent_label)
         except Exception as e:
-            # Escalation-on-failure: try one tier up before giving up. The cost
-            # governor picks cheapest-first; a persistently-failing cheap
-            # provider shouldn't kill the whole run if a pricier one is keyed.
-            escalated = _pricier_provider(load_models(), provider) if depth == 0 else None
-            if escalated is not None:
+            # Provider rotation: try pricier tier first, then rotate through
+            # ALL usable providers before giving up.  Sessions shouldn't die
+            # just because one provider is rate-limited or has a bad key.
+            _cfg = load_models()
+            tried = {provider.get("model")}
+            candidates = []
+            if depth == 0:
+                pp = _pricier_provider(_cfg, provider)
+                if pp:
+                    candidates.append(pp)
+                for pid, p in _usable(_cfg):
+                    resolved = _resolve(p, pid=pid)
+                    if resolved.get("model") not in tried:
+                        candidates.append(resolved)
+                        tried.add(resolved.get("model"))
+            rotated = False
+            for alt in candidates:
                 emit(session, "error", agent=agent_label,
-                     message=f"Model call failed ({e}); escalating to "
-                             f"{escalated['model']}")
+                     message=f"Model call failed ({e}); rotating to "
+                             f"{alt['model']}")
                 try:
-                    resp = call_model(escalated, system, history, tools,
+                    resp = call_model(alt, system, history, tools,
                                       session=session, agent_label=agent_label)
-                    provider = escalated      # stick with the working tier
-                except Exception as e2:
-                    emit(session, "error", agent=agent_label,
-                         message=f"Model call failed after escalation: {e2}")
-                    _set_outcome("model_error")
+                    provider = alt      # stick with the working provider
+                    rotated = True
                     break
-            else:
-                emit(session, "error", message=f"Model call failed: {e}", agent=agent_label)
+                except Exception as e_next:
+                    emit(session, "warning", agent=agent_label,
+                         message=f"{alt['model']} also failed: {e_next}")
+            if not rotated:
+                emit(session, "error", message=f"All providers failed. Last error: {e}",
+                     agent=agent_label)
                 _set_outcome("model_error")
                 break
         usd = call_cost(provider, resp["in_tokens"], resp["out_tokens"])
@@ -6489,34 +6547,70 @@ def repos_clone(req: RepoClone, _: str = Depends(verify_user)):
 # ----------------------------------------------------------------- swarm viz feed
 
 @app.get("/api/swarm/state")
-def swarm_state(_: str = Depends(verify_user)):
+def swarm_state():
+    """Live backend feed for the Colony swarm visualizer.
+
+    No auth required — mirrors the open /swarm page (demo-safe; no keys or PII
+    in the response).  One agent entry per session; activity pulled from recent
+    events so the visualizer can animate banana projectiles between nodes.
+
+    State mapping (per session fields):
+      stop_flag set or status=="interrupted"  → "blocked"
+      status == "running"                     → "running"
+      status == "idle" with prior spend       → "done"
+      default                                 → "idle"
+    """
     agents, activity = [], []
-    for s in SESSIONS.values():
+    with _SESSIONS_LOCK:
+        snapshot = list(SESSIONS.values())
+
+    for s in snapshot:
+        # State mapping from session fields
+        if s["stop_flag"].is_set() or s.get("status") == "interrupted":
+            status = "blocked"
+        elif s.get("status") == "running":
+            status = "running"
+        elif s.get("status") == "idle" and s.get("spent_usd", 0) > 0:
+            status = "done"
+        else:
+            status = "idle"
+
+        agents.append({
+            "id":      f"session-{s['id']}",
+            "name":    s["title"],
+            "status":  status,
+            "tier":    "t1",
+        })
+
+        # Collect activity packets from recent events (last 40)
         with s["lock"]:
             recent = s["events"][-40:]
-        live = {}
         for e in recent:
-            if e["type"] == "agent_start":
-                live[e["agent"]] = {"id": f"{s['id']}:{e['agent']}", "name": e["agent"],
-                                    "tier": e.get("tier", "t1"), "status": "running",
-                                    "session": s["title"]}
-            elif e["type"] == "agent_end":
-                if e.get("agent") in live:
-                    live[e["agent"]]["status"] = "done"
-            elif e["type"] in ("tool", "text"):
-                activity.append({"type": e["type"], "from": e.get("agent") or "core",
+            if e["type"] in ("tool", "text"):
+                activity.append({"type": e["type"], "from": s["title"],
                                  "detail": e.get("name", "") or (e.get("text", "")[:60]),
                                  "ts": e["ts"]})
-        agents += list(live.values())
+
+    # Active model name — best-effort; empty string if no provider configured
+    try:
+        prov = main_provider(load_models())
+        model_label = prov["model"] if prov else ""
+    except Exception:
+        model_label = ""
+
+    active = sum(1 for a in agents if a["status"] == "running")
+    done   = sum(1 for a in agents if a["status"] == "done")
+
     return {
         "orchestrator": {"id": "core", "name": "CodeMonkeys", "tier": "orchestrate"},
         "agents": agents,
         "activity": activity[-30:],
         "stats": {
-            "sessions": len(SESSIONS),
-            "running": sum(1 for s in SESSIONS.values() if s["status"] != "idle"),
-            "spend_today_usd": round(daily_total_usd(), 4),   # N2: authoritative daily counter
+            "sessions":              len(agents),
+            "running":               active,
+            "spend_today_usd":       round(daily_total_usd(), 4),
             "budget_per_session_usd": SESSION_BUDGET_USD,
+            "model":                 model_label,
         },
     }
 
