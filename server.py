@@ -421,6 +421,7 @@ def _load_json(path, default):
 
 def _save_json(path, data):
     tmp = path + ".tmp"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(tmp, "w") as f:
         json.dump(data, f, indent=2)
     os.replace(tmp, path)
@@ -4420,7 +4421,6 @@ def _persist_index():
                  "budget_usd": s.get("budget_usd"),
                  "status": s.get("status", "idle"), "mode": s.get("mode", "default")}
            for sid, s in SESSIONS.items()}
-    os.makedirs(SESSIONS_DIR, exist_ok=True)
     _save_json(_session_index_path(), idx)
 
 
