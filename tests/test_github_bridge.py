@@ -582,5 +582,259 @@ class TestPushCurrentBranch(unittest.TestCase):
         self.assertIn("No GitHub token", result.get("error", ""))
 
 
+# ── Test Pull Request API ──────────────────────────────────────
+
+class TestPullRequestAPI(unittest.TestCase):
+    """Tests for PR API functions"""
+
+    def setUp(self):
+        from github_bridge import create_pull_request, list_pull_requests, merge_pull_request
+        self.create_pr = create_pull_request
+        self.list_prs = list_pull_requests
+        self.merge_pr = merge_pull_request
+
+    @patch("github_bridge._github_api_get")
+    def test_list_prs_success(self, mock_get):
+        mock_get.return_value = {
+            "data": [
+                {"number": 1, "title": "PR 1", "state": "open", "html_url": "...",
+                 "user": {"login": "user"}, "head": {"ref": "feature"},
+                 "base": {"ref": "main"}, "created_at": "2024-01-01"},
+                {"number": 2, "title": "PR 2", "state": "open", "html_url": "...",
+                 "user": {"login": "user"}, "head": {"ref": "fix"},
+                 "base": {"ref": "main"}, "created_at": "2024-01-02"},
+            ],
+            "http_status": 200,
+            "headers": {},
+            "error": None,
+        }
+        result = self.list_prs("ghp_test", "user/repo")
+        self.assertIsNone(result.get("error"))
+        self.assertEqual(len(result.get("prs", [])), 2)
+        self.assertIn("title", result["prs"][0])
+
+    @patch("github_bridge._github_api_post")
+    def test_create_pr_success(self, mock_post):
+        mock_post.return_value = {
+            "data": {"number": 42, "title": "New PR", "html_url": "..."},
+            "http_status": 201,
+            "headers": {},
+            "error": None,
+        }
+        result = self.create_pr("ghp_test", "user/repo", "feature", "main", "Title")
+        self.assertIsNone(result.get("error"))
+        self.assertEqual(result.get("pr", {}).get("number"), 42)
+
+    @patch("github_bridge._github_api_post")
+    def test_merge_pr_not_mergeable(self, mock_post):
+        mock_post.return_value = {
+            "data": {"message": "Pull Request is not mergeable"},
+            "http_status": 405,
+            "headers": {},
+            "error": "Pull Request is not mergeable",
+        }
+        result = self.merge_pr("ghp_test", "user/repo", 1)
+        self.assertFalse(result.get("merged"))
+        self.assertIn("mergeable", result.get("error", "").lower())
+
+
+# ── Test Issues API ────────────────────────────────────────────
+
+class TestIssuesAPI(unittest.TestCase):
+    """Tests for Issues API functions"""
+
+    def setUp(self):
+        from github_bridge import list_issues, create_issue
+        self.list_issues = list_issues
+        self.create_issue = create_issue
+
+    @patch("github_bridge._github_api_get")
+    def test_list_issues_filters_prs(self, mock_get):
+        mock_get.return_value = {
+            "data": [
+                {"number": 1, "title": "Issue 1"},
+                {"number": 2, "title": "PR 1", "pull_request": {}},
+                {"number": 3, "title": "Issue 2"},
+            ],
+            "http_status": 200,
+            "headers": {},
+            "error": None,
+        }
+        result = self.list_issues("ghp_test", "user/repo")
+        self.assertIsNone(result.get("error"))
+        self.assertEqual(len(result.get("issues", [])), 2)
+        for item in result.get("issues", []):
+            self.assertNotIn("pull_request", item)
+
+    @patch("github_bridge._github_api_post")
+    def test_create_issue_success(self, mock_post):
+        mock_post.return_value = {
+            "data": {"number": 99, "title": "New Issue"},
+            "http_status": 201,
+            "headers": {},
+            "error": None,
+        }
+        result = self.create_issue("ghp_test", "user/repo", "Title", "Body")
+        self.assertIsNone(result.get("error"))
+        self.assertIn("number", result.get("issue", {}))
+
+    @patch("github_bridge._github_api_get")
+    def test_list_issues_error(self, mock_get):
+        mock_get.return_value = {
+            "data": {},
+            "http_status": 401,
+            "headers": {},
+            "error": "Unauthorized",
+        }
+        result = self.list_issues("ghp_bad", "user/repo")
+        self.assertIsNotNone(result.get("error"))
+        self.assertEqual(result.get("issues", []), [])
+
+
+# ── Test Commit API ────────────────────────────────────────────
+
+class TestCommitAPI(unittest.TestCase):
+    """Tests for Commit API functions"""
+
+    def setUp(self):
+        from github_bridge import get_commits, compare_commits
+        self.get_commits = get_commits
+        self.compare_commits = compare_commits
+
+    @patch("github_bridge._github_api_get")
+    def test_get_commits_success(self, mock_get):
+        mock_get.return_value = {
+            "data": [
+                {"sha": "a1", "commit": {"message": "m1", "author": {"name": "n1", "date": "d1"}}, "html_url": "u1"},
+                {"sha": "a2", "commit": {"message": "m2", "author": {"name": "n2", "date": "d2"}}, "html_url": "u2"},
+                {"sha": "a3", "commit": {"message": "m3", "author": {"name": "n3", "date": "d3"}}, "html_url": "u3"},
+            ],
+            "http_status": 200,
+            "headers": {},
+            "error": None,
+        }
+        result = self.get_commits("ghp_test", "user/repo")
+        self.assertIsNone(result.get("error"))
+        self.assertEqual(len(result.get("commits", [])), 3)
+        self.assertIn("sha", result["commits"][0])
+
+    @patch("github_bridge._github_api_get")
+    def test_compare_commits_success(self, mock_get):
+        mock_get.return_value = {
+            "data": {
+                "ahead_by": 5,
+                "behind_by": 2,
+                "files": [{"filename": "f.py", "status": "modified", "additions": 1, "deletions": 0}],
+            },
+            "http_status": 200,
+            "headers": {},
+            "error": None,
+        }
+        result = self.compare_commits("ghp_test", "user/repo", "base", "head")
+        self.assertIsNone(result.get("error"))
+        self.assertEqual(result.get("ahead_by"), 5)
+        self.assertEqual(result.get("behind_by"), 2)
+        self.assertEqual(len(result.get("files", [])), 1)
+
+
+# ── Test Content API ───────────────────────────────────────────
+
+class TestContentAPI(unittest.TestCase):
+    """Tests for Content API functions"""
+
+    def setUp(self):
+        from github_bridge import get_file_content, create_or_update_file
+        self.get_content = get_file_content
+        self.create_file = create_or_update_file
+        self.update_file = create_or_update_file
+
+    @patch("github_bridge._github_api_get")
+    def test_get_file_content_success(self, mock_get):
+        mock_get.return_value = {
+            "data": {"content": "abc", "sha": "s1", "size": 3, "html_url": "u"},
+            "http_status": 200,
+            "headers": {},
+            "error": None,
+        }
+        result = self.get_content("ghp_test", "user/repo", "file.txt")
+        self.assertIsNone(result.get("error"))
+        self.assertIn("content_b64", result)
+        self.assertIn("sha", result)
+        self.assertIn("size", result)
+
+    @patch("github_bridge._github_api_put")
+    def test_create_file_success(self, mock_put):
+        import base64
+        content_b64 = base64.b64encode(b"hello world").decode()
+        mock_put.return_value = {
+            "data": {"commit": {"sha": "c1"}},
+            "http_status": 201,
+            "headers": {},
+            "error": None,
+        }
+        result = self.create_file("ghp_test", "user/repo", "file.txt", "msg", content_b64)
+        self.assertIsNone(result.get("error"))
+        self.assertTrue(result.get("committed"))
+        self.assertIn("sha", result)
+
+    @patch("github_bridge._github_api_put")
+    def test_update_file_includes_sha(self, mock_put):
+        import base64
+        content_b64 = base64.b64encode(b"updated content").decode()
+        mock_put.return_value = {
+            "data": {"commit": {"sha": "c2"}},
+            "http_status": 200,
+            "headers": {},
+            "error": None,
+        }
+        self.update_file("ghp_test", "user/repo", "file.txt", "msg", content_b64, sha="oldsha")
+        args, kwargs = mock_put.call_args
+        body = args[2] if len(args) > 2 else kwargs.get("body", {})
+        self.assertIn("sha", body)
+
+
+# ── Test Workflow API ──────────────────────────────────────────
+
+class TestWorkflowAPI(unittest.TestCase):
+    """Tests for Workflow API functions"""
+
+    def setUp(self):
+        from github_bridge import list_workflow_runs
+        self.list_runs = list_workflow_runs
+
+    @patch("github_bridge._github_api_get")
+    def test_list_runs_success(self, mock_get):
+        mock_get.return_value = {
+            "data": {
+                "workflow_runs": [
+                    {"id": 1, "name": "CI", "status": "completed", "conclusion": "success",
+                     "head_branch": "main", "created_at": "2024", "html_url": "u1"},
+                    {"id": 2, "name": "CI", "status": "completed", "conclusion": "success",
+                     "head_branch": "main", "created_at": "2024", "html_url": "u2"},
+                ]
+            },
+            "http_status": 200,
+            "headers": {},
+            "error": None,
+        }
+        result = self.list_runs("ghp_test", "user/repo")
+        self.assertIsNone(result.get("error"))
+        self.assertEqual(len(result.get("runs", [])), 2)
+        self.assertIn("id", result["runs"][0])
+
+    @patch("github_bridge._github_api_get")
+    def test_list_runs_no_workflow_id(self, mock_get):
+        mock_get.return_value = {
+            "data": {"workflow_runs": []},
+            "http_status": 200,
+            "headers": {},
+            "error": None,
+        }
+        self.list_runs("ghp_test", "user/repo")
+        args, _ = mock_get.call_args
+        endpoint = args[0] if args else ""
+        self.assertNotIn("/workflows/", endpoint)
+
+
 if __name__ == "__main__":
     unittest.main()

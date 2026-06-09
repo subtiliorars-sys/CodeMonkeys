@@ -36,6 +36,9 @@ from config_manager import (
     get_current_user, set_current_user, get_user_tier, get_user_profile,
     get_or_create_user, list_users, get_user_budget_info, get_undo_log,
     check_user_permission, USER_TIERS, set_user_tier,
+    get_budget_info, get_session_budget_info, is_budget_exhausted,
+    is_session_exhausted, set_budget_limit, set_session_budget,
+    reset_session_budget,
 )
 from forge_ui import get_forge_html
 from github_bridge import (
@@ -327,6 +330,45 @@ HTML_PAGE = r"""<!DOCTYPE html>
   </div>
 
   <div class="card">
+    <h2>💰 Budget Controls</h2>
+    <p class="note" style="margin-bottom:1rem;">
+      Monthly and session budget caps control API spend. When a budget is
+      exhausted, paid models are disabled and only free models are used.
+    </p>
+    <div id="budget-monthly" style="margin-bottom:1rem;">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-weight:600;">📅 Monthly Budget</span>
+        <span id="budget-monthly-status" class="dot" style="width:12px;height:12px;"></span>
+      </div>
+      <div style="font-size:0.9rem;margin-top:0.3rem;">
+        <span id="budget-monthly-spent">$0.00</span> / <span id="budget-monthly-limit">$200.00</span>
+        <span style="color:var(--muted);margin-left:0.5rem;" id="budget-monthly-period"></span>
+      </div>
+      <div style="margin-top:0.5rem;display:flex;gap:0.5rem;align-items:center;">
+        <input type="number" id="budget-monthly-input" step="0.01" min="0"
+               style="width:120px;padding:0.4rem;background:#0d0d1a;border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.85rem;">
+        <button class="btn btn-primary" style="padding:0.4rem 1rem;font-size:0.8rem;" onclick="setMonthlyBudget()">Set</button>
+      </div>
+    </div>
+    <hr style="margin:0.8rem 0;">
+    <div id="budget-session">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <span style="font-weight:600;">🎯 Session Budget (agent self-report)</span>
+        <span id="budget-session-status" class="dot" style="width:12px;height:12px;"></span>
+      </div>
+      <div style="font-size:0.9rem;margin-top:0.3rem;">
+        <span id="budget-session-spent">$0.00</span> / <span id="budget-session-limit">$50.00</span>
+      </div>
+      <div style="margin-top:0.5rem;display:flex;gap:0.5rem;align-items:center;">
+        <input type="number" id="budget-session-input" step="0.01" min="0"
+               style="width:120px;padding:0.4rem;background:#0d0d1a;border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.85rem;">
+        <button class="btn btn-primary" style="padding:0.4rem 1rem;font-size:0.8rem;" onclick="setSessionBudget()">Set</button>
+        <button class="btn btn-secondary" style="padding:0.4rem 1rem;font-size:0.8rem;" onclick="resetSessionBudget()">Reset</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
     <h2>📋 Config File</h2>
     <p class="note">
       Location: <code id="config-path">~/.banana_shelter/config.json</code><br>
@@ -605,9 +647,106 @@ async function clearGithubToken() {
   }
 }
 
+// ── Budget Functions ────────────────────────────────────────────
+
+async function loadBudgetStatus() {
+  try {
+    const resp = await fetch('/api/budget');
+    const result = await resp.json();
+    
+    // Monthly
+    document.getElementById('budget-monthly-spent').textContent = `$${result.monthly.spent.toFixed(2)}`;
+    document.getElementById('budget-monthly-limit').textContent = `$${result.monthly.limit.toFixed(2)}`;
+    if (result.monthly.month) {
+      document.getElementById('budget-monthly-period').textContent = `(${result.monthly.month})`;
+    }
+    const monthlyDot = document.getElementById('budget-monthly-status');
+    monthlyDot.className = 'dot ' + (result.monthly.remaining > 0 ? 'green' : 'red');
+    
+    // Session
+    document.getElementById('budget-session-spent').textContent = `$${result.session.spent.toFixed(2)}`;
+    document.getElementById('budget-session-limit').textContent = `$${result.session.limit.toFixed(2)}`;
+    const sessionDot = document.getElementById('budget-session-status');
+    sessionDot.className = 'dot ' + (result.session.remaining > 0 ? 'green' : 'red');
+  } catch(e) {
+    // Budget not loaded yet
+  }
+}
+
+async function setMonthlyBudget() {
+  const input = document.getElementById('budget-monthly-input');
+  const amount = parseFloat(input.value);
+  if (isNaN(amount) || amount < 0) {
+    showMessage('Please enter a valid amount.', 'error');
+    return;
+  }
+  try {
+    const resp = await fetch('/api/budget/monthly', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ amount: amount })
+    });
+    const result = await resp.json();
+    if (result.success) {
+      showMessage('✅ ' + result.message, 'success');
+      input.value = '';
+      loadBudgetStatus();
+    } else {
+      showMessage('❌ ' + (result.error || 'Failed to set budget'), 'error');
+    }
+  } catch(e) {
+    showMessage('❌ Error: ' + e.message, 'error');
+  }
+}
+
+async function setSessionBudget() {
+  const input = document.getElementById('budget-session-input');
+  const amount = parseFloat(input.value);
+  if (isNaN(amount) || amount < 0) {
+    showMessage('Please enter a valid amount.', 'error');
+    return;
+  }
+  try {
+    const resp = await fetch('/api/budget/session', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ amount: amount })
+    });
+    const result = await resp.json();
+    if (result.success) {
+      showMessage('✅ ' + result.message, 'success');
+      input.value = '';
+      loadBudgetStatus();
+    } else {
+      showMessage('❌ ' + (result.error || 'Failed to set budget'), 'error');
+    }
+  } catch(e) {
+    showMessage('❌ Error: ' + e.message, 'error');
+  }
+}
+
+async function resetSessionBudget() {
+  if (!confirm('Reset session spent to $0.00?')) return;
+  try {
+    const resp = await fetch('/api/budget/reset-session', {
+      method: 'POST'
+    });
+    const result = await resp.json();
+    if (result.success) {
+      showMessage('🔄 Session budget reset', 'success');
+      loadBudgetStatus();
+    } else {
+      showMessage('❌ ' + (result.error || 'Failed to reset'), 'error');
+    }
+  } catch(e) {
+    showMessage('❌ Error: ' + e.message, 'error');
+  }
+}
+
 // Load on startup
 loadConfig();
 loadGithubStatus();
+loadBudgetStatus();
 </script>
 </body>
 </html>"""
@@ -667,6 +806,10 @@ class SettingsHandler(BaseHTTPRequestHandler):
         elif path == "/api/github/repos":
             self._handle_github_repos()
         
+        # ── Budget API ──
+        elif path == "/api/budget":
+            self._handle_get_budget()
+        
         else:
             self._send_json(404, {"error": "Not found"})
     
@@ -710,6 +853,14 @@ class SettingsHandler(BaseHTTPRequestHandler):
             self._handle_github_token(data)
         elif path == "/api/github/test":
             self._handle_github_test(data)
+        
+        # ── Budget API ──
+        elif path == "/api/budget/monthly":
+            self._handle_set_monthly_budget(data)
+        elif path == "/api/budget/session":
+            self._handle_set_session_budget(data)
+        elif path == "/api/budget/reset-session":
+            self._handle_reset_session_budget()
         
         else:
             self._send_json(404, {"success": False, "error": "Not found"})
@@ -1016,6 +1167,44 @@ class SettingsHandler(BaseHTTPRequestHandler):
                 "message": f"🎲 Rerolled! {len(cards)} new cards generated.",
                 "cards": cards,
             })
+    
+    def _handle_get_budget(self):
+        """GET /api/budget — return monthly + session budget info."""
+        monthly = get_budget_info()
+        session_data = get_session_budget_info()
+        self._send_json(200, {
+            "monthly": monthly,
+            "session": session_data,
+        })
+    
+    def _handle_set_monthly_budget(self, data):
+        """POST /api/budget/monthly — set monthly budget limit."""
+        amount = data.get("amount")
+        if amount is None:
+            self._send_json(400, {"success": False, "error": "amount required"})
+            return
+        if set_budget_limit(amount):
+            self._send_json(200, {"success": True, "message": f"Monthly budget set to ${float(amount):.2f}"})
+        else:
+            self._send_json(400, {"success": False, "error": "Invalid amount"})
+    
+    def _handle_set_session_budget(self, data):
+        """POST /api/budget/session — set session budget limit."""
+        amount = data.get("amount")
+        if amount is None:
+            self._send_json(400, {"success": False, "error": "amount required"})
+            return
+        if set_session_budget(amount):
+            self._send_json(200, {"success": True, "message": f"Session budget set to ${float(amount):.2f}"})
+        else:
+            self._send_json(400, {"success": False, "error": "Invalid amount"})
+    
+    def _handle_reset_session_budget(self):
+        """POST /api/budget/reset-session — reset session spent to 0."""
+        if reset_session_budget():
+            self._send_json(200, {"success": True, "message": "Session budget reset"})
+        else:
+            self._send_json(500, {"success": False, "error": "Failed to reset"})
     
     # ── GitHub API Handlers ──────────────────────────────────────────
 

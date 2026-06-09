@@ -472,6 +472,13 @@ def cmd_github(args_str):
         delete_token, get_git_status, git_push, git_pull,
         list_user_repos, get_git_remote_url, git_add_all,
         git_commit, git_create_branch, push_current_branch,
+        # NEW v2 imports:
+        create_pull_request, list_pull_requests, merge_pull_request,
+        create_issue as gh_create_issue,
+        list_issues as gh_list_issues,
+        get_commits, compare_commits,
+        get_file_content, create_or_update_file,
+        list_workflow_runs,
     )
     from config_manager import get_current_user
     
@@ -493,6 +500,16 @@ def cmd_github(args_str):
         print("  /github commit <message>       Stage all & commit locally")
         print("  /github branch <name>          Create & switch branch")
         print("  /github remote [name]          Show remote URL")
+        print("  /github pr list <repo>              List open PRs")
+        print("  /github pr create <repo> <title>    Create a PR")
+        print("  /github pr merge <repo> <number>    Merge a PR")
+        print("  /github issue list <repo>           List issues")
+        print("  /github issue create <repo> <title> Create issue")
+        print("  /github commits <repo> [branch]     Show recent commits")
+        print("  /github diff <repo> <base>..<head>  Compare commits")
+        print("  /github file <repo> <path>          Get file content")
+        print("  /github file-write <repo> <path>    Write file (interactive)")
+        print("  /github runs <repo> [workflow_id]   List workflow runs")
         print()
         return
     
@@ -708,6 +725,203 @@ def cmd_github(args_str):
             print(f"  ⚠️  No remote '{remote_name}' configured")
         return
     
+    elif subcmd == "pr":
+        if len(parts) < 2:
+            print("  ❌ Usage: /github pr list|create|merge ...")
+            return
+        action = parts[1].lower()
+        token = get_active_token(user_id)
+        if not token:
+            print("  ❌ No GitHub token configured. Use /github login <token>")
+            return
+        if action == "list":
+            if len(parts) < 3:
+                print("  ❌ Usage: /github pr list <repo>")
+                return
+            repo = parts[2]
+            result = list_pull_requests(token, repo)
+            if result.get("error"):
+                print(f"  ❌ {result['error']}")
+            else:
+                prs = result.get("prs", [])
+                print(f"  📋 Open PRs ({len(prs)}):")
+                for p in prs:
+                    print(f"     #{p['number']} {p['title']} by {p['user']}")
+        elif action == "create":
+            if len(parts) < 5:
+                print("  ❌ Usage: /github pr create <repo> <title> <head> <base>")
+                return
+            repo, title, head, base = parts[2], parts[3], parts[4], parts[5] if len(parts) > 5 else "main"
+            result = create_pull_request(token, repo, title, head, base)
+            if result.get("error"):
+                print(f"  ❌ {result['error']}")
+            else:
+                print(f"  ✅ PR created: {result.get('url')}")
+        elif action == "merge":
+            if len(parts) < 4:
+                print("  ❌ Usage: /github pr merge <repo> <number>")
+                return
+            repo = parts[2]
+            try:
+                num = int(parts[3])
+            except ValueError:
+                print("  ❌ PR number must be integer")
+                return
+            result = merge_pull_request(token, repo, num)
+            if result.get("error"):
+                print(f"  ❌ {result['error']}")
+            else:
+                print(f"  ✅ PR #{num} merged")
+        else:
+            print("  ❌ Unknown pr action")
+        return
+    
+    elif subcmd == "issue":
+        if len(parts) < 2:
+            print("  ❌ Usage: /github issue list|create ...")
+            return
+        action = parts[1].lower()
+        token = get_active_token(user_id)
+        if not token:
+            print("  ❌ No GitHub token configured. Use /github login <token>")
+            return
+        if action == "list":
+            if len(parts) < 3:
+                print("  ❌ Usage: /github issue list <repo>")
+                return
+            repo = parts[2]
+            result = gh_list_issues(token, repo)
+            if result.get("error"):
+                print(f"  ❌ {result['error']}")
+            else:
+                issues = result.get("issues", [])
+                print(f"  📋 Issues ({len(issues)}):")
+                for i in issues:
+                    print(f"     #{i['number']} {i['title']}")
+        elif action == "create":
+            if len(parts) < 4:
+                print("  ❌ Usage: /github issue create <repo> <title> [body]")
+                return
+            repo = parts[2]
+            title = parts[3]
+            body = parts[4] if len(parts) > 4 else ""
+            result = gh_create_issue(token, repo, title, body)
+            if result.get("error"):
+                print(f"  ❌ {result['error']}")
+            else:
+                print(f"  ✅ Issue created: {result.get('url')}")
+        else:
+            print("  ❌ Unknown issue action")
+        return
+    
+    elif subcmd == "commits":
+        if len(parts) < 2:
+            print("  ❌ Usage: /github commits <repo> [branch]")
+            return
+        repo = parts[1]
+        branch = parts[2] if len(parts) > 2 else None
+        token = get_active_token(user_id)
+        if not token:
+            print("  ❌ No GitHub token configured. Use /github login <token>")
+            return
+        result = get_commits(token, repo, branch)
+        if result.get("error"):
+            print(f"  ❌ {result['error']}")
+        else:
+            commits = result.get("commits", [])
+            print(f"  📜 Commits ({len(commits)}):")
+            for idx, c in enumerate(commits, 1):
+                msg = c.get('message','')[:50]
+                print(f"     {idx}. {c.get('sha','')[:8]} {c.get('author','?')} {c.get('date','')} {msg}")
+        return
+    
+    elif subcmd == "diff":
+        if len(parts) < 3:
+            print("  ❌ Usage: /github diff <repo> <base>..<head>")
+            return
+        repo = parts[1]
+        rng = parts[2]
+        if ".." not in rng:
+            print("  ❌ Range must be base..head")
+            return
+        base, head = rng.split("..", 1)
+        token = get_active_token(user_id)
+        if not token:
+            print("  ❌ No GitHub token configured. Use /github login <token>")
+            return
+        result = compare_commits(token, repo, base, head)
+        if result.get("error"):
+            print(f"  ❌ {result['error']}")
+        else:
+            print(f"  📊 Ahead: {result.get('ahead')} Behind: {result.get('behind')}")
+            for f in result.get("files", []):
+                print(f"     {f.get('filename')} +{f.get('additions',0)} -{f.get('deletions',0)}")
+        return
+    
+    elif subcmd == "file":
+        if len(parts) < 3:
+            print("  ❌ Usage: /github file <repo> <path>")
+            return
+        repo = parts[1]
+        path = parts[2]
+        token = get_active_token(user_id)
+        if not token:
+            print("  ❌ No GitHub token configured. Use /github login <token>")
+            return
+        result = get_file_content(token, repo, path)
+        if result.get("error"):
+            print(f"  ❌ {result['error']}")
+        else:
+            import base64
+            content = result.get("content", "")
+            try:
+                decoded = base64.b64decode(content).decode("utf-8")
+                print(decoded)
+            except Exception:
+                print(f"  ⚠️ Binary file, size={result.get('size')}")
+        return
+    
+    elif subcmd == "file-write":
+        if len(parts) < 3:
+            print("  ❌ Usage: /github file-write <repo> <path>")
+            return
+        repo = parts[1]
+        path = parts[2]
+        token = get_active_token(user_id)
+        if not token:
+            print("  ❌ No GitHub token configured. Use /github login <token>")
+            return
+        msg = input("  Commit message: ").strip()
+        content = input("  File content: ")
+        import base64
+        b64 = base64.b64encode(content.encode("utf-8")).decode("ascii")
+        result = create_or_update_file(token, repo, path, b64, msg)
+        if result.get("error"):
+            print(f"  ❌ {result['error']}")
+        else:
+            print(f"  ✅ Written SHA: {result.get('sha')}")
+        return
+    
+    elif subcmd == "runs":
+        if len(parts) < 2:
+            print("  ❌ Usage: /github runs <repo> [workflow_id]")
+            return
+        repo = parts[1]
+        wid = parts[2] if len(parts) > 2 else None
+        token = get_active_token(user_id)
+        if not token:
+            print("  ❌ No GitHub token configured. Use /github login <token>")
+            return
+        result = list_workflow_runs(token, repo, wid)
+        if result.get("error"):
+            print(f"  ❌ {result['error']}")
+        else:
+            runs = result.get("runs", [])
+            print(f"  🏃 Workflow runs ({len(runs)}):")
+            for r in runs:
+                print(f"     {r.get('id')} {r.get('branch')} {r.get('status')} {r.get('conclusion','')} {r.get('created_at','')}")
+        return
+    
     else:
         print(f"  ❌ Unknown github subcommand: {subcmd}")
         print("     Type /github help for available commands")
@@ -771,8 +985,8 @@ def cmd_help():
     print("  /feedback         Submit change request to the Change Forge")
     print("  /forge            Show Change Forge status / manage solutions")
     print("  /user [id]        Show or set current user identity")
-    print("  /github           GitHub integration (login, push, pull, repos, tokens)
-  /help             Show this help")
+    print("  /github           GitHub integration (login, push, pull, repos, tokens)")
+    print("  /help             Show this help")
     print("  Ctrl+C / Ctrl+D   Exit")
     print()
 

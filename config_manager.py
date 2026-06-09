@@ -353,6 +353,7 @@ def is_budget_exhausted():
     """Return True if monthly budget_spent >= budget_limit."""
     config = load_config()
     limit = config.get("budget_limit", 200.0)
+    spent = config.get("budget_spent", 0.0)
     return spent >= limit
 
 

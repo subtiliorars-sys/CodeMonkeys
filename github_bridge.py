@@ -798,6 +798,342 @@ def push_current_branch(user_id: str, remote: str = "origin",
     return result
 
 
+# ── GitHub API Core (continued) ─────────────────────────────────
+
+
+def _github_api_put(endpoint: str, token: str, body_data: dict = None) -> dict:
+    """
+    Make a PUT request to the GitHub API.
+    Returns dict with: data, http_status, headers, error
+    """
+    import urllib.request
+    import urllib.error
+    
+    url = f"{GITHUB_API_BASE}{endpoint}"
+    
+    req = urllib.request.Request(url, method="PUT")
+    req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("Accept", "application/vnd.github+json")
+    req.add_header("X-GitHub-Api-Version", GITHUB_API_VERSION)
+    req.add_header("User-Agent", "CodeMonkeys/1.0")
+    req.add_header("Content-Type", "application/json")
+    
+    if body_data is not None:
+        data_bytes = json.dumps(body_data).encode("utf-8")
+        req.data = data_bytes
+    
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = resp.read().decode("utf-8")
+            data = json.loads(body) if body else {}
+            return {
+                "data": data,
+                "http_status": resp.status,
+                "headers": dict(resp.headers),
+                "error": None,
+            }
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read().decode("utf-8")
+            data = json.loads(body) if body else {}
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            data = {}
+        return {
+            "data": data,
+            "http_status": e.code,
+            "headers": dict(e.headers),
+            "error": data.get("message", str(e)),
+        }
+    except (urllib.error.URLError, OSError) as e:
+        return {
+            "data": {},
+            "http_status": 0,
+            "headers": {},
+            "error": f"Network error: {e}",
+        }
+
+
+# ── Pull Request API ─────────────────────────────────────────────
+
+
+def create_pull_request(token: str, repo_full_name: str, title: str, head: str,
+                        base: str, body: str = "") -> dict:
+    """
+    Create a pull request.
+    Returns dict with: pr (dict or None), error (str or None)
+    """
+    endpoint = f"/repos/{repo_full_name}/pulls"
+    payload = {"title": title, "head": head, "base": base, "body": body}
+    result = _github_api_post(endpoint, token, payload)
+    
+    if result.get("http_status") == 201:
+        data = result.get("data", {})
+        return {
+            "pr": {
+                "number": data.get("number"),
+                "title": data.get("title"),
+                "html_url": data.get("html_url"),
+                "state": data.get("state"),
+                "head": data.get("head", {}).get("ref"),
+                "base": data.get("base", {}).get("ref"),
+            },
+            "error": None,
+        }
+    error = result.get("error", "Failed to create pull request")
+    return {"pr": None, "error": error}
+
+
+def list_pull_requests(token: str, repo_full_name: str, state: str = "open") -> dict:
+    """
+    List pull requests for a repo.
+    Returns dict with: prs (list), error (str or None)
+    """
+    endpoint = f"/repos/{repo_full_name}/pulls?state={state}&per_page=30"
+    result = _github_api_get(endpoint, token)
+    
+    if result.get("http_status") == 200:
+        prs = []
+        for p in result.get("data", []):
+            prs.append({
+                "number": p.get("number"),
+                "title": p.get("title"),
+                "state": p.get("state"),
+                "html_url": p.get("html_url"),
+                "user": p.get("user", {}).get("login"),
+                "head": p.get("head", {}).get("ref"),
+                "base": p.get("base", {}).get("ref"),
+                "created_at": p.get("created_at"),
+            })
+        return {"prs": prs, "error": None}
+    error = result.get("error", "Failed to list pull requests")
+    return {"prs": [], "error": error}
+
+
+def merge_pull_request(token: str, repo_full_name: str, pr_number: int,
+                       merge_method: str = "merge") -> dict:
+    """
+    Merge a pull request.
+    Returns dict with: merged (bool), sha (str or None), error (str or None)
+    """
+    endpoint = f"/repos/{repo_full_name}/pulls/{pr_number}/merge"
+    payload = {"merge_method": merge_method}
+    result = _github_api_post(endpoint, token, payload)
+    
+    if result.get("http_status") == 200:
+        data = result.get("data", {})
+        return {"merged": True, "sha": data.get("sha"), "error": None}
+    if result.get("http_status") == 405:
+        return {"merged": False, "sha": None, "error": "PR is not mergeable"}
+    error = result.get("error", "Failed to merge pull request")
+    return {"merged": False, "sha": None, "error": error}
+
+
+# ── Issues API ───────────────────────────────────────────────────
+
+
+def create_issue(token: str, repo_full_name: str, title: str, body: str = "",
+                 labels: list = None) -> dict:
+    """
+    Create an issue.
+    Returns dict with: issue (dict or None), error (str or None)
+    """
+    endpoint = f"/repos/{repo_full_name}/issues"
+    payload = {"title": title, "body": body}
+    if labels:
+        payload["labels"] = labels
+    result = _github_api_post(endpoint, token, payload)
+    
+    if result.get("http_status") == 201:
+        data = result.get("data", {})
+        return {
+            "issue": {
+                "number": data.get("number"),
+                "title": data.get("title"),
+                "html_url": data.get("html_url"),
+                "state": data.get("state"),
+            },
+            "error": None,
+        }
+    error = result.get("error", "Failed to create issue")
+    return {"issue": None, "error": error}
+
+
+def list_issues(token: str, repo_full_name: str, state: str = "open") -> dict:
+    """
+    List issues (excluding PRs) for a repo.
+    Returns dict with: issues (list), error (str or None)
+    """
+    endpoint = f"/repos/{repo_full_name}/issues?state={state}&per_page=30"
+    result = _github_api_get(endpoint, token)
+    
+    if result.get("http_status") == 200:
+        issues = []
+        for i in result.get("data", []):
+            if "pull_request" in i:
+                continue  # filter out PRs
+            issues.append({
+                "number": i.get("number"),
+                "title": i.get("title"),
+                "state": i.get("state"),
+                "html_url": i.get("html_url"),
+                "user": i.get("user", {}).get("login"),
+                "created_at": i.get("created_at"),
+            })
+        return {"issues": issues, "error": None}
+    error = result.get("error", "Failed to list issues")
+    return {"issues": [], "error": error}
+
+
+# ── Commits/Log API ──────────────────────────────────────────────
+
+
+def get_commits(token: str, repo_full_name: str, branch: str = "main",
+                per_page: int = 20) -> dict:
+    """
+    List commits on a branch.
+    Returns dict with: commits (list), error (str or None)
+    """
+    endpoint = f"/repos/{repo_full_name}/commits?sha={branch}&per_page={per_page}"
+    result = _github_api_get(endpoint, token)
+    
+    if result.get("http_status") == 200:
+        commits = []
+        for c in result.get("data", []):
+            commit = c.get("commit", {})
+            commits.append({
+                "sha": c.get("sha"),
+                "message": commit.get("message"),
+                "author": commit.get("author", {}).get("name"),
+                "date": commit.get("author", {}).get("date"),
+                "html_url": c.get("html_url"),
+            })
+        return {"commits": commits, "error": None}
+    error = result.get("error", "Failed to get commits")
+    return {"commits": [], "error": error}
+
+
+def compare_commits(token: str, repo_full_name: str, base: str, head: str) -> dict:
+    """
+    Compare two commits/branches.
+    Returns dict with: ahead_by, behind_by, files, error
+    """
+    endpoint = f"/repos/{repo_full_name}/compare/{base}...{head}"
+    result = _github_api_get(endpoint, token)
+    
+    if result.get("http_status") == 200:
+        data = result.get("data", {})
+        files = []
+        for f in data.get("files", []):
+            files.append({
+                "filename": f.get("filename"),
+                "status": f.get("status"),
+                "additions": f.get("additions"),
+                "deletions": f.get("deletions"),
+            })
+        return {
+            "ahead_by": data.get("ahead_by", 0),
+            "behind_by": data.get("behind_by", 0),
+            "files": files,
+            "error": None,
+        }
+    error = result.get("error", "Failed to compare commits")
+    return {"ahead_by": 0, "behind_by": 0, "files": [], "error": error}
+
+
+# ── Content API ──────────────────────────────────────────────────
+
+
+def get_file_content(token: str, repo_full_name: str, file_path: str,
+                     ref: str = None) -> dict:
+    """
+    Get file content (base64 encoded).
+    Returns dict with: content_b64, sha, size, html_url, error
+    """
+    endpoint = f"/repos/{repo_full_name}/contents/{file_path}"
+    if ref:
+        endpoint += f"?ref={ref}"
+    result = _github_api_get(endpoint, token)
+    
+    if result.get("http_status") == 200:
+        data = result.get("data", {})
+        return {
+            "content_b64": data.get("content", ""),
+            "sha": data.get("sha"),
+            "size": data.get("size"),
+            "html_url": data.get("html_url"),
+            "error": None,
+        }
+    error = result.get("error", "Failed to get file content")
+    return {"content_b64": None, "sha": None, "size": 0, "html_url": None, "error": error}
+
+
+def create_or_update_file(token: str, repo_full_name: str, file_path: str,
+                          commit_message: str, content_b64: str, sha: str = None,
+                          branch: str = None) -> dict:
+    """
+    Create or update a file via Contents API.
+    Returns dict with: committed (bool), sha, html_url, error
+    """
+    # Validate base64
+    try:
+        base64.b64decode(content_b64, validate=True)
+    except Exception:
+        return {"committed": False, "sha": None, "html_url": None,
+                "error": "Invalid base64 content"}
+    
+    endpoint = f"/repos/{repo_full_name}/contents/{file_path}"
+    payload = {"message": commit_message, "content": content_b64}
+    if sha is not None:
+        payload["sha"] = sha
+    if branch:
+        payload["branch"] = branch
+    
+    result = _github_api_put(endpoint, token, payload)
+    
+    if result.get("http_status") in (200, 201):
+        data = result.get("data", {})
+        return {
+            "committed": True,
+            "sha": data.get("content", {}).get("sha") if isinstance(data.get("content"), dict) else data.get("sha"),
+            "html_url": data.get("content", {}).get("html_url") if isinstance(data.get("content"), dict) else data.get("html_url"),
+            "error": None,
+        }
+    error = result.get("error", "Failed to commit file")
+    return {"committed": False, "sha": None, "html_url": None, "error": error}
+
+
+# ── Workflow/Actions API ─────────────────────────────────────────
+
+
+def list_workflow_runs(token: str, repo_full_name: str, workflow_id: str = None,
+                       per_page: int = 20) -> dict:
+    """
+    List workflow runs.
+    Returns dict with: runs (list), error (str or None)
+    """
+    if workflow_id:
+        endpoint = f"/repos/{repo_full_name}/actions/workflows/{workflow_id}/runs?per_page={per_page}"
+    else:
+        endpoint = f"/repos/{repo_full_name}/actions/runs?per_page={per_page}"
+    result = _github_api_get(endpoint, token)
+    
+    if result.get("http_status") == 200:
+        runs = []
+        for r in result.get("data", {}).get("workflow_runs", []):
+            runs.append({
+                "id": r.get("id"),
+                "name": r.get("name"),
+                "status": r.get("status"),
+                "conclusion": r.get("conclusion"),
+                "head_branch": r.get("head_branch"),
+                "created_at": r.get("created_at"),
+                "html_url": r.get("html_url"),
+            })
+        return {"runs": runs, "error": None}
+    error = result.get("error", "Failed to list workflow runs")
+    return {"runs": [], "error": error}
+
+
 # ── Self-test ────────────────────────────────────────────────────
 
 if __name__ == "__main__":
