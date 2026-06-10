@@ -18,6 +18,7 @@ import base64
 import difflib
 import fnmatch
 import hashlib
+from typing import Optional
 import hmac
 import io
 import json
