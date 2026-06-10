@@ -11,24 +11,26 @@
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body { background: var(--bg); color: #e2e8f0; display: flex; flex-direction: column;
-         font: 13px/1.5 ui-monospace, "Cascadia Code", "Source Code Pro", monospace; }
-  #scrollback { flex: 1; overflow-y: auto; padding: 12px 14px 4px;
+         font: 13px/1.6 ui-monospace, "Cascadia Code", "Source Code Pro", monospace; }
+  #scrollback { flex: 1; overflow-y: auto; padding: 14px 16px 6px;
                 white-space: pre-wrap; overflow-wrap: anywhere; }
-  #scrollback div { min-height: 1.2em; }
+  #scrollback div { min-height: 1.3em; line-height: 1.6; }
   .t-banner { color: var(--gold); }
   .t-in     { color: var(--gold-bright); }
   .t-out    { color: #e2e8f0; }
-  .t-dim    { color: #64748b; }
+  .t-dim    { color: #64748b; font-size: .9em; }
   .t-agent  { color: var(--cyan); }
   .t-err    { color: #f87171; }
-  .t-warn   { color: var(--gold-bright); background: rgba(212,175,55,.10); }
-  #inputrow { display: flex; gap: 8px; padding: 8px 14px 12px;
+  .t-warn   { color: var(--gold-bright); background: rgba(212,175,55,.10);
+              border-left: 2px solid var(--gold); padding-left: 6px; }
+  #inputrow { display: flex; gap: 8px; padding: 10px 16px 14px;
               border-top: 1px solid rgba(212,175,55,.30); }
-  #prompt   { color: var(--gold); user-select: none; }
+  #prompt   { color: var(--gold); user-select: none; line-height: 1.5; }
   #cmd { flex: 1; background: transparent; border: none; outline: none;
          color: #e2e8f0; font: inherit; caret-color: var(--gold); }
-  #status { padding: 2px 14px; color: #475569; font-size: 11px;
-            border-top: 1px solid rgba(212,175,55,.15); }
+  #status { padding: 4px 16px; color: #475569; font-size: 11px;
+            border-top: 1px solid rgba(212,175,55,.15);
+            letter-spacing: .02em; }
   a { color: var(--gold); }
 </style>
 </head>
