@@ -48,6 +48,7 @@ function showMain() {
     el.classList.toggle("hidden", state.role !== "Owner"));
   refreshSessions(); refreshSpecs(); refreshRepos(); listPasskeys();
   if (state.role === "Owner") checkEncryptionBanner();
+  if (!state.sid) showLanding();
 }
 
 // Encryption-status banner: non-blocking warning when model keys are stored
@@ -448,7 +449,7 @@ async function refreshSessions() {
       if (!confirm("Delete this session and its history?")) return;
       try { await api(`/api/sessions/${el.dataset.del}`, "DELETE"); }
       catch (err) { alert(err.message); return; }
-      if (state.sid === el.dataset.del) { state.sid = null; stopPolling(); $("stream").innerHTML = ""; $("hdr-title").textContent = "no session"; }
+      if (state.sid === el.dataset.del) { state.sid = null; stopPolling(); $("stream").innerHTML = ""; $("hdr-title").textContent = "no session"; showLanding(); }
       refreshSessions();
     }));
   } catch (e) { /* ignore */ }
@@ -528,6 +529,7 @@ function openSession(sid) {
   _budgetAlertShownAt = 0;
   $("budget-alert")?.classList.add("hidden");
   $("stream").innerHTML = "";
+  hideLanding();
   refreshSessions();
   startPolling(true);
   $("btn-export-transcript")?.classList.remove("hidden");
@@ -813,6 +815,45 @@ document.addEventListener("click", (e) => {
     setSettingsOpen(false);
 });
 
+/* ---------------- sidebar advanced toggle ---------------- */
+
+function setSidebarAdvanced(open) {
+  $("sidebar-advanced").classList.toggle("hidden", !open);
+  $("sidebar-adv-caret").textContent = open ? "▾" : "▸";
+}
+$("btn-sidebar-advanced").onclick = () => {
+  setSidebarAdvanced($("sidebar-advanced").classList.contains("hidden"));
+};
+
+/* ---------------- landing welcome buttons ---------------- */
+
+function updateLandingMode() {
+  const el = $("landing-mode");
+  if (el) el.textContent = state.mode;
+}
+// Wire landing buttons as shorthands to existing actions
+$("landing-new-session").onclick = $("btn-new-session").onclick;
+$("landing-models").onclick = () => {
+  $("btn-models").click();
+};
+// Update landing mode text when mode changes
+const _origRenderMode = renderMode;
+renderMode = function() {
+  _origRenderMode();
+  updateLandingMode();
+};
+
+function showLanding() {
+  const el = $("landing-welcome");
+  if (el) el.classList.remove("hidden");
+  updateLandingMode();
+}
+
+function hideLanding() {
+  const el = $("landing-welcome");
+  if (el) el.classList.add("hidden");
+}
+
 $("btn-send").onclick = send;
 $("msg").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
@@ -899,13 +940,24 @@ function _pvHealthDots(pid) {
 
 async function loadProviders() {
   const d = await api("/api/models");
-  $("auto-cheapest").checked = !!d.auto_cheapest;
+  if (d.auto_best) {
+    const el = $("route-best");
+    if (el) el.checked = true;
+  } else if (d.auto_cheapest) {
+    const el = $("route-cheapest");
+    if (el) el.checked = true;
+  } else {
+    const el = $("route-manual");
+    if (el) el.checked = true;
+  }
   // Auto-expand the selected/main provider on first load; don't collapse manually-opened rows
   if (_pvExpanded.size === 0 && d.selected && d.selected !== "auto") {
     _pvExpanded.add(d.selected);
   } else if (_pvExpanded.size === 0) {
-    // auto mode: expand the cheapest auto-flagged provider
-    const autoP = d.providers.find((p) => p.auto && p.has_key);
+    // auto mode: expand the cheapest/best auto-flagged provider
+    const autoP = d.auto_best
+      ? d.providers.filter((p) => p.auto && p.has_key).sort((a, b) => a.out - b.out).pop()
+      : d.providers.find((p) => p.auto && p.has_key);
     if (autoP) _pvExpanded.add(autoP.id);
   }
   // Compute client-side tier labels (mirrors provider_for_tier logic: sort by out cost)
@@ -959,10 +1011,10 @@ async function loadProviders() {
       if (_isFree(a) !== _isFree(b)) return _isFree(a) ? -1 : 1;
       return a.localeCompare(b);
     });
-    const activeModel = (d.auto_cheapest || d.selected === p.id) ? p.model : null;
+    const activeModel = (d.auto_cheapest || d.auto_best || d.selected === p.id) ? p.model : null;
     const opts = sortedModels.map((m) =>
       `<option value="${esc(m)}" ${m === p.model ? "selected" : ""}>${m === activeModel ? "★ " : ""}${esc(m)}${_costHint(m)}</option>`).join("");
-    const isMain = p.id === d.selected && !d.auto_cheapest;
+    const isMain = p.id === d.selected && !d.auto_cheapest && !d.auto_best;
     const manyModels = allModels.length > 5;
     const expanded = _pvExpanded.has(p.id);
     const now = Math.floor(Date.now() / 1000);
@@ -1004,9 +1056,9 @@ async function loadProviders() {
             }" title="Tier ${t} — position in cheapest-first routing">${t}</span>`
           : ""; })()}
         <span class="text-slate-600 text-xs">${p.model ? esc(p.model) : ""}</span>
-        ${d.auto_cheapest && cascadeOrder[p.id]
+        ${(d.auto_cheapest || d.auto_best) && cascadeOrder[p.id]
           ? `<span class="text-[.6rem] text-slate-500 border border-slate-700 rounded px-1"
-              title="Auto-cheapest call order">#${cascadeOrder[p.id]}</span>` : ""}
+              title="Auto call priority order">#${d.auto_best ? (callable.filter((p) => p.auto).length - cascadeOrder[p.id] + 1) : cascadeOrder[p.id]}</span>` : ""}
         <label class="flex items-center gap-1 text-slate-400" title="Include in cheapest-first cascade">
           <input type="checkbox" class="pv-auto accent-yellow-500" data-id="${esc(p.id)}" ${p.auto ? "checked" : ""}>✓auto</label>
         ${p.has_key ? `<button data-id="${esc(p.id)}" class="pv-ping text-slate-500/60 hover:text-slate-300 text-[.65rem] border border-slate-700/50 rounded px-1.5" title="Send 1-token request to measure latency">ping</button>` : ""}
@@ -1071,7 +1123,7 @@ async function loadProviders() {
   }));
   document.querySelectorAll(".pv-main").forEach((b) => (b.onclick = async () => {
     await api("/api/models/select", "POST", { id: b.dataset.id });
-    await api("/api/models/settings", "POST", { auto_cheapest: false });
+    await api("/api/models/settings", "POST", { auto_cheapest: false, auto_best: false });
     // Record last-used timestamp for sort-by-used
     _pvLastUsed[b.dataset.id] = Math.floor(Date.now() / 1000);
     _pvSaveLastUsed();
@@ -1309,15 +1361,19 @@ async function loadProviders() {
   const btnClearErr = $("btn-clear-errors");
   if (btnClearErr) btnClearErr.classList.toggle("hidden", !hasErrors);
 
-  // Auto-cheapest preview: show which provider+model would actually be called
-  const acPreview = $("ac-preview");
-  if (acPreview) {
-    if (d.auto_cheapest) {
+  // Routing preview: show which provider+model would actually be called
+  const routePreview = $("route-preview");
+  if (routePreview) {
+    if (d.auto_best) {
+      const autoP = d.providers.filter((p) => p.has_key && p.auto).sort((a, b) => a.out - b.out);
+      const tBest = autoP[autoP.length - 1];
+      routePreview.textContent = tBest ? `→ would call: ${tBest.label} · ${tBest.model || "(no model set)"} (best capable)` : "→ no keyed auto-providers";
+    } else if (d.auto_cheapest) {
       const t0 = d.providers.filter((p) => p.has_key && p.auto).sort((a, b) => a.out - b.out)[0];
-      acPreview.textContent = t0 ? `→ would call: ${t0.label} · ${t0.model || "(no model set)"}` : "→ no keyed auto-providers";
-      acPreview.className = "text-xs text-slate-500 ml-2";
+      routePreview.textContent = t0 ? `→ would call: ${t0.label} · ${t0.model || "(no model set)"} (cheapest first)` : "→ no keyed auto-providers";
     } else {
-      acPreview.textContent = "";
+      const mainP = d.providers.find((p) => p.id === d.selected);
+      routePreview.textContent = mainP ? `→ would call: ${mainP.label} · ${mainP.model || "(no model set)"} (manual selection)` : "→ no provider selected";
     }
   }
 
@@ -1360,17 +1416,24 @@ async function loadProviders() {
   _renderCostCalc(d.providers);
   _renderCompareTable(d.providers);
   // Update active model in modal title
-  const activeProv = d.auto_cheapest
+  const activeProv = d.auto_best
+    ? d.providers.filter((p) => p.has_key && p.auto).sort((a, b) => a.out - b.out).pop()
+    : d.auto_cheapest
     ? d.providers.filter((p) => p.has_key && p.auto).sort((a, b) => a.out - b.out)[0]
     : d.providers.find((p) => p.id === d.selected);
   const modalModel = $("modal-active-model");
   if (modalModel) modalModel.textContent = activeProv?.model ? `· ${activeProv.model}` : "";
 }
 
-$("auto-cheapest").onchange = async () => {
-  await api("/api/models/settings", "POST", { auto_cheapest: $("auto-cheapest").checked });
-  loadProviders();
-};
+document.getElementsByName("route-mode").forEach((r) => {
+  r.onchange = async () => {
+    const val = r.value;
+    const auto_cheapest = val === "cheapest";
+    const auto_best = val === "best";
+    await api("/api/models/settings", "POST", { auto_cheapest, auto_best });
+    loadProviders();
+  };
+});
 
 /* ---------------- session budget bar ---------------- */
 let _budgetAlertShownAt = 0; // pct threshold at which alert was last shown (75 or 95)

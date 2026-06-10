@@ -143,18 +143,26 @@
       <input id="session-filter" type="text" class="input rounded px-2 py-0.5 text-[.7rem] w-full mb-1" placeholder="filter sessions…">
       <div id="session-list" class="space-y-1 mb-1"></div>
       <div id="sidebar-spend-today" class="owner-only text-slate-600 text-[.65rem] mb-3 hidden"></div>
-      <div class="flex justify-between items-center mb-1">
-        <span class="text-slate-500 uppercase tracking-wider">Saved Plans</span>
-        <button id="btn-refresh-specs" class="text-[var(--gold)] hover:text-[var(--gold-bright)]" title="Refresh list">↻</button>
+      <div class="mt-3 pt-2 border-t border-yellow-900/20">
+        <button id="btn-sidebar-advanced" class="flex items-center gap-1 text-slate-400 hover:text-slate-300 w-full text-left py-1">
+          <span id="sidebar-adv-caret">▸</span>
+          <span class="uppercase tracking-wider text-[.65rem]">Advanced</span>
+        </button>
+        <div id="sidebar-advanced" class="hidden mt-1 space-y-1">
+          <div class="flex justify-between items-center mb-1">
+            <span class="text-slate-500 uppercase tracking-wider text-[.65rem]">Saved Plans</span>
+            <button id="btn-refresh-specs" class="text-[var(--gold)] hover:text-[var(--gold-bright)] text-[.65rem]" title="Refresh list">↻</button>
+          </div>
+          <div id="spec-list" class="space-y-1 mb-3"><div class="text-slate-600">none yet</div></div>
+          <div class="text-slate-500 uppercase tracking-wider text-[.65rem] mb-1">Repos</div>
+          <div id="repo-list" class="space-y-1 mb-2"></div>
+          <div class="flex gap-1 mb-2">
+            <input id="repo-url" class="input flex-1 rounded px-2 py-1 text-[.7rem]" placeholder="https://github.com/…">
+            <button id="btn-clone" class="gold-btn rounded px-2 text-[.7rem]">clone</button>
+          </div>
+          <button id="btn-submit-pr" class="owner-only w-full rounded py-1.5 text-[.7rem] gold-border text-[var(--gold-bright)] hover:bg-yellow-900/20 flex items-center justify-center gap-1">🚀 Submit Pull Request</button>
+        </div>
       </div>
-      <div id="spec-list" class="space-y-1 mb-4"><div class="text-slate-600">none yet</div></div>
-      <div class="text-slate-500 uppercase tracking-wider mb-1">Repos</div>
-      <div id="repo-list" class="space-y-1 mb-2"></div>
-      <div class="flex gap-1 mb-2">
-        <input id="repo-url" class="input flex-1 rounded px-2 py-1 text-[.7rem]" placeholder="https://github.com/…">
-        <button id="btn-clone" class="gold-btn rounded px-2 text-[.7rem]">clone</button>
-      </div>
-      <button id="btn-submit-pr" class="owner-only w-full rounded py-1.5 text-[.7rem] gold-border text-[var(--gold-bright)] hover:bg-yellow-900/20 flex items-center justify-center gap-1">🚀 Submit Pull Request</button>
     </div>
     <div class="p-3 border-t border-yellow-900/40 text-xs space-y-2">
       <div class="relative">
@@ -205,7 +213,23 @@
       <span id="enc-banner-msg"></span>
       <button id="enc-banner-close" class="ml-auto text-yellow-500 hover:text-yellow-200">✕</button>
     </div>
-    <div id="stream" class="flex-1 overflow-y-auto px-4 py-3 space-y-2 text-sm"></div>
+    <div id="stream" class="flex-1 overflow-y-auto px-4 py-3 space-y-2 text-sm">
+      <!-- Empty-state landing: shown only when no session is active -->
+      <div id="landing-welcome" class="flex flex-col items-center justify-center h-full text-center px-6">
+        <div class="text-5xl monkey mb-4">🐒</div>
+        <h2 class="wordmark text-xl font-bold mb-2">CodeMonkeys</h2>
+        <p class="text-slate-500 text-sm max-w-md mb-6">Your agents. Any model. Any browser.<br>Start a new session or pick one from the sidebar.</p>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-lg">
+          <button id="landing-new-session" class="gold-btn rounded-lg py-3 text-sm font-bold flex items-center justify-center gap-2">
+            <span>+</span><span>New Session</span>
+          </button>
+          <button id="landing-models" class="gold-border rounded-lg py-3 text-sm text-slate-300 hover:text-[var(--gold-bright)] flex items-center justify-center gap-2">
+            <span>⚙</span><span>Configure Models</span>
+          </button>
+        </div>
+        <p class="text-slate-600 text-xs mt-6">mode: <span id="landing-mode" class="text-[var(--gold)]">default</span></p>
+      </div>
+    </div>
     <div id="composer" class="border-t border-yellow-900/40 p-3">
       <div class="flex items-center gap-2 mb-1 text-xs">
         <span class="text-slate-500">mode:</span>
@@ -245,12 +269,24 @@
       <div class="flex items-end gap-0.5 h-8" id="spend-sparkline-bars" title="7-day spend"></div>
       <div id="spend-sparkline-label" class="text-slate-600 mt-0.5"></div>
     </div>
-    <label class="flex items-center gap-2 mb-3 text-xs bg-yellow-900/10 gold-border rounded px-3 py-2">
-      <input id="auto-cheapest" type="checkbox" class="accent-yellow-500">
-      <span><b class="text-[var(--gold-bright)]">Auto · cheapest-first</b> — start with the cheapest provider you've keyed
-        (✓ in the cascade) and use pricier ones only when needed. Turn off to always use the ★ provider.</span>
-      <span id="ac-preview"></span>
-    </label>
+    <div class="flex flex-col gap-2 mb-3 bg-yellow-900/10 gold-border rounded px-3 py-2 text-xs">
+      <div class="flex items-center gap-4 flex-wrap">
+        <span class="font-semibold text-[var(--gold-bright)]">Routing Mode:</span>
+        <label class="flex items-center gap-1 cursor-pointer" title="Always use the manually selected ★ provider">
+          <input type="radio" name="route-mode" id="route-manual" value="manual" class="accent-yellow-500">
+          <span>Manual (★ provider)</span>
+        </label>
+        <label class="flex items-center gap-1 cursor-pointer" title="Automatically start with the cheapest provider you've keyed">
+          <input type="radio" name="route-mode" id="route-cheapest" value="cheapest" class="accent-yellow-500">
+          <span>Auto (Cheapest-first)</span>
+        </label>
+        <label class="flex items-center gap-1 cursor-pointer" title="Automatically select the most capable/expensive provider you've keyed">
+          <input type="radio" name="route-mode" id="route-best" value="best" class="accent-yellow-500">
+          <span>Auto (Best-model)</span>
+        </label>
+      </div>
+      <div id="route-preview" class="text-slate-500"></div>
+    </div>
     <div class="flex items-center gap-2 mb-1">
       <p class="text-xs text-slate-500 flex-1">One API key per provider — then pick any model from it. ★ = main provider (when Auto is off). ✓ = include in the cheapest-first cascade.</p>
       <input id="provider-search" type="text" class="input rounded px-2 py-0.5 text-xs w-28" placeholder="search models…" title="Filter providers by model name (global)">
