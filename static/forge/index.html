@@ -52,8 +52,31 @@
   ::-webkit-scrollbar { width: 8px; } ::-webkit-scrollbar-thumb { background: #2b2415; border-radius: 4px; }
   #composer.drop-active { outline: 2px dashed var(--gold); outline-offset: -4px; background: rgba(212,175,55,.06); }
 </style>
-</head>
 <body class="scanlines h-screen overflow-hidden">
+
+<!-- ============ STEADY GROUND — always-present crisis exit (self-contained, offline-safe) ============ -->
+<!-- Present on EVERY screen. No app/JS-bundle dependency, no network needed. Discreet label (anti-outing). -->
+<button id="steady-ground-btn" type="button" aria-label="Get crisis help now" style="z-index:99998"
+  onclick="document.getElementById('steady-ground-modal').classList.remove('hidden')"
+  class="fixed bottom-4 right-4 bg-slate-900/90 hover:bg-slate-800 border border-rose-700/70 text-rose-200 text-xs font-semibold px-3 py-2 rounded-full shadow-lg backdrop-blur-sm flex items-center gap-1.5 transition">
+  <span aria-hidden="true">🫂</span> Steady Ground
+</button>
+<div id="steady-ground-modal" class="hidden fixed inset-0 flex items-center justify-center p-6 bg-black/70 backdrop-blur-sm" style="z-index:99999"
+  onclick="if(event.target===this)this.classList.add('hidden')">
+  <div class="w-full max-w-sm bg-slate-900 border border-slate-700 rounded-2xl p-6 shadow-2xl text-slate-200">
+    <h2 class="text-lg font-bold mb-1">You don't have to hold this alone.</h2>
+    <p class="text-sm text-slate-400 mb-4">If you're in pain or thinking about hurting yourself, reach a real person right now — any hour. These work even if the app doesn't.</p>
+    <div class="space-y-2 text-sm">
+      <a href="tel:988" class="block bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-lg px-4 py-3"><b>Call or text 988</b> — Suicide &amp; Crisis Lifeline (US)</a>
+      <a href="sms:741741?&body=HOME" class="block bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-lg px-4 py-3"><b>Text HOME to 741741</b> — Crisis Text Line (US)</a>
+      <a href="https://findahelpline.com" target="_blank" rel="noopener" class="block bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-lg px-4 py-3"><b>findahelpline.com</b> — find a helpline anywhere</a>
+      <a href="tel:911" class="block bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-lg px-4 py-3"><b>Call 911</b> — immediate danger (US)</a>
+    </div>
+    <button type="button" onclick="document.getElementById('steady-ground-modal').classList.add('hidden')"
+      class="mt-4 w-full text-slate-400 hover:text-slate-200 text-sm py-2">Close</button>
+  </div>
+</div>
+<!-- ============ /STEADY GROUND ============ -->
 
 <!-- ============ LOGIN ============ -->
 <div id="view-login" class="h-full flex items-center justify-center">
@@ -180,6 +203,7 @@
           <div id="memory-list" class="space-y-1"></div>
           <button id="btn-cost-dashboard" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">💰 Cost dashboard</button>
           <button id="btn-feedback-inbox" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">📥 Feedback inbox</button>
+          <a href="/static/forge/terminal.html" class="block text-slate-400 hover:text-[var(--gold)]">💻 Terminal console</a>
           <a href="/static/forge/swarm.html" class="block text-slate-400 hover:text-[var(--gold)]">🐵 Swarm view</a>
           <a href="/swarm" class="block text-slate-400 hover:text-[var(--gold)]">🌿 Colony (Phase 1)</a>
         </div>

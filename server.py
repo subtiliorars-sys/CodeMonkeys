@@ -955,6 +955,12 @@ class LoginRequest(BaseModel):
     mfa_code: str
 
 
+@app.get("/api/registration-status")
+def registration_status():
+    users = load_users()
+    return {"open": not bool(users) or OPEN_ENROLLMENT}
+
+
 @app.post("/api/register")
 def register(req: RegisterRequest):
     username = req.username.strip()
@@ -1715,7 +1721,7 @@ def _resolve(prov, pid=None):
 
     *pid* is threaded through so cooldown helpers can bench by provider-id.
     """
-    return {"pid": pid, "name": prov.get("label", "?"), "kind": prov["kind"],
+    return {"pid": pid, "name": prov.get("label", "?"), "kind": prov.get("kind", ""),
             "base_url": prov.get("base_url", ""), "model": prov.get("model", ""),
             "api_key": prov.get("key", ""),
             "input_cost_per_m": prov.get("in", 0), "output_cost_per_m": prov.get("out", 0),
@@ -4529,7 +4535,7 @@ def _session_index_path():
 
 
 def _persist_index():
-    idx = {sid: {"title": s["title"], "repo": s.get("repo"), "created": s["created"],
+    idx = {sid: {"title": s.get("title", "Untitled"), "repo": s.get("repo"), "created": s.get("created", 0),
                  "budget_usd": s.get("budget_usd"),
                  "status": s.get("status", "idle"), "mode": s.get("mode", "default")}
            for sid, s in SESSIONS.items()}

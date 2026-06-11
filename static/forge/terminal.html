@@ -3,43 +3,451 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CodeMonkeys — terminal</title>
-<!-- Deliberately self-contained: no CDN, no Tailwind — plain CSS only
-     (docs/TERMINAL_DESIGN.md §4; the repo is exiting CDNs, PR #34). -->
+<title>CodeMonkeys — Terminal</title>
+<!-- Deliberately self-contained: no CDN, no external CSS library. Plain CSS styling. -->
 <style>
-  :root { --gold: #d4af37; --gold-bright: #f0c75e; --bg: #050507; --cyan: #22d3ee; }
+  :root {
+    --gold: #d4af37;
+    --gold-bright: #f0c75e;
+    --gold-dark: #a67c12;
+    --bg: #050507;
+    --panel-bg: #0a0a0f;
+    --cyan: #22d3ee;
+    --cyan-dim: rgba(34, 211, 238, 0.2);
+    --red: #f87171;
+    --border-color: rgba(212, 175, 55, 0.25);
+  }
   * { box-sizing: border-box; }
-  html, body { height: 100%; margin: 0; }
-  body { background: var(--bg); color: #e2e8f0; display: flex; flex-direction: column;
-         font: 13px/1.6 ui-monospace, "Cascadia Code", "Source Code Pro", monospace; }
-  #scrollback { flex: 1; overflow-y: auto; padding: 14px 16px 6px;
-                white-space: pre-wrap; overflow-wrap: anywhere; }
-  #scrollback div { min-height: 1.3em; line-height: 1.6; }
-  .t-banner { color: var(--gold); }
+  html, body { height: 100%; margin: 0; padding: 0; background: var(--bg); color: #e2e8f0; }
+  body {
+    display: flex;
+    flex-direction: column;
+    font-family: ui-monospace, "Cascadia Code", "Source Code Pro", monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    overflow: hidden;
+  }
+
+  /* Scanline effect */
+  body::after {
+    content: "";
+    pointer-events: none;
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(0deg, rgba(0,0,0,.15) 0 1px, transparent 1px 3px);
+    opacity: .4;
+    z-index: 9999;
+  }
+
+  /* Layout */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: linear-gradient(180deg, #111116, #07070b);
+    border-bottom: 1px solid var(--border-color);
+    padding: 10px 16px;
+    flex-shrink: 0;
+    gap: 16px;
+    z-index: 10;
+  }
+
+  .header-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  h1 {
+    margin: 0;
+    font-size: 1.1rem;
+    color: var(--gold);
+    text-shadow: 0 0 8px rgba(212, 175, 55, 0.3);
+    letter-spacing: 0.05em;
+  }
+
+  .back-btn {
+    color: #64748b;
+    text-decoration: none;
+    font-size: 11px;
+    transition: color 0.2s;
+  }
+  .back-btn:hover {
+    color: var(--gold-bright);
+  }
+
+  .controls-panel {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+
+  .control-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .control-label {
+    color: #64748b;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+
+  /* Form elements & buttons */
+  select {
+    background: var(--panel-bg);
+    border: 1px solid var(--border-color);
+    color: #e2e8f0;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-family: inherit;
+    font-size: 11px;
+    outline: none;
+    cursor: pointer;
+    transition: border-color 0.2s;
+  }
+  select:focus {
+    border-color: var(--gold);
+  }
+
+  .mode-btn {
+    background: transparent;
+    border: 1px solid var(--border-color);
+    color: #94a3b8;
+    padding: 4px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11px;
+    transition: all 0.2s;
+  }
+  .mode-btn:hover {
+    color: #fff;
+    border-color: rgba(212, 175, 55, 0.5);
+    background: rgba(212, 175, 55, 0.03);
+  }
+  .mode-btn.active {
+    color: var(--gold-bright);
+    border-color: var(--gold);
+    background: rgba(212, 175, 55, 0.1);
+    box-shadow: 0 0 6px rgba(212, 175, 55, 0.15);
+  }
+
+  /* Main Workspace */
+  .workspace {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+  }
+
+  .terminal-area {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+  }
+
+  #scrollback {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  #scrollback div {
+    min-height: 1.4em;
+    line-height: 1.6;
+    margin-bottom: 2px;
+  }
+
+  /* Terminal text coloring */
+  .t-banner { color: var(--gold); font-weight: bold; }
   .t-in     { color: var(--gold-bright); }
   .t-out    { color: #e2e8f0; }
-  .t-dim    { color: #64748b; font-size: .9em; }
+  .t-dim    { color: #64748b; font-size: 0.95em; }
   .t-agent  { color: var(--cyan); }
-  .t-err    { color: #f87171; }
-  .t-warn   { color: var(--gold-bright); background: rgba(212,175,55,.10);
-              border-left: 2px solid var(--gold); padding-left: 6px; }
-  #inputrow { display: flex; gap: 8px; padding: 10px 16px 14px;
-              border-top: 1px solid rgba(212,175,55,.30); }
-  #prompt   { color: var(--gold); user-select: none; line-height: 1.5; }
-  #cmd { flex: 1; background: transparent; border: none; outline: none;
-         color: #e2e8f0; font: inherit; caret-color: var(--gold); }
-  #status { padding: 4px 16px; color: #475569; font-size: 11px;
-            border-top: 1px solid rgba(212,175,55,.15);
-            letter-spacing: .02em; }
-  a { color: var(--gold); }
+  .t-err    { color: var(--red); }
+  .t-warn   { color: var(--gold-bright); background: rgba(212,175,55,.07); border-left: 3px solid var(--gold); padding-left: 8px; }
+
+  #inputrow {
+    display: flex;
+    gap: 8px;
+    padding: 12px 16px 16px;
+    border-top: 1px solid rgba(212, 175, 55, 0.15);
+    background: #06060a;
+    align-items: center;
+  }
+  #prompt {
+    color: var(--gold);
+    font-weight: bold;
+    user-select: none;
+  }
+  #cmd {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: #e2e8f0;
+    font-family: inherit;
+    font-size: 13px;
+    caret-color: var(--gold);
+  }
+
+  #status {
+    padding: 6px 16px;
+    color: #475569;
+    font-size: 11px;
+    background: #030305;
+    border-top: 1px solid rgba(212, 175, 55, 0.08);
+    display: flex;
+    justify-content: space-between;
+  }
+
+  /* Animated SVG Monkey Sidebox */
+  .monkey-panel {
+    width: 130px;
+    border-left: 1px solid rgba(212, 175, 55, 0.15);
+    background: linear-gradient(180deg, #07070b, #050508);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 16px 8px;
+    flex-shrink: 0;
+    gap: 12px;
+  }
+
+  .monkey-box {
+    width: 100px;
+    height: 100px;
+    position: relative;
+  }
+
+  #monkey-svg {
+    width: 100%;
+    height: 100%;
+    filter: drop-shadow(0 0 6px rgba(212, 175, 55, 0.2));
+  }
+
+  .monkey-bubble {
+    font-size: 9px;
+    text-align: center;
+    color: var(--gold-bright);
+    background: rgba(212, 175, 55, 0.05);
+    border: 1px solid rgba(212, 175, 55, 0.15);
+    border-radius: 6px;
+    padding: 6px;
+    width: 100%;
+    min-height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1.3;
+    overflow: hidden;
+  }
+
+  /* SVG Monkey Animations */
+  @keyframes bob {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-2px); }
+  }
+  @keyframes tail-wag {
+    0%, 100% { transform: rotate(0deg); }
+    50% { transform: rotate(15deg); }
+  }
+  @keyframes eye-blink {
+    0%, 90%, 100% { transform: scaleY(1); }
+    95% { transform: scaleY(0.1); }
+  }
+  @keyframes typing-hands {
+    0%, 100% { transform: translateY(0); }
+    25% { transform: translateY(-2px) translateX(1px); }
+    75% { transform: translateY(1px) translateX(-1px); }
+  }
+  @keyframes screen-glow {
+    0%, 100% { opacity: 0.6; }
+    50% { opacity: 1; fill: #67e8f9; filter: drop-shadow(0 0 3px #22d3ee); }
+  }
+  @keyframes monkey-jump {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-10px) scaleY(1.05); }
+  }
+
+  /* Animations Application */
+  #monkey-head {
+    transform-origin: 50px 45px;
+    animation: bob 3s ease-in-out infinite;
+  }
+  .monkey-tail {
+    transform-origin: 35px 75px;
+    animation: tail-wag 2s ease-in-out infinite;
+  }
+  .monkey-eye {
+    transform-origin: 50% 44px;
+    animation: eye-blink 5s infinite;
+  }
+
+  /* Animated states */
+  .typing #monkey-laptop {
+    opacity: 1 !important;
+  }
+  .typing .monkey-arm-l {
+    animation: typing-hands 0.15s linear infinite;
+  }
+  .typing .monkey-arm-r {
+    animation: typing-hands 0.15s linear infinite reverse;
+  }
+  .typing .laptop-screen {
+    animation: screen-glow 0.3s infinite;
+  }
+
+  .working #monkey-laptop {
+    opacity: 1 !important;
+  }
+  .working .monkey-arm-l {
+    animation: typing-hands 0.08s linear infinite;
+  }
+  .working .monkey-arm-r {
+    animation: typing-hands 0.08s linear infinite reverse;
+  }
+  .working .laptop-screen {
+    animation: screen-glow 0.15s infinite;
+  }
+  .working #monkey-head {
+    animation: bob 0.8s ease-in-out infinite;
+  }
+
+  .success #monkey-svg {
+    animation: monkey-jump 0.5s ease-in-out infinite;
+  }
+  .success .monkey-arm-l {
+    transform: translateY(-8px) rotate(-30deg);
+    transform-origin: 35px 70px;
+  }
+  .success .monkey-arm-r {
+    transform: translateY(-8px) rotate(30deg);
+    transform-origin: 65px 70px;
+  }
+
+  .error #monkey-head {
+    transform: rotate(15deg);
+  }
+
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-thumb { background: #2b2415; border-radius: 4px; }
 </style>
 </head>
 <body>
-  <div id="scrollback"></div>
-  <div id="inputrow"><span id="prompt">&gt;</span>
-    <input id="cmd" autocomplete="off" autocapitalize="off" spellcheck="false"
-           aria-label="terminal input" autofocus></div>
-  <div id="status">disconnected</div>
+
+  <!-- ============ STEADY GROUND — always-present crisis exit (self-contained, offline-safe) ============ -->
+  <button id="steady-ground-btn" type="button" aria-label="Get crisis help now" style="z-index:99998"
+    onclick="document.getElementById('steady-ground-modal').classList.remove('hidden')"
+    class="fixed bottom-4 right-36 bg-slate-900/90 hover:bg-slate-800 border border-rose-700/70 text-rose-200 text-xs font-semibold px-3 py-2 rounded-full shadow-lg backdrop-blur-sm flex items-center gap-1.5 transition">
+    <span aria-hidden="true">🫂</span> Steady Ground
+  </button>
+  <div id="steady-ground-modal" class="hidden fixed inset-0 flex items-center justify-center p-6 bg-black/70 backdrop-blur-sm" style="z-index:99999"
+    onclick="if(event.target===this)this.classList.add('hidden')">
+    <div class="w-full max-w-sm bg-slate-900 border border-slate-700 rounded-2xl p-6 shadow-2xl text-slate-200">
+      <h2 class="text-lg font-bold mb-1">You don't have to hold this alone.</h2>
+      <p class="text-sm text-slate-400 mb-4">If you're in pain or thinking about hurting yourself, reach a real person right now — any hour. These work even if the app doesn't.</p>
+      <div class="space-y-2 text-sm">
+        <a href="tel:988" class="block bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-lg px-4 py-3"><b>Call or text 988</b> — Suicide &amp; Crisis Lifeline (US)</a>
+        <a href="sms:741741?&body=HOME" class="block bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-lg px-4 py-3"><b>Text HOME to 741741</b> — Crisis Text Line (US)</a>
+        <a href="https://findahelpline.com" target="_blank" rel="noopener" class="block bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-lg px-4 py-3"><b>findahelpline.com</b> — find a helpline anywhere</a>
+        <a href="tel:911" class="block bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-lg px-4 py-3"><b>Call 911</b> — immediate danger (US)</a>
+      </div>
+      <button type="button" onclick="document.getElementById('steady-ground-modal').classList.add('hidden')"
+        class="mt-4 w-full text-slate-400 hover:text-slate-200 text-sm py-2">Close</button>
+    </div>
+  </div>
+  <!-- ============ /STEADY GROUND ============ -->
+
+  <header>
+    <div class="header-left">
+      <a class="back-btn" href="/">← console</a>
+      <h1>CodeMonkeys Terminal</h1>
+    </div>
+    
+    <div class="controls-panel">
+      <div class="control-group">
+        <span class="control-label">Model:</span>
+        <select id="model-select">
+          <option value="auto">Auto (Smart Routing)</option>
+        </select>
+      </div>
+
+      <div class="control-group">
+        <span class="control-label">Mode:</span>
+        <button id="mode-default" class="mode-btn active" data-mode="default">default</button>
+        <button id="mode-plan" class="mode-btn" data-mode="plan">plan</button>
+        <button id="mode-auto" class="mode-btn" data-mode="auto">auto-approve</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="workspace">
+    <div class="terminal-area">
+      <div id="scrollback"></div>
+      
+      <div id="inputrow">
+        <span id="prompt">&gt;</span>
+        <input id="cmd" autocomplete="off" autocapitalize="off" spellcheck="false"
+               aria-label="terminal input" autofocus>
+      </div>
+    </div>
+
+    <!-- Right Side companion bar -->
+    <div class="monkey-panel">
+      <div class="monkey-box" id="monkey-box-wrap">
+        <svg id="monkey-svg" viewBox="0 0 100 100">
+          <!-- tail -->
+          <path class="monkey-tail" d="M 35,72 Q 15,68 12,50 Q 8,30 20,28" fill="none" stroke="#8B5A2B" stroke-width="4" stroke-linecap="round" />
+          <!-- body -->
+          <ellipse cx="50" cy="74" rx="18" ry="14" fill="#8B5A2B" />
+          <ellipse cx="50" cy="74" rx="12" ry="9" fill="#CD9B1D" />
+          <!-- head group -->
+          <g id="monkey-head">
+            <!-- ears -->
+            <circle cx="32" cy="42" r="8" fill="#8B5A2B" />
+            <circle cx="32" cy="42" r="5" fill="#CD9B1D" />
+            <circle cx="68" cy="42" r="8" fill="#8B5A2B" />
+            <circle cx="68" cy="42" r="5" fill="#CD9B1D" />
+            <!-- face circle -->
+            <circle cx="50" cy="45" r="16" fill="#8B5A2B" />
+            <!-- face mask -->
+            <path d="M 38,45 C 38,36 50,37 50,42 C 50,37 62,36 62,45 C 62,53 50,55 50,55 C 50,55 38,53 38,45 Z" fill="#CD9B1D" />
+            <!-- eyes -->
+            <circle class="monkey-eye" cx="44" cy="44" r="2.5" fill="#000" />
+            <circle class="monkey-eye" cx="56" cy="44" r="2.5" fill="#000" />
+            <circle class="monkey-pupil" cx="44.5" cy="43.5" r="0.8" fill="#fff" />
+            <circle class="monkey-pupil" cx="56.5" cy="43.5" r="0.8" fill="#fff" />
+            <!-- nose/mouth -->
+            <path d="M 48,49 Q 50,51 52,49" fill="none" stroke="#5c3e1b" stroke-width="1.5" stroke-linecap="round" />
+            <path class="monkey-mouth" d="M 46,52 Q 50,54 54,52" fill="none" stroke="#5c3e1b" stroke-width="1.5" stroke-linecap="round" />
+          </g>
+          <!-- laptop -->
+          <g id="monkey-laptop" opacity="0">
+            <path d="M 36,84 L 64,84 L 68,94 L 32,94 Z" fill="#475569" />
+            <path d="M 36,84 L 64,84 L 64,72 L 36,72 Z" fill="#1e293b" stroke="#475569" stroke-width="1" />
+            <rect x="40" y="75" width="20" height="7" fill="#22d3ee" opacity="0.7" class="laptop-screen" />
+          </g>
+          <!-- arms -->
+          <path class="monkey-arm-l" d="M 34,72 Q 26,76 38,84" fill="none" stroke="#8B5A2B" stroke-width="4" stroke-linecap="round" />
+          <path class="monkey-arm-r" d="M 66,72 Q 74,76 62,84" fill="none" stroke="#8B5A2B" stroke-width="4" stroke-linecap="round" />
+        </svg>
+      </div>
+      <div class="monkey-bubble" id="monkey-bubble">Ooh ooh! Ready.</div>
+    </div>
+  </div>
+
+  <div id="status">
+    <div id="status-left">not logged in</div>
+    <div id="status-right">CodeMonkeys OS v1.0</div>
+  </div>
+
   <script src="/static/forge/terminal.js"></script>
 </body>
 </html>
