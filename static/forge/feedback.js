@@ -15,7 +15,7 @@ const FeedbackFab = {
     btn.id = "fb-fab";
     btn.title = "Send feedback";
     btn.setAttribute("aria-label", "Send feedback");
-    btn.className = "fixed bottom-16 right-4 z-40 w-12 h-12 rounded-full " +
+    btn.className = "fixed bottom-[176px] right-4 z-40 w-12 h-12 rounded-full " +
       "bg-slate-900/90 backdrop-blur-sm border border-yellow-600/30 hover:border-yellow-500/70 " +
       "text-yellow-500 text-lg flex items-center justify-center shadow-lg transition";
     btn.textContent = "💬";
