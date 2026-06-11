@@ -38,7 +38,14 @@ async function api(path, method = "GET", body = null) {
 function hideAll() {
   ["view-login", "view-setup", "view-main"].forEach((v) => $(v).classList.add("hidden"));
 }
-function showLogin() { hideAll(); $("view-login").classList.remove("hidden"); }
+function showLogin() {
+  hideAll();
+  $("view-login").classList.remove("hidden");
+  api("/api/registration-status").then(d => {
+    if (d.open) $("lg-toggle").classList.remove("hidden");
+    else $("lg-toggle").classList.add("hidden");
+  }).catch(() => {});
+}
 function showSetup() { hideAll(); $("view-setup").classList.remove("hidden"); }
 function showMain() {
   hideAll(); $("view-main").classList.remove("hidden");
