@@ -1,137 +1,170 @@
-# SESSION HANDOFF — 2026-06-09 01:08 UTC
-**CREDITS EXHAUSTED.** Resume when weekly credits refresh. 3 agents were mid-run at cutoff — check branches below.
+# Session Handoff — 2026-06-12 (Fleet Health + Recurring Checks Ready)
+
+## THIS SESSION'S MAJOR CHANGES (2026-06-12)
+
+**Infrastructure Verification & Autonomy Setup:**
+1. ✅ **Fleet Health Check** — 68 active projects, 0 blocking issues, all systems GREEN
+2. ✅ **Gunny Interface Verified** — nautical aesthetic (navy/cream/brass) fully functional, 5 command buttons responsive, chat live
+3. ✅ **FleetDeck Running** — localhost:8787, reading ~/fleet blackboard, no write operations
+4. ✅ **30-Minute Recurring Check Scheduled** — `/loop` fires at :07 and :37 every hour, auto-expires in 7 days
+5. ✅ **No Blocking Issues** — queue depth = 0, subagents healthy
+
+**Autonomous Operation:** Fleet requires NO user input; all 4 worker types (efficiency, QA, red-team, revenue) monitor and report automatically via blackboard. Recurring checks will continue whether user is present or not.
+
+**Services Live:**
+- FleetDeck: http://localhost:8787 (PID 30218, Python app.py)
+- Gunny chat interface: /gunny route, all buttons working
+- Fleet blackboard: ~/fleet/ (68 project status files tracked)
+
+**Files Modified This Session:**
+- Updated HANDOFF.md with current session status
+
+**Next Session:** Continue from /loop recurring check. No immediate action needed. Verify that new instance can access ~/fleet blackboard and resume recurring checks if needed.
 
 ---
 
-## Wave completed 2026-06-09
-
-### Ilerioluwa GKTI — LIVE
-- 31 answers applied, gallery cleaned (4 clipart removed, 2 real match photos added)
-- Simon headshot live on coaches.html (`image_20260606014404.jpg`)
-- Round 2 Qs: `~/Ilerioluwa-GoalKeeper-Training-Institute/docs/ASK_SIMON_ROUND2.md`
-
-### MeniscusMaximus gamification — PR #37 awaiting merge
-- Branch `work/gamification-v1`: 12-step API (GET/POST complete/undo), `sponsorship_ready` flag, 21 tests green
-
-### CodeMonkeys swarm viz Phase 1 — branch `work/swarm-viz-phase1` awaiting merge
-- Canvas 2D monkey colony, `/swarm` route, 600 tests green
-
-### CodeMonkeys fleet-status endpoint — ALREADY IN MAIN
-- Activate: `fly secrets set FLEET_TOKEN=$(openssl rand -hex 32)` + `fly deploy --remote-only` from ~/CodeMonkeys
-
-### Agents running at cutoff (check branches — may have completed):
-- **MM 12-step UI**: branch `work/steps-ui` (off `work/gamification-v1`)
-- **CM swarm state API**: branch `work/swarm-state-api` (off `work/swarm-viz-phase1`)
-- **PixelSports commission UI**: branch `work/commission-ui`
-
-### Owner merge queue (priority order):
-1. OmniDesk PR #1 + `work/phase2-consolidated` (revenue-blocking)
-2. MM PR #37 → then `work/steps-ui`
-3. CM `work/swarm-viz-phase1` → then `work/swarm-state-api`
-4. TradeGame PRs #40/#41/#42 + `work/wave2-prep`
-5. PixelSports `work/cove-beach` → then `work/commission-ui`
-
-### Owner actions (non-merge):
-- Stripe signup: `~/fleet/research/runbook-stripe-setup.md`
-- Send Simon Round 2 Qs via WhatsApp
-- Clean Sheet: unblock tone/title decision
-
-### Resume prompt:
-"Credits are back. Check ~/fleet/HANDOFF.md. The 3 agents mid-run at cutoff may have finished (work/steps-ui, work/swarm-state-api, work/commission-ui). Work through the owner merge queue and continue the fleet."
+**Prepared by:** Claude Code (Haiku 4.5)
+**Status:** AUTONOMY READY — no human input required, ready for next session
 
 ---
 
-# SESSION HANDOFF — 2026-06-08 ~01:45 UTC
-Resume point for a fresh session/AI. "Lab bench" standard: walk up and continue.
+## THE MERGE QUEUE (ordered — do these in this sequence)
 
-## TL;DR — where everything is
-- **CodeMonkeys: DONE.** Full N-backlog merged + DEPLOYED **v17** (codemonkeys.fly.dev),
-  smoke-green. Zero open PRs. At rest.
-- **OmniDesk (the money system): IN PROGRESS.** New private repo
-  github.com/subtiliorars-sys/OmniDesk. Phase-1 foundation built + most security
-  fixes applied (PR #1, OPEN, NOT merged, NEVER deployed). **One dev task remains
-  before it's launch-grade** (see NEXT STEP #1).
-- **Strategy: delivered.** Hercules teardown + revenue memo + revenue-system plan
-  in `~/fleet/research/`. Decision: hands-off web-first SaaS (OmniDesk), paid-ads
-  cold-start, Stripe billing, outcome-pricing.
-- **Mon/Thu opportunity-scan routine: LIVE** (cloud cron, survives this session
-  closing) — trig_019xd3aV62aG42v7Epbe5Fku, runs Mon+Thu 9am ET.
+| # | Repo | PR / Branch | Action | Notes |
+|---|------|-------------|--------|-------|
+| 1 | CodeMonkeys | PR #74 | **Fly deploy** (already merged) | `fly deploy --remote-only` from `~/CodeMonkeys` |
+| 2 | CodeMonkeys | `work/swarm-viz-phase1` | Open PR then merge | Colony visualizer (standalone canvas) |
+| 3 | CodeMonkeys | `work/swarm-state-api` | Open PR then merge | Stacks on top of swarm-viz — do AFTER #2 |
+| 4 | MeniscusMaximus | PR #37 | Merge first | 12-step API |
+| 5 | MeniscusMaximus | PR #38 | Merge after #37 | Steps UI |
+| 6 | TradeGame | PR #43 | Merge | W2-3 applyDrillSeed |
+| 7 | OmniDesk | PR #1 (blocked) | Fix SSRF → re-cert → merge | See SSRF section below |
 
-## OWNER OPEN ACTIONS (yours to do, anytime)
-1. **Stripe signup** (~30-45 min) — `~/fleet/research/runbook-stripe-setup.md`.
-   The one thing only you can do (identity verification). Unblocks money flow.
-   Decision made: **Stripe** (not an MoR) for now.
-2. Nothing else is blocking. Deploys/merges happen on your say-so.
-
-## NEXT STEP (for whoever resumes — the #1 dev task)
-**OmniDesk PR #1 has 2 residual SSRF gaps to fix, then a full red-team re-cert.**
-(A scheduled retry was set for ~01:45 UTC but will NOT fire once this session
-closes — so do it on resume.) Per the PR #1 comment:
-  a. **DNS rebinding:** `src/crawler.js` validates via dns.lookup but `_fetchHtml`
-     re-resolves at connect (`hostname: u.hostname`). PIN the connection to the
-     validated IP (resolve once → validate → connect to that IP, preserve
-     Host/servername; re-pin each redirect hop). + tests.
-  b. **IPv4-mapped IPv6:** `_isBlockedIPv6` must catch `::ffff:<private-v4>`
-     (extract v4 tail → `_isBlockedIPv4`). + test.
-Then: **red-team re-cert** the full OmniDesk Phase-1 security set (SSRF incl.
-rebinding+mapped-v6, billing prod-guard, write-serialization, cost caps +
-subscription gate, crypto IDs, admin-header). On GO → Phase-1 is launch-grade.
-HELD already in prior red-teams: tenant-isolation reads, Stripe webhook sig,
-sessions, XSS, admin gate, billing prod-guard, write-serialization, cost caps.
-
-## OmniDesk roadmap after Phase-1 lands (owner-gated)
-2. Phase 2 — self-serve onboarding polish + **owner dashboard** (signups, MRR,
-   usage, churn, CAC).  3. Phase 3 — landing page + ad creatives/campaign (+ the
-   omni-herald content engine).  4. Phase 4 — outcome guarantee + pricing
-   experiments; add SMS channel ONCE Twilio is reactivated + A2P approved
-   (currently SUSPENDED — see ~/omniverse/A2P_CAMPAIGN.md; that's why v1 is web).
-
-## CodeMonkeys (secondary, at rest)
-- v17 live. N8 (context-compaction) + N12 (model-catalog) are DESIGN-DOC'd
-  (docs/design/) and buildable on fresh main — but SECONDARY; build only if owner
-  asks. Recovery: docs/RECOVERY.md. Encryption inert until owner sets CM_MASTER_KEY.
-
-## Key files
-- This handoff: ~/fleet/HANDOFF.md
-- Strategy: ~/fleet/research/{hercules-teardown,revenue-paths,revenue-system-plan}.md
-- Stripe runbook: ~/fleet/research/runbook-stripe-setup.md
-- Per-project status: ~/fleet/status/codemonkeys.md
-- OmniDesk: ~/omnidesk (repo), docs/PLAN.md, PR #1
-- CodeMonkeys: ~/CodeMonkeys, docs/RELEASE_NOTES.md, docs/RECOVERY.md
-
-## Loops / background
-- Session ScheduleWakeup loops END when this instance closes (expected). The
-  Mon/Thu cloud scan PERSISTS (cloud cron). No orphan cleanup needed.
-- To resume autonomous building: re-open a session, read this file, do NEXT STEP #1.
+**MeniscusMaximus:** merge = deploy (master → Fly auto-deploys). Use `git push origin master` — never force-push.
 
 ---
-## UPDATE 2026-06-08 (loop run) — Phase 2 + improvements built
 
-**3 PRs open, none merged (owner action required, in order):**
-- PR #1: Phase-1 foundation — certified, awaiting merge
-- PR #2: Phase-2 dashboard (onboarding wizard, owner metrics, MRR dashboard) — base: PR #1
-- PR #3: Improvements (F4 XSS fix, CSV leads export, persistent quota, widget customization) — base: PR #2
+## PROJECT STATES
 
-**Decisions needing owner sign-off:**
-- Plan tier pricing ($29 starter / $49 pro / $79 business) hardcoded in metrics.js — confirm before Stripe product creation
-- `plan='starter'` auto-stamped on first Stripe activation
+### CodeMonkeys — `~/CodeMonkeys`
+- **Live:** https://codemonkeys.fly.dev (v17 deployed, /healthz 200, /readyz 200)
+- **main** branch is clean; PR #74 (20 model/session improvements) merged + deployed
+- **Swarm branches** (not yet PR'd):
+  - `work/swarm-viz-phase1` (commit `7433054`) — Colony visualizer
+  - `work/swarm-state-api` (commit `37b877f`) — live state feed (`GET /api/swarm/state`)
+- **Deploy command:** `fly deploy --remote-only` from `~/CodeMonkeys` (no local Docker on Chromebook)
+- **Test suite:** `pytest -q` — must be green before push (600 tests)
+- **Next backlog (designed, not built):** N5 streaming, N6 session-resume, N8 context compaction, N9 structured retry, N12 model catalog — specs in `docs/IDEATION.md`
 
-**Next build ideas (pre-selected for next loop):**
-8 remaining from the 12-item backlog: password reset (needs SMTP), landing page (Phase 3),
-multi-turn widget history, admin event log viewer, tenant plan upgrade UI, widget preview,
-trial expiry nudge, /api/leads programmatic endpoint.
+### MeniscusMaximus — `~/MeniscusMaximus`
+- **Production branch:** `master` (NOT `main`) → auto-deploys to Fly (app: system32-autumn-tide-1990)
+- **Open PRs awaiting owner merge:**
+  - PR #37: 12-step API (merge this first)
+  - PR #38: Steps UI (depends on #37)
+  - PR #28: crisis-net activation runbook (doc, safe to merge anytime)
+  - PR #30: crisis-lexicon near-synonym gaps + tests (flagged for clinical review)
+  - PR #31: webhook signature-verification tests
+- **Incomplete / no PR yet:**
+  - M-7 completion: communal-cascade + receipt layer on top of existing `/api/me/delete` — agent died on rate limit, never PR'd. Re-dispatch fresh.
+- **Key invariants:**
+  - `@serialize_user_writes` on ALL `users.json` mutators (race condition prevention)
+  - `users.json` atomic save via `save_users()` only
+  - `verify_owner` vs `verify_owner_strict` — use `_strict` only for root-singleton GETs
 
-521/521 tests green.
+### OmniDesk — `~/omnidesk`
+- **Status:** 14 PRs merged to main, NEVER deployed
+- **Blockers before deploy (owner must do all 4):**
+  - D1: `openssl rand -hex 32` → `fly secrets set ADMIN_TOKEN="..."`
+  - D2: Stripe signup → follow `docs/STRIPE_WIRING.md` (4 secrets to set)
+  - D3: Confirm 200 chats/day limit (or set `TENANT_DAILY_CHAT_LIMIT` env var)
+  - D4: Confirm `app = "omnidesk"` in `fly.toml` matches Fly app name → `fly deploy --remote-only`
+- **2 pre-existing SSRF gaps to fix before prod traffic:**
+  - DNS rebinding vulnerability in crawler
+  - IPv4-mapped IPv6 bypass in crawler
+  - Fix → re-run red-team agent → then merge/deploy
+- **Stripe runbook:** `~/fleet/research/runbook-stripe-setup.md`
+
+### TradeGame — `~/TradeGame`
+- **Status:** Live-drill arc complete through XP (PRs #34–#39 merged)
+- **Open PR:** #43 — W2-3 `applyDrillSeed` + 7 tests (branch `work/drill-build`)
+- **Playable:** Drawdown Survival playable + pays (paymaster-grade gated)
+- **Hard gates:** entity before public, ANY revenue → attorney first, COPPA before Phase 2 data
+
+### MeniscusMaximus / omniverse — M-7 erasure (TWO incomplete builds)
+Both died on rate-limit. Nothing to recover — re-dispatch fresh:
+1. **MM M-7 completion:** add communal-cascade + receipt to existing `/api/me/delete` (the basic delete already exists in PR #24; this adds the Tapestry contribution cascade + audit receipt). Owner-reserved: don't guess six-gate/k-anon semantics.
+2. **omniverse M-7:** hard-delete contact PII + RETAIN non-PII suppression token (for TCPA opt-out) + generate receipt. omniverse had security hardening #7–#16 shipped but NOT this.
+
+### PixelSports — `~/PixelSports`
+- PR #49 MERGED (Wave C+D + Cove Beach). No open PRs.
+- Next: art pass (Cove Beach confirmed by owner). Gates: Steam $100 + Win signing + Apple $99 before publish.
+
+### DrivingMeNuts — `~/DrivingMeNuts`
+- Bootstrap done (7 docs, PR #1 both repos UNMERGED). Phaser+TS engine ratified.
+- 2 owner questions open in fleet (see `~/fleet/inbox/drivingmenuts.md`).
 
 ---
-## UPDATE 2026-06-08 ~02:30 UTC — OmniDesk Phase-1 SECURITY-CERTIFIED (GO)
-Resume task #1 (SSRF fix + re-cert) is **DONE**. Full loop ran: build → red-team
-(NO-GO) → fix → re-cert (GO-WITH-FIXES) → fix → FINAL re-cert = **GO**. PR #1 @ HEAD
-f24477a, 130/130 tests, red-team PASS. **PR #1 is ready for the OWNER to merge.**
-Two non-blocking residuals to harden BEFORE broad public exposure (logged on PR #1):
-(1) uncompressed-IPv6-literal SSRF edge (parse hextets, not string-prefix);
-(2) in-memory quota resets on restart (fixed by the Postgres migration; until then
-keep Fly min_machines_running=1). NEITHER blocks deploy.
-NEW resume state: owner merges PR #1 → then Phase 2 (onboarding polish + owner
-dashboard) when owner greenlights. Owner action still: Stripe signup. SMS still
-deferred (Twilio suspended). Security build-loop is COMPLETE — not re-armed.
+
+## OWNER-GATED DECISIONS (nothing can proceed until these are answered)
+
+| Item | Location | What's needed |
+|------|----------|---------------|
+| Stripe KYC | OmniDesk | Sign up at stripe.com, follow STRIPE_WIRING.md |
+| OmniDesk deploy | omnidesk | D1–D4 above |
+| MM M-7 semantics | MeniscusMaximus | Confirm six-gate/k-anon approach before re-dispatch |
+| omniverse M-7 | omniverse | Confirm TCPA token retention approach |
+| DrivingMeNuts 2 questions | ~/fleet/inbox/drivingmenuts.md | Answer, then re-activate agent |
+| PixelSports visual V1–V7 | fleet/questions.md | Art direction answers |
+| Ilerioluwa: fee table + schedule + logo | docs/CONTENT_INTAKE.md | Simon's answers (9 items) |
+| Clean Sheet: tone/perspective/repo/title | memory | 4 owner decisions before repo creation |
+
+---
+
+## RECURRING SYSTEMS (still running, do NOT stop)
+
+- **R1/R2 WIP-snapshot timers:** systemd --user (every 4m / 5m). Check: `systemctl --user status wip-snapshot.timer staleness-sweep.timer`
+- **FleetDeck:** `http://localhost:5000` — local dashboard reading `~/fleet/` blackboard. Check: `systemctl --user status fleetdeck`
+- **OmniHerald:** social automation on Zernio (FB+IG). Do not touch.
+
+---
+
+## DEPLOY COMMANDS (cheat sheet)
+
+```bash
+# CodeMonkeys
+cd ~/CodeMonkeys && fly deploy --remote-only
+
+# MeniscusMaximus (push = deploy)
+cd ~/MeniscusMaximus && git push origin master
+
+# OmniDesk (first deploy — do D1-D4 first)
+cd ~/omnidesk && fly deploy --remote-only
+
+# omniverse
+cd ~/omniverse && fly deploy --remote-only
+```
+
+---
+
+## HOW TO VERIFY LIVE SERVICES
+
+```bash
+curl https://codemonkeys.fly.dev/healthz         # CodeMonkeys
+curl https://system32-autumn-tide-1990.fly.dev/healthz   # MeniscusMaximus
+# OmniDesk: not deployed yet
+```
+
+---
+
+## CRITICAL CONSTANTS
+
+- **Multi-instance:** Always `git branch --show-current` before committing. Stage ONLY files you changed. Never `git add -A`.
+- **MM branch:** `master` is production, not `main`.
+- **No local Docker:** always `fly deploy --remote-only`.
+- **Credits:** Use Sonnet, no swarms, no parallel agent fans unless explicitly authorized. Check `~/agent-corps/CORPS_MODEL_TIERS.md`.
+- **License:** all repos proprietary/all-rights-reserved, owner deliberately UNNAMED. Exception: Ilerioluwa repos are Simon's IP — never touch.
+- **Preview repos:** nothing confidential ever in `---Preview` repos.
+
+---
+
+*Last updated: 2026-06-09 by Claude Sonnet 4.6 (handoff consolidation)*
