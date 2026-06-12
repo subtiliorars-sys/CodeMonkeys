@@ -1,0 +1,27 @@
+{
+  "games": [
+    {
+      "id": "jimmythehat-pixelsports",
+      "title": "JimmyTheHat PixelSports Hub",
+      "short_description": "Free browser sports hub — volleyball, dorodango, bocce, curling, golf.",
+      "description": "Play the full PixelSports slate in your browser. No download required.",
+      "tags": ["sports", "pixel-art", "browser", "free"],
+      "platforms": {
+        "itch": {
+          "slug": "jimmythehat-pixelsports",
+          "price": 0,
+          "kind": "html",
+          "play_in_browser": true
+        },
+        "steam": {
+          "app_id": null,
+          "coming_soon": true
+        },
+        "gamejolt": {
+          "slug": null,
+          "enabled": false
+        }
+      }
+    }
+  ]
+}

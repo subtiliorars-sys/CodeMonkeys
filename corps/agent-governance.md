@@ -318,3 +318,10 @@ Medallion will *derive* the guardrails rather than just obey them:
 | Traditions 6, 7 (non-entanglement) | **Ask before adding a paid service** or a new locked-in dependency. Keep AWS in free tier. |
 | Tradition 1, 8 (welfare over efficiency) | Don't sacrifice correctness/safety for speed or cleverness. |
 | Tradition 12 (principles over expedience) | When in doubt, choose the principled path and flag the trade-off. |
+
+---
+
+## Fleet store automation
+
+Medallion-compliant itch/Steam automation: `tools/fleet-automation/` (12 Steps + 12 Traditions
+enforced in `src/governance/medallion-loop.ts`). Red-team report: `tools/fleet-automation/docs/RED_TEAM.md`.
