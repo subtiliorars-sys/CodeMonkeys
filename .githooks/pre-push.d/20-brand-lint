@@ -36,6 +36,20 @@ if [ -f "$hooks_dir/preview-repo" ] || basename "$top" | grep -qi 'preview'; the
   paths="."
 fi
 
+# Default 'static' with no tracked files => fall back so brand-lint cannot no-op
+# (M-3/T-4 bypass). Docs-only repos (omnitender-repo, Cairn, etc.) scan docs/;
+# otherwise scan the whole tree.
+if [ "$paths" = "static" ]; then
+  # shellcheck disable=SC2086
+  if ! git ls-files -z -- static 2>/dev/null | grep -qz .; then
+    if git ls-files -z -- docs 2>/dev/null | grep -qz .; then
+      paths="docs"
+    else
+      paths="."
+    fi
+  fi
+fi
+
 # Any tracked files under the scan paths? (NUL-safe: never store the list in a
 # string — command substitution strips NUL bytes and would concatenate names.)
 # shellcheck disable=SC2086
