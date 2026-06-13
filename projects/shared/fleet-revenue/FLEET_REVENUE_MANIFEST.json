@@ -6,6 +6,12 @@
   "buymeacoffee": "https://buymeacoffee.com/subtilior.ars",
   "paypal": "https://paypal.me/DanielRead413",
   "pwyw_suggested_usd": 3,
+  "public_pages": {
+    "support": "https://subtiliorars-sys.github.io/PixelSports/support/",
+    "pa_guide": "https://subtiliorars-sys.github.io/PixelSports/pa-guide/",
+    "kickstarter_preview": "https://subtiliorars-sys.github.io/PixelSports/kickstarter-preview/",
+    "note": "GitHub Pages — enable once in PixelSports repo Settings → Pages → GitHub Actions"
+  },
   "games": [
     {
       "id": "pixelsports-hub",

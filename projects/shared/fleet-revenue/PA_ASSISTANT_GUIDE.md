@@ -1,8 +1,10 @@
 # Personal Assistant Guide — JimmyTheHat Revenue & Crowdfunding Launch
 
 > **🌐 Interactive website (send this link to your PA):**  
-> **https://subtiliorars.itch.io/jimmythehat-pixelsports/pa-guide/**  
-> (After hub deploy; or open `projects/claude/PixelSports/public/pa-guide/index.html` locally.)
+> **https://subtiliorars-sys.github.io/PixelSports/pa-guide/**  
+> (Requires GitHub Pages enabled once — repo Settings → Pages → Source: **GitHub Actions**.  
+> itch HTML subpaths like `/pa-guide/` **404 outside the game iframe**; use GitHub Pages or open  
+> `projects/claude/PixelSports/public/pa-guide/index.html` locally.)
 
 **For:** Daniel’s personal assistant  
 **From:** Dev team (copy is pre-written; you are clicking through platforms)  
