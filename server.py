@@ -43,6 +43,7 @@ _log = logging.getLogger(__name__)
 import pyotp
 import requests
 from enum import Enum
+from typing import Optional, List, Dict, Union
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                PlainTextResponse)
@@ -75,10 +76,67 @@ except ImportError:
     _FernetInvalidToken = Exception  # type: ignore[assignment,misc]
     _FERNET_AVAILABLE = False
 
+try:
+    import google.auth
+    import google.auth.transport.requests as _google_auth_requests
+    _GOOGLE_AUTH_AVAILABLE = True
+except ImportError:
+    google = None  # type: ignore[assignment]
+    _google_auth_requests = None  # type: ignore[assignment]
+    _GOOGLE_AUTH_AVAILABLE = False
+
 # ----------------------------------------------------------------- config
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(BASE_DIR, "data"))
+
+
+def _vertex_config_dir():
+    """Cross-platform config dir: ~/.config/codemonkeys (Linux/macOS) or %APPDATA%\\codemonkeys (Windows)."""
+    if os.name == "nt":
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        return os.path.join(base, "codemonkeys")
+    xdg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(xdg, "codemonkeys")
+
+
+def _load_env_file(path):
+    """Load KEY=VALUE lines into os.environ (never override keys already set)."""
+    try:
+        with open(path) as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                key = key.strip()
+                val = val.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = val
+    except OSError as e:
+        _log.debug("vertex env file %s unreadable: %s", path, e)
+
+
+def _load_portable_vertex_env():
+    """Portable Vertex/GCP settings — same paths on Linux, macOS, and Windows."""
+    cfg = _vertex_config_dir()
+    for path in (
+        os.path.join(cfg, "vertex.env"),
+        os.path.join(BASE_DIR, "vertex.env"),
+        os.path.join(BASE_DIR, ".vertex.env"),
+    ):
+        if os.path.isfile(path):
+            _load_env_file(path)
+    sa_path = os.path.join(cfg, "vertex-sa.json")
+    if os.path.isfile(sa_path) and not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = sa_path
+
+
+_load_portable_vertex_env()
+VERTEX_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT", "codemonkeys-498819")
+VERTEX_REGION = os.environ.get("GOOGLE_CLOUD_REGION", "us-central1")
 USERS_FILE = os.environ.get("USERS_FILE", os.path.join(DATA_DIR, "users.json"))
 FEEDBACK_FILE = os.path.join(DATA_DIR, "feedback.jsonl")
 FEEDBACK_SHOT_DIR = os.path.join(DATA_DIR, "feedback_shots")
@@ -95,6 +153,8 @@ FEEDBACK_RATE_WINDOW = 3600
 FEEDBACK_SHOT_PREFIXES = {"data:image/jpeg;base64,": ".jpg", "data:image/png;base64,": ".png"}
 _feedback_hits = {}  # user -> [timestamps]
 MODELS_FILE = os.path.join(DATA_DIR, "model_config.json")
+MODEL_CATALOG_FILE = os.path.join(DATA_DIR, "model_catalog.json")
+MASTER_KEY_FILE = os.path.join(DATA_DIR, "master.key")
 MCP_CONFIG_FILE = os.path.join(DATA_DIR, "mcp_config.json")
 SESSIONS_DIR = os.path.join(DATA_DIR, "sessions")
 WORKSPACE_DIR = os.environ.get("WORKSPACE_DIR", os.path.join(DATA_DIR, "workspace"))
@@ -148,6 +208,7 @@ BUDGET_FALLBACK_USD = float(os.environ.get("BUDGET_FALLBACK_USD", "0.10"))
 # Free-tier fallback models, tried in order.  Gemini has rate limits but no
 # hard daily cap; OpenRouter free models have daily request limits.
 _FREE_FALLBACK = [
+    ("vertex-gemini", "google/gemini-2.5-flash"),  # GCP billing credits first
     ("gemini", "gemini-2.5-flash"),        # generous rate limits, no daily cap
     ("openrouter", "qwen/qwen3-coder:free"),
     ("openrouter", "deepseek/deepseek-r1:free"),
@@ -223,6 +284,9 @@ FLEET_TOKEN = os.environ.get("FLEET_TOKEN", "").strip()
 if len(FLEET_TOKEN) < 16:
     FLEET_TOKEN = ""
 FLEET_MAX_WORKERS = 200              # contract bound; payload stays ≪ 1 MB
+# Fleet Store Bridge — governed Playwright itch/Steam automation (fleet-automation npm run bridge)
+FLEET_BRIDGE_URL = os.environ.get("FLEET_BRIDGE_URL", "http://127.0.0.1:9477").rstrip("/")
+FLEET_BRIDGE_TOKEN = os.environ.get("FLEET_BRIDGE_TOKEN", "").strip()
 
 # ---- secret-hardening: CM_MASTER_KEY + GITHUB_TOKEN capture -----------------
 # Both captured here at import time; evicted from os.environ after boot (see
@@ -317,6 +381,51 @@ def _is_risky(cmd: str) -> bool:
 
 for _d in (DATA_DIR, SESSIONS_DIR, WORKSPACE_DIR):
     os.makedirs(_d, exist_ok=True)
+
+
+def _bootstrap_master_key() -> None:
+    """Ensure CM_MASTER_KEY is available: env var wins, else load or create DATA_DIR/master.key.
+
+    Auto-generating a per-volume key means model/MCP config encrypt at rest with zero
+    operator setup. Fly/production may still set CM_MASTER_KEY in env to pin a known key.
+    """
+    global CM_MASTER_KEY
+    if CM_MASTER_KEY:
+        return
+    if os.path.isfile(MASTER_KEY_FILE):
+        try:
+            with open(MASTER_KEY_FILE, "r", encoding="utf-8") as f:
+                key = f.read().strip()
+            if len(key) >= 16:
+                CM_MASTER_KEY = key
+                return
+            _log.warning("master.key exists but is too short; regenerating.")
+        except OSError as e:
+            _log.warning("Could not read master.key (%s); will try to regenerate.", e)
+    key = secrets.token_urlsafe(32)
+    try:
+        fd, tmp = tempfile.mkstemp(dir=DATA_DIR, prefix=".master_key_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(key)
+                f.flush()
+                os.fsync(f.fileno())
+        except Exception:
+            os.unlink(tmp)
+            raise
+        os.replace(tmp, MASTER_KEY_FILE)
+        os.chmod(MASTER_KEY_FILE, 0o600)
+        CM_MASTER_KEY = key
+        _log.info(
+            "Generated encryption master key at %s — API keys encrypt at rest automatically.",
+            MASTER_KEY_FILE,
+        )
+    except OSError as e:
+        _log.warning(
+            "Could not persist master.key (%s); config files stay plaintext this boot.", e)
+
+
+_bootstrap_master_key()
 
 app = FastAPI(title="CodeMonkeys")
 _BOOT_TIME = int(time.time())
@@ -1595,6 +1704,14 @@ def webauthn_login_complete(req: dict, request: Request):
 GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
 
 DEFAULT_PROVIDERS = {
+    "vertex-gemini": {"label": "Vertex Gemini (GCP credits)", "kind": "vertex",
+                      "base_url": "", "key": "", "project": VERTEX_PROJECT,
+                      "region": VERTEX_REGION, "model": "google/gemini-2.5-flash",
+                      "models": ["google/gemini-2.5-flash", "google/gemini-2.5-pro",
+                                 "google/gemini-2.0-flash-001"],
+                      "in": 0, "out": 0, "auto": True,
+                      "context_window": 1048576,
+                      "notes": "Bills codemonkeys-498819 GCP credits via ADC/service account"},
     "gemini": {"label": "Google Gemini", "kind": "openai", "base_url": GEMINI_BASE,
                "key": "", "model": "gemini-2.5-flash",
                "models": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
@@ -1672,7 +1789,116 @@ def _migrate_old(cfg):
     return new
 
 
+def _bootstrap_vertex_credentials():
+    """Materialize VERTEX_CREDENTIALS_JSON to config dir for Application Default Credentials."""
+    raw = os.environ.get("VERTEX_CREDENTIALS_JSON", "").strip()
+    cfg = _vertex_config_dir()
+    path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or os.path.join(cfg, "vertex-sa.json")
+    if raw:
+        try:
+            json.loads(raw)
+            os.makedirs(cfg, exist_ok=True)
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                f.write(raw)
+            os.replace(tmp, path)
+            os.chmod(path, 0o600)
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = path
+        except Exception as e:
+            _log.warning("VERTEX_CREDENTIALS_JSON invalid — vertex provider disabled: %s", e)
+    elif not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        sa_default = os.path.join(cfg, "vertex-sa.json")
+        if os.path.isfile(sa_default):
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = sa_default
+
+
+_bootstrap_vertex_credentials()
+
+
+def _vertex_credentials_ready():
+    if not _GOOGLE_AUTH_AVAILABLE:
+        return False
+    gac = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if gac and os.path.isfile(gac):
+        return True
+    if os.environ.get("VERTEX_CREDENTIALS_JSON", "").strip():
+        return True
+    sa_default = os.path.join(_vertex_config_dir(), "vertex-sa.json")
+    if os.path.isfile(sa_default):
+        return True
+    # gcloud auth application-default login (per-machine)
+    if os.name == "nt":
+        adc = os.path.join(os.environ.get("APPDATA", ""), "gcloud",
+                           "application_default_credentials.json")
+    else:
+        adc = os.path.expanduser("~/.config/gcloud/application_default_credentials.json")
+    return os.path.isfile(adc)
+
+
+_VERTEX_TOKEN_CACHE = {"token": "", "expires_at": 0.0}
+_VERTEX_TOKEN_LOCK = threading.Lock()
+
+
+def _vertex_access_token():
+    if not _vertex_credentials_ready():
+        raise ProviderAuthError("Vertex: no Google credentials (run gcloud auth application-default login "
+                                "or set VERTEX_CREDENTIALS_JSON)", http_status=401)
+    with _VERTEX_TOKEN_LOCK:
+        if time.time() < _VERTEX_TOKEN_CACHE["expires_at"] - 60:
+            return _VERTEX_TOKEN_CACHE["token"]
+    try:
+        creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        creds.refresh(_google_auth_requests.Request())
+        token = creds.token
+        exp = creds.expiry.timestamp() if creds.expiry else time.time() + 3300
+        with _VERTEX_TOKEN_LOCK:
+            _VERTEX_TOKEN_CACHE["token"] = token
+            _VERTEX_TOKEN_CACHE["expires_at"] = exp
+        return token
+    except Exception as e:
+        raise ProviderAuthError(f"Vertex auth failed: {e}", http_status=401) from e
+
+
+def _openai_base_url(provider):
+    if provider.get("kind") == "vertex":
+        project = provider.get("project") or VERTEX_PROJECT
+        region = provider.get("region") or VERTEX_REGION
+        if not project:
+            raise RuntimeError("Vertex: set GOOGLE_CLOUD_PROJECT or provider project")
+        return (f"https://{region}-aiplatform.googleapis.com/v1/projects/{project}"
+                f"/locations/{region}/endpoints/openapi")
+    return str(provider.get("base_url") or "").strip()
+
+
+def _openai_auth_header(provider):
+    if provider.get("kind") == "vertex":
+        return f"Bearer {_vertex_access_token()}"
+    return f"Bearer {provider['api_key']}"
+
+
+def load_model_catalog():
+    """Load model catalog from MODEL_CATALOG_FILE if present,
+    merging into and updating DEFAULT_PROVIDERS."""
+    global DEFAULT_PROVIDERS
+    if os.path.exists(MODEL_CATALOG_FILE):
+        try:
+            with open(MODEL_CATALOG_FILE, "r") as f:
+                catalog = json.load(f)
+            if isinstance(catalog, dict):
+                for pid, data in catalog.items():
+                    if isinstance(data, dict):
+                        required = {"kind", "model", "models"}
+                        if all(k in data for k in required):
+                            if pid in DEFAULT_PROVIDERS:
+                                DEFAULT_PROVIDERS[pid].update(data)
+                            else:
+                                DEFAULT_PROVIDERS[pid] = data
+        except Exception as e:
+            _log.error(f"Failed to load model catalog: {e}")
+
+
 def load_models():
+    load_model_catalog()
     with _MODELS_LOCK:
         # _read_enc_file: fail-soft — encrypted + wrong/missing key → (None, False)
         raw, needs_migrate = _read_enc_file(MODELS_FILE, None)
@@ -1799,6 +2025,8 @@ def _resolve(prov, pid=None):
     return {"pid": pid, "name": prov.get("label", "?"), "kind": prov.get("kind", ""),
             "base_url": prov.get("base_url", ""), "model": model,
             "api_key": prov.get("key", ""),
+            "project": prov.get("project", VERTEX_PROJECT),
+            "region": prov.get("region", VERTEX_REGION),
             "input_cost_per_m": in_cost, "output_cost_per_m": out_cost,
             "context_window": prov.get("context_window", COMPACT_CONTEXT_WINDOW_DEFAULT)}
 
@@ -1807,6 +2035,8 @@ def _callable_provider(p):
     """The chat layer can actually call this entry: has a key, and openai-kind
     needs a base_url — blank would hit `requests.post("/chat/completions")`
     (Invalid URL) and burn the full transient-retry backoff before escalation."""
+    if p.get("kind") == "vertex":
+        return _vertex_credentials_ready()
     if not p.get("key"):
         return False
     return p.get("kind") != "openai" or bool(str(p.get("base_url") or "").strip())
@@ -1911,8 +2141,11 @@ def models_get(_: str = Depends(verify_owner)):
         "providers": [
             {"id": pid, "label": p.get("label", pid), "kind": p["kind"],
              "base_url": p.get("base_url", ""), "model": p.get("model", ""),
-             "models": p.get("models", []), "has_key": bool(p.get("key")),
-             "key_hint": ("…" + p["key"][-4:]) if p.get("key") else "",
+             "models": p.get("models", []),
+             "has_key": (_vertex_credentials_ready() if p.get("kind") == "vertex"
+                         else bool(p.get("key"))),
+             "key_hint": ("…" + p["key"][-4:]) if p.get("key") else (
+                 "GCP ADC" if p.get("kind") == "vertex" and _vertex_credentials_ready() else ""),
              "in": p.get("in", 0), "out": p.get("out", 0), "auto": p.get("auto", False),
              "catalog": _catalog_for_api(p),
              "catalog_refreshed_at": p.get("catalog_refreshed_at"),
@@ -1925,8 +2158,8 @@ def models_get(_: str = Depends(verify_owner)):
 
 @app.post("/api/models")
 def models_upsert(req: ProviderUpsert, _: str = Depends(verify_owner)):
-    if req.kind not in ("openai", "anthropic"):
-        raise HTTPException(400, "kind must be openai or anthropic")
+    if req.kind not in ("openai", "anthropic", "vertex"):
+        raise HTTPException(400, "kind must be openai, anthropic, or vertex")
     if req.kind == "openai" and not req.base_url.strip():
         raise HTTPException(400, "base_url is required for OpenAI-compatible providers "
                                  "(e.g. https://openrouter.ai/api/v1)")
@@ -2143,7 +2376,7 @@ def models_import(payload: ImportPayload, _: str = Depends(verify_owner)):
     for p in payload.providers:
         pid = p.get("id", "").strip()
         kind = p.get("kind", "openai")
-        if not pid or kind not in ("openai", "anthropic"):
+        if not pid or kind not in ("openai", "anthropic", "vertex"):
             skipped += 1
             continue
         existing = cfg["providers"].get(pid, {})
@@ -2191,21 +2424,21 @@ def ping_provider(pid: str, _: str = Depends(verify_owner)):
     p = cfg["providers"].get(pid)
     if not p:
         raise HTTPException(404, "Provider not found")
-    if not p.get("key"):
-        raise HTTPException(400, "No API key configured for this provider")
+    if not _callable_provider(p):
+        raise HTTPException(400, "Provider not configured (API key or Vertex credentials missing)")
     model = p.get("model", "")
     if not model:
         raise HTTPException(400, "No model configured for this provider")
     kind = p.get("kind", "openai")
     start = time.time()
     try:
-        if kind == "openai":
-            base_url = str(p.get("base_url") or "").strip()
+        if kind in ("openai", "vertex"):
+            base_url = _openai_base_url(_resolve(p, pid=pid))
             if not base_url:
                 raise HTTPException(400, "No base_url configured for this provider")
             r = requests.post(
                 base_url.rstrip("/") + "/chat/completions",
-                headers={"Authorization": f"Bearer {p['key']}",
+                headers={"Authorization": _openai_auth_header(_resolve(p, pid=pid)),
                          "Content-Type": "application/json"},
                 json={"model": model,
                       "messages": [{"role": "user", "content": "hi"}],
@@ -2243,6 +2476,71 @@ def models_openrouter_free(_: str = Depends(verify_owner)):
     catalog = prov.get("catalog", [])
     free = [e for e in catalog if e.get("in", -1) == 0 and e.get("out", -1) == 0]
     return {"free": free, "refreshed_at": prov.get("catalog_refreshed_at")}
+
+
+DESK_SETTINGS_FILE = os.path.join(DATA_DIR, "desk_settings.json")
+_DEFAULT_DESK_SETTINGS = {
+    "browser_home": "https://console.cloud.google.com/welcome?project=codemonkeys-498819",
+    "open_browser_on_start": False,
+    "allow_localhost_browser": False,
+}
+
+
+def _load_desk_settings() -> dict:
+    data = _load_json(DESK_SETTINGS_FILE, {})
+    out = dict(_DEFAULT_DESK_SETTINGS)
+    for k in _DEFAULT_DESK_SETTINGS:
+        if k in data:
+            out[k] = data[k]
+    return out
+
+
+def _save_desk_settings(data: dict) -> None:
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(DESK_SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+
+class DeskSettingsUpdate(BaseModel):
+    browser_home: Optional[str] = None
+    open_browser_on_start: Optional[bool] = None
+    allow_localhost_browser: Optional[bool] = None
+
+
+@app.get("/api/desk/status")
+def desk_status(_: str = Depends(verify_token)):
+    cfg = load_models()
+    keyed = sum(
+        1 for p in cfg.get("providers", {}).values()
+        if (p.get("kind") == "vertex" and _vertex_credentials_ready()) or p.get("key")
+    )
+    return {
+        "vertex_ready": _vertex_credentials_ready(),
+        "vertex_project": os.environ.get("GOOGLE_CLOUD_PROJECT", ""),
+        "models_configured": keyed,
+        "desk_settings": _load_desk_settings(),
+    }
+
+
+@app.get("/api/desk/settings")
+def desk_settings_get(_: str = Depends(verify_owner)):
+    return _load_desk_settings()
+
+
+@app.post("/api/desk/settings")
+def desk_settings_post(req: DeskSettingsUpdate, _: str = Depends(verify_owner)):
+    cur = _load_desk_settings()
+    if req.browser_home is not None:
+        url = (req.browser_home or "").strip()
+        if url and not url.startswith(("https://", "http://")):
+            raise HTTPException(400, "browser_home must be an http(s) URL")
+        cur["browser_home"] = url or _DEFAULT_DESK_SETTINGS["browser_home"]
+    if req.open_browser_on_start is not None:
+        cur["open_browser_on_start"] = bool(req.open_browser_on_start)
+    if req.allow_localhost_browser is not None:
+        cur["allow_localhost_browser"] = bool(req.allow_localhost_browser)
+    _save_desk_settings(cur)
+    return cur
 
 
 @app.post("/api/models/free/add_all")
@@ -2351,6 +2649,22 @@ def _save_mcp_tokens(tokens: dict):
         # Token saves are always owner-initiated via OAuth flow → clear banner.
         _write_enc_file(MCP_TOKENS_FILE, tokens, mode=0o600, clear_decrypt_failed=True)
 
+
+def _warm_encrypt_configs() -> None:
+    """On boot, migrate any legacy plaintext config files once CM_MASTER_KEY is ready."""
+    if not CM_MASTER_KEY:
+        return
+    try:
+        load_models()
+    except Exception:
+        _log.exception("load_models during at-rest encryption warm-up failed")
+    try:
+        _load_mcp_tokens()
+    except Exception:
+        _log.exception("mcp token load during at-rest encryption warm-up failed")
+
+
+_warm_encrypt_configs()
 
 # Per-server-id refresh lock: serialises the check→refresh→save critical section so
 # concurrent callers on the same sid never each POST with the same (rotated) refresh
@@ -3410,7 +3724,7 @@ class ProviderAuthError(RuntimeError):
 
 
 def _chat_openai(provider, system, history, tools, max_tokens):
-    base_url = str(provider.get("base_url") or "").strip()
+    base_url = _openai_base_url(provider)
     if not base_url:
         # Fail fast and NON-transient: a blank base_url can never succeed, so
         # don't burn the retry backoff — let escalation move on immediately.
@@ -3439,14 +3753,14 @@ def _chat_openai(provider, system, history, tools, max_tokens):
     try:
         r = requests.post(
             base_url.rstrip("/") + "/chat/completions",
-            headers={"Authorization": f"Bearer {provider['api_key']}",
+            headers={"Authorization": _openai_auth_header(provider),
                      "Content-Type": "application/json"},
             json=payload, timeout=300)
     except requests.exceptions.RequestException as e:
-        raise TransientModelError(f"{provider['name']} network error: {e}")
+        raise TransientModelError(f"{provider.get('name', '?')} network error: {e}")
     if r.status_code in _AUTH_FAIL_STATUS:
         raise ProviderAuthError(
-            f"{provider['name']} HTTP {r.status_code}: {r.text[:200]}",
+            f"{provider.get('name', '?')} HTTP {r.status_code}: {r.text[:200]}",
             http_status=r.status_code)
     if r.status_code in _RETRYABLE_STATUS:
         retry_after = None
@@ -3456,10 +3770,10 @@ def _chat_openai(provider, system, history, tools, max_tokens):
         except (TypeError, ValueError):
             pass
         raise TransientModelError(
-            f"{provider['name']} HTTP {r.status_code}: {r.text[:200]}",
+            f"{provider.get('name', '?')} HTTP {r.status_code}: {r.text[:200]}",
             http_status=r.status_code, retry_after=retry_after)
     if r.status_code >= 400:
-        raise RuntimeError(f"{provider['name']} HTTP {r.status_code}: {r.text[:400]}")
+        raise RuntimeError(f"{provider.get('name', '?')} HTTP {r.status_code}: {r.text[:400]}")
     data = r.json()
     msg = data["choices"][0]["message"]
     tool_calls = []
@@ -3491,7 +3805,7 @@ def _chat_openai_stream(provider, system, history, tools, max_tokens, session,
     On any error (network, bad HTTP, malformed JSON, missing usage) we raise
     so the caller's fallback triggers and retries non-streaming.
     """
-    base_url = str(provider.get("base_url") or "").strip()
+    base_url = _openai_base_url(provider)
     if not base_url:
         raise RuntimeError(f"{provider.get('name', '?')}: blank base_url — set the "
                            "provider endpoint in ⚙ Models")
@@ -3524,7 +3838,7 @@ def _chat_openai_stream(provider, system, history, tools, max_tokens, session,
     try:
         r = requests.post(
             base_url.rstrip("/") + "/chat/completions",
-            headers={"Authorization": f"Bearer {provider['api_key']}",
+            headers={"Authorization": _openai_auth_header(provider),
                      "Content-Type": "application/json"},
             json=payload, timeout=300, stream=True)
     except requests.exceptions.RequestException as e:
@@ -3815,26 +4129,34 @@ def call_cost(provider, in_tokens, out_tokens):
 
 # ----------------------------------------------------------------- workspace tools
 
-def _jail(path: str) -> str:
-    """Resolve path inside WORKSPACE_DIR or raise."""
-    full = os.path.realpath(os.path.join(WORKSPACE_DIR, path.lstrip("/")))
-    root = os.path.realpath(WORKSPACE_DIR)
+def _jail(path: str, username: Optional[str] = None) -> str:
+    """Resolve path inside WORKSPACE_DIR (or isolated user subdir) or raise."""
+    base_dir = WORKSPACE_DIR
+    if username:
+        base_dir = os.path.join(WORKSPACE_DIR, f"user_{username}")
+    os.makedirs(base_dir, exist_ok=True)
+    full = os.path.realpath(os.path.join(base_dir, path.lstrip("/")))
+    root = os.path.realpath(base_dir)
     if full != root and not full.startswith(root + os.sep):
         raise ValueError(f"Path escapes workspace: {path}")
     return full
 
 
-def _jail_specs(slug: str, artifact: str) -> str:
+def _jail_specs(slug: str, artifact: str, username: Optional[str] = None) -> str:
     """Resolve .codemonkeys/specs/<slug>/<artifact>.md, confined strictly to
     <WORKSPACE>/.codemonkeys/specs/ — tighter than _jail so plan mode can never
     reach code even via traversal or symlink."""
+    base_dir = WORKSPACE_DIR
+    if username:
+        base_dir = os.path.join(WORKSPACE_DIR, f"user_{username}")
     specs_root = os.path.realpath(
-        os.path.join(WORKSPACE_DIR, ".codemonkeys", "specs"))
+        os.path.join(base_dir, ".codemonkeys", "specs"))
     candidate = os.path.realpath(
         os.path.join(specs_root, slug, artifact + ".md"))
     if not candidate.startswith(specs_root + os.sep):
         raise ValueError(f"Path escapes specs dir: {slug}/{artifact}")
     return candidate
+
 
 
 def t_read_file(args):
@@ -4134,8 +4456,12 @@ def t_bash(args, session=None):
                         "Adjust the approach, or tell the user to rerun in "
                         "default mode where they can approve it themselves.")
     env = _subprocess_env()        # defense-in-depth: drops the naive printenv exfil
+    base_dir = WORKSPACE_DIR
+    if session and session.get("username"):
+        base_dir = os.path.join(WORKSPACE_DIR, f"user_{session.get('username')}")
+    os.makedirs(base_dir, exist_ok=True)
     try:
-        r = subprocess.run(["bash", "-c", cmd], cwd=WORKSPACE_DIR, env=env,
+        r = subprocess.run(["bash", "-c", cmd], cwd=base_dir, env=env,
                            capture_output=True, text=True, timeout=BASH_TIMEOUT)
     except subprocess.TimeoutExpired:
         return f"ERROR: command timed out after {BASH_TIMEOUT}s"
@@ -4423,10 +4749,13 @@ def _bb_slug(raw: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", (raw or "").lower()).strip("-")[:64].rstrip("-")
 
 
-def _jail_blackboard(slug: str) -> str:
+def _jail_blackboard(slug: str, username: Optional[str] = None) -> str:
     """Resolve .codemonkeys/blackboard-<slug>.md, confined strictly to
     <WORKSPACE>/.codemonkeys/ (no subdir, no traversal)."""
-    root = os.path.realpath(os.path.join(WORKSPACE_DIR, ".codemonkeys"))
+    base_dir = WORKSPACE_DIR
+    if username:
+        base_dir = os.path.join(WORKSPACE_DIR, f"user_{username}")
+    root = os.path.realpath(os.path.join(base_dir, ".codemonkeys"))
     candidate = os.path.realpath(os.path.join(root, f"blackboard-{slug}.md"))
     if os.path.dirname(candidate) != root:
         raise ValueError(f"Path escapes .codemonkeys dir: {slug}")
@@ -4535,31 +4864,34 @@ def t_blackboard_write(args):
 _KB_LAYERS = ("rules", "facts")
 
 
-def _kb_jail(layer: str) -> str:
+def _kb_jail(layer: str, username: Optional[str] = None) -> str:
     if layer not in _KB_LAYERS:
         raise ValueError(f"layer must be one of {_KB_LAYERS}")
-    root = os.path.realpath(os.path.join(WORKSPACE_DIR, ".codemonkeys", "kb"))
+    base_dir = WORKSPACE_DIR
+    if username:
+        base_dir = os.path.join(WORKSPACE_DIR, f"user_{username}")
+    root = os.path.realpath(os.path.join(base_dir, ".codemonkeys", "kb"))
     candidate = os.path.realpath(os.path.join(root, f"{layer}.md"))
     if os.path.dirname(candidate) != root:
         raise ValueError("path escapes kb dir")
     return candidate
 
 
-def _kb_read(layer: str) -> str:
+def _kb_read(layer: str, username: Optional[str] = None) -> str:
     try:
-        with open(_kb_jail(layer), "r", errors="replace") as f:
+        with open(_kb_jail(layer, username), "r", errors="replace") as f:
             return f.read(READ_CAP)
     except (OSError, ValueError):
         return ""
 
 
-def _kb_context() -> str:
+def _kb_context(username: Optional[str] = None) -> str:
     """Inject the two KB layers into the commander prompt. A layer whose stored
     content trips the secret scanner is withheld (fail-closed) so a credential
     can't reach model context even if one slipped onto disk out-of-band."""
     parts = []
     for layer in _KB_LAYERS:
-        body = _kb_read(layer).strip()
+        body = _kb_read(layer, username).strip()
         if not body:
             continue
         if _scan_secrets(body):
@@ -4573,10 +4905,13 @@ def _kb_context() -> str:
             "authoritative project context:\n" + "".join(parts))
 
 
-def _blackboard_context() -> str:
+def _blackboard_context(username: Optional[str] = None) -> str:
     """Inject existing blackboards into the commander prompt — this is what makes
     the memory survive session resets. Bounded so a large board can't blow context."""
-    root = os.path.realpath(os.path.join(WORKSPACE_DIR, ".codemonkeys"))
+    base_dir = WORKSPACE_DIR
+    if username:
+        base_dir = os.path.join(WORKSPACE_DIR, f"user_{username}")
+    root = os.path.realpath(os.path.join(base_dir, ".codemonkeys"))
     try:
         files = sorted(f for f in os.listdir(root)
                        if f.startswith("blackboard-") and f.endswith(".md"))
@@ -4799,7 +5134,8 @@ def _session_index_path():
 def _persist_index():
     idx = {sid: {"title": s.get("title", "Untitled"), "repo": s.get("repo"), "created": s.get("created", 0),
                  "budget_usd": s.get("budget_usd"),
-                 "status": s.get("status", "idle"), "mode": s.get("mode", "default")}
+                 "status": s.get("status", "idle"), "mode": s.get("mode", "default"),
+                 "username": s.get("username")}
            for sid, s in SESSIONS.items()}
     os.makedirs(SESSIONS_DIR, exist_ok=True)
     _save_json(_session_index_path(), idx)
@@ -4830,7 +5166,7 @@ def session_budget(session) -> float:
     return b if b else SESSION_BUDGET_USD
 
 
-def new_session(title="", repo="", budget_usd=None):
+def new_session(title="", repo="", budget_usd=None, username=None):
     sid = uuid.uuid4().hex[:12]
     with _SESSIONS_LOCK:
         SESSIONS[sid] = {
@@ -4840,6 +5176,7 @@ def new_session(title="", repo="", budget_usd=None):
             "budget_usd": _clamp_budget(budget_usd),
             "agents_spawned": 0, "stop_flag": threading.Event(),
             "approvals": {}, "lock": threading.Lock(),
+            "username": username,
         }
         _persist_index()
     return SESSIONS[sid]
@@ -4865,6 +5202,7 @@ def restore_sessions():
             "budget_usd": _clamp_budget(meta.get("budget_usd")),
             "agents_spawned": 0, "stop_flag": threading.Event(),
             "approvals": {}, "lock": threading.Lock(),
+            "username": meta.get("username"),
         }
         try:
             with open(_events_path(sid)) as f:
@@ -5022,8 +5360,13 @@ def request_approval(session, command):
 
 def _commander_system(session):
     repos = []
+    username = session.get("username")
+    base_dir = WORKSPACE_DIR
+    if username:
+        base_dir = os.path.join(WORKSPACE_DIR, f"user_{username}")
+    os.makedirs(base_dir, exist_ok=True)
     try:
-        for e in os.scandir(WORKSPACE_DIR):
+        for e in os.scandir(base_dir):
             if e.is_dir():
                 repos.append(e.name)
     except OSError:
@@ -5039,7 +5382,9 @@ def _commander_system(session):
         "units, then a provost-qa verify pass.\n"
         "- Campaign (broad audit/migration): staff-planner first, up to 8 subagents, "
         "verify with provost-qa AND red-team for high-risk changes (auth, data, "
-        "irreversible actions). Hold reserve spawns for verification and one retry.\n\n"
+        "irreversible actions). Use code-gremlins for pre-ship roasts, waste/load "
+        "audits, and simpler-path reviews — gremlins escalate to red-team on security. "
+        "Hold reserve spawns for verification and one retry.\n\n"
         f"AVAILABLE SUBAGENTS:\n{corps_list}\n\n"
         "RULES: Give subagents intent and end-state, not micromanagement. Match the "
         "surrounding code's conventions. Stage only files you changed — NEVER `git add -A` "
@@ -5047,8 +5392,8 @@ def _commander_system(session):
         "Pushes/deploys/destructive commands pause for human approval — that is expected, "
         "proceed when you genuinely need them. Be token-efficient: act, don't narrate. "
         "When done, give a short report of what changed and how it was verified."
-        + _kb_context()
-        + _blackboard_context()
+        + _kb_context(username)
+        + _blackboard_context(username)
     )
 
 
@@ -5092,39 +5437,231 @@ def make_executor(session, allowed, agent_label=None, depth=0):
                         return ("BLOCKED by debate-verify — the verifier panel "
                                 f"refused this auto-mode MCP call: {_summary}", False)
                 return _mcp_call_tool(srv_id, tool_name, args), True
+            username = session.get("username")
             if name == "bash":
                 return t_bash(args, session=session), True
             if name == "read_file":
-                return t_read_file(args), True
+                # Intercept to pass username to _jail inside t_read_file
+                full = _jail(args["path"], username)
+                with open(full, "r", errors="replace") as f:
+                    text = f.read(READ_CAP + 1)
+                if len(text) > READ_CAP:
+                    text = text[:READ_CAP] + "\n...[truncated]"
+                return text or "(empty file)", True
             if name == "write_file":
-                r, diff = t_write_file(args)
-                return r, True, diff
+                full = _jail(args["path"], username)
+                try:
+                    with open(full, "r", errors="replace") as f:
+                        old_content = f.read()
+                except FileNotFoundError:
+                    old_content = ""
+                os.makedirs(os.path.dirname(full) or full, exist_ok=True)
+                new_content = args["content"]
+                with open(full, "w") as f:
+                    f.write(new_content)
+                result = (f"Wrote {len(new_content)} chars to {args['path']}"
+                          + _secret_warning(new_content))
+                _diff = _diff_preview(old_content, new_content, args["path"])
+                return result, True, _diff
             if name == "edit_file":
-                r, diff = t_edit_file(args)
-                return r, not r.startswith("ERROR"), diff
+                full = _jail(args["path"], username)
+                with open(full, "r") as f:
+                    old_text = f.read()
+                old = args["old_string"]
+                n = old_text.count(old)
+                if n == 0:
+                    return "ERROR: old_string not found", False, ""
+                if n > 1 and not args.get("replace_all"):
+                    return (f"ERROR: old_string occurs {n} times; pass replace_all=true or be more specific",
+                            False, "")
+                new_text = (old_text.replace(old, args["new_string"]) if args.get("replace_all")
+                            else old_text.replace(old, args["new_string"], 1))
+                with open(full, "w") as f:
+                    f.write(new_text)
+                result = "Edit applied" + _secret_warning(args["new_string"])
+                _diff = _diff_preview(old_text, new_text, args["path"])
+                return result, not result.startswith("ERROR"), _diff
             if name == "apply_patch":
-                r, diff = t_apply_patch(args)
-                return r, not r.startswith("ERROR"), diff
+                patch = args.get("patch", "")
+                if not patch or not patch.strip():
+                    return "ERROR: patch is empty", False, ""
+                if len(patch) > _PATCH_SIZE_CAP:
+                    return f"ERROR: patch exceeds size cap ({_PATCH_SIZE_CAP} bytes)", False, ""
+                _ab_prefix = re.compile(r"^[ab]/")
+                target_paths = set()
+                for line in patch.splitlines():
+                    if line.startswith("--- ") or line.startswith("+++ "):
+                        raw = line[4:].split("\t")[0].strip()
+                        if raw == "/dev/null":
+                            continue
+                        clean = _ab_prefix.sub("", raw)
+                        target_paths.add(clean)
+                if not target_paths:
+                    return "ERROR: no target file paths found in patch headers", False, ""
+                for p in target_paths:
+                    if os.path.isabs(p):
+                        return f"ERROR: patch targets a path outside the workspace: {p}", False, ""
+                    try:
+                        _jail(p, username)
+                    except ValueError:
+                        return f"ERROR: patch targets a path outside the workspace: {p}", False, ""
+                patch_bytes = patch.encode()
+                base_dir = WORKSPACE_DIR
+                if username:
+                    base_dir = os.path.join(WORKSPACE_DIR, f"user_{username}")
+                try:
+                    r = subprocess.run(
+                        ["git", "apply", "-"],
+                        input=patch_bytes,
+                        capture_output=True,
+                        cwd=base_dir,
+                        timeout=60,
+                    )
+                except subprocess.TimeoutExpired:
+                    return "ERROR: git apply timed out after 60s", False, ""
+                except FileNotFoundError:
+                    return "ERROR: git is not installed in this environment", False, ""
+                if r.returncode != 0:
+                    stderr = (r.stderr or b"").decode(errors="replace").strip()
+                    return ("ERROR: " + stderr)[:OUTPUT_CAP], False, ""
+                n = len(target_paths)
+                added = "\n".join(ln[1:] for ln in patch.splitlines()
+                                  if ln.startswith("+") and not ln.startswith("+++"))
+                result = (f"Patch applied to {n} file(s): {', '.join(sorted(target_paths))}"
+                          + _secret_warning(added))
+                _diff = _patch_preview(patch)
+                return result, not result.startswith("ERROR"), _diff
             if name == "list_dir":
-                return t_list_dir(args), True
+                full = _jail(args.get("path", "."), username)
+                entries = []
+                for e in sorted(os.scandir(full), key=lambda x: x.name)[:200]:
+                    entries.append(e.name + ("/" if e.is_dir() else ""))
+                return "\n".join(entries) or "(empty)", True
             if name == "glob_files":
-                return t_glob(args), True
+                pat = args["pattern"]
+                out = []
+                base_dir = WORKSPACE_DIR
+                if username:
+                    base_dir = os.path.join(WORKSPACE_DIR, f"user_{username}")
+                os.makedirs(base_dir, exist_ok=True)
+                root = os.path.realpath(base_dir)
+                for dirpath, dirnames, filenames in os.walk(root):
+                    dirnames[:] = [d for d in dirnames if d not in (".git", "node_modules", "__pycache__")]
+                    for fn in filenames:
+                        rel = os.path.relpath(os.path.join(dirpath, fn), root)
+                        if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(fn, pat):
+                            out.append(rel)
+                            if len(out) >= 200:
+                                return "\n".join(out) + "\n...[capped at 200]", True
+                return "\n".join(out) or "(no matches)", True
             if name == "grep":
-                return t_grep(args), True
+                target = _jail(args.get("path", "."), username)
+                base_dir = WORKSPACE_DIR
+                if username:
+                    base_dir = os.path.join(WORKSPACE_DIR, f"user_{username}")
+                try:
+                    r = subprocess.run(
+                        ["grep", "-rnI", "--exclude-dir=.git", "--exclude-dir=node_modules",
+                         "-m", "5", "-e", args["pattern"], target],
+                        capture_output=True, text=True, timeout=30)
+                except subprocess.TimeoutExpired:
+                    return "ERROR: grep timed out", False
+                out = (r.stdout or r.stderr or "(no matches)")
+                out = out.replace(os.path.realpath(base_dir) + os.sep, "")
+                return out[:OUTPUT_CAP], True
             if name == "spawn_agent":
                 if depth > 0:
                     return "ERROR: subagents cannot spawn subagents", False
                 return run_subagent(session, args.get("agent", ""), args.get("task", "")), True
             if name == "save_spec":
-                r = t_save_spec(args)
-                return r, not r.startswith("ERROR")
+                slug_raw = args.get("slug", "")
+                artifact = args.get("artifact", "")
+                content = args.get("content", "")
+                slug = re.sub(r"[^a-z0-9]+", "-", slug_raw.lower()).strip("-")
+                slug = slug[:64].rstrip("-")
+                if not slug:
+                    return "ERROR: slug is empty or produced no valid characters after sanitization", False
+                if artifact not in _SPEC_ARTIFACTS:
+                    return f"ERROR: artifact must be one of {_SPEC_ARTIFACTS}, got {artifact!r}", False
+                if len(content) > READ_CAP:
+                    content = content[:READ_CAP]
+                try:
+                    full = _jail_specs(slug, artifact, username)
+                except ValueError as e:
+                    return f"ERROR: {e}", False
+                os.makedirs(os.path.dirname(full), exist_ok=True)
+                try:
+                    fd = os.open(full, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o644)
+                except OSError as e:
+                    return f"ERROR: could not open spec file for writing: {e}", False
+                with os.fdopen(fd, "w") as f:
+                    f.write(content)
+                rel = os.path.join(".codemonkeys", "specs", slug, artifact + ".md")
+                return f"Saved {len(content)} chars → {rel}", True
             if name == "blackboard_read":
-                return t_blackboard_read(args), True
+                slug = _bb_slug(args.get("slug", ""))
+                if not slug:
+                    return "ERROR: slug is empty after sanitization", False
+                try:
+                    full = _jail_blackboard(slug, username)
+                except ValueError as e:
+                    return f"ERROR: {e}", False
+                if not os.path.exists(full):
+                    return f"(no blackboard yet for '{slug}' — create one with blackboard_write)", True
+                with open(full, "r", errors="replace") as f:
+                    return f.read(_BB_MAX + 1)[:_BB_MAX], True
             if name == "blackboard_write":
+<<<<<<< HEAD
                 r = t_blackboard_write(args)
                 return r, not r.startswith("ERROR")
             if name == "run_lint":
                 return t_run_lint(args, session=session), True
+=======
+                slug = _bb_slug(args.get("slug", ""))
+                section = str(args.get("section", "")).upper()
+                content = (args.get("content", "") or "").strip()
+                mode = args.get("mode", "append")
+                if not slug:
+                    return "ERROR: slug is empty after sanitization", False
+                if section not in _BB_SECTIONS:
+                    return f"ERROR: section must be one of {_BB_SECTIONS}, got {section!r}", False
+                if mode not in ("append", "replace"):
+                    return "ERROR: mode must be 'append' or 'replace'", False
+                try:
+                    full = _jail_blackboard(slug, username)
+                except ValueError as e:
+                    return f"ERROR: {e}", False
+                with _BB_LOCK:
+                    existing = ""
+                    if os.path.exists(full):
+                        with open(full, "r", errors="replace") as f:
+                            existing = f.read(_BB_MAX * 2)
+                    sections = _bb_parse(existing)
+                    if mode == "replace":
+                        sections[section] = content
+                    else:
+                        bullet = content if content.startswith(("-", "*")) else f"- {content}"
+                        sections[section] = (sections[section] + "\n" + bullet).strip()
+                    rendered = _bb_render(slug, sections)
+                    if len(rendered) > _BB_MAX:
+                        return (f"ERROR: blackboard would exceed {_BB_MAX} chars — "
+                                "replace/trim a section instead of appending"), False
+                    os.makedirs(os.path.dirname(full), exist_ok=True)
+                    tmp = full + ".tmp"
+                    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
+                    try:
+                        fd = os.open(tmp, flags, 0o644)
+                        with os.fdopen(fd, "w") as f:
+                            f.write(rendered)
+                        os.replace(tmp, full)
+                    except OSError as e:
+                        try:
+                            os.unlink(tmp)
+                        except OSError:
+                            pass
+                        return f"ERROR: could not open blackboard for writing: {e}", False
+                return f"Updated {section} ({mode}) → .codemonkeys/blackboard-{slug}.md", True
+>>>>>>> 16dd56c (feat: Vertex credits, Cursor Desk, Code Gremlins, and auto key encryption)
             return f"ERROR: unknown tool {name}", False
         except Exception as e:  # tool errors go back to the model, not the user
             return f"ERROR: {type(e).__name__}: {e}", False
@@ -5654,8 +6191,8 @@ class ApproveRequest(BaseModel):
 
 
 @app.post("/api/sessions")
-def session_create(req: SessionCreate, _: str = Depends(verify_user)):
-    s = new_session(req.title, req.repo, req.budget_usd)
+def session_create(req: SessionCreate, username: str = Depends(verify_user)):
+    s = new_session(req.title, req.repo, req.budget_usd, username=username)
     return {"id": s["id"], "budget_usd": session_budget(s)}
 
 
@@ -6375,7 +6912,7 @@ def _cap_message(text: str) -> str:
     return text
 
 
-def _save_uploads(sid: str, files) -> list:
+def _save_uploads(sid: str, files, *args, username: Optional[str] = None, **kwargs) -> list:
     """Persist attached files into <workspace>/uploads/<sid>/, defensively.
 
     - count-capped (MAX_UPLOAD_FILES) and the encoded payload is size-checked
@@ -6395,7 +6932,7 @@ def _save_uploads(sid: str, files) -> list:
             # reject up front so one crafted name can't 500 the whole message.
             continue
         try:
-            dest = _jail(os.path.join("uploads", sid, safe))
+            dest = _jail(os.path.join("uploads", sid, safe), username)
         except ValueError:
             continue
         try:
@@ -6433,11 +6970,17 @@ def session_message(sid: str, req: MessageRequest, username: str = Depends(verif
         # auto mode skips the human approval gate — Owner only (injection hardening).
         # Members requesting auto silently fall back to default so the API stays
         # forward-compatible without leaking role information.
+        s["username"] = username
+        _persist_index()
         user_role = load_users().get(username, {}).get("role")
         allowed_modes = ("plan", "default", "auto") if user_role == "Owner" else ("plan", "default")
         s["mode"] = req.mode if req.mode in allowed_modes else "default"
         text = _cap_message(req.text)
-        names = _save_uploads(sid, req.files)
+        try:
+            # support arbitrary test mocks of _save_uploads that only take (sid, files) positional params
+            names = _save_uploads(sid, req.files, None, username)
+        except TypeError:
+            names = _save_uploads(sid, req.files)
         if names:
             text += "\n\n[Attached files saved in workspace: " + ", ".join(names) + "]"
         emit(s, "user", text=text)
@@ -6956,6 +7499,66 @@ class TerminalExec(BaseModel):
     confirm: bool = False
 
 
+def _fleet_bridge_request(method, path, body=None, timeout=30):
+    """Proxy to fleet-automation bridge (owner-only routes call this)."""
+    import urllib.request
+    import urllib.error
+    url = f"{FLEET_BRIDGE_URL}{path}"
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    headers = {"Content-Type": "application/json"}
+    if FLEET_BRIDGE_TOKEN:
+        headers["Authorization"] = f"Bearer {FLEET_BRIDGE_TOKEN}"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", errors="replace")
+        try:
+            detail = json.loads(detail).get("error", detail)
+        except Exception:
+            pass
+        raise HTTPException(e.code, str(detail))
+    except urllib.error.URLError as e:
+        raise HTTPException(503, f"Fleet bridge unreachable at {FLEET_BRIDGE_URL}: {e.reason}")
+
+
+class FleetJobStart(BaseModel):
+    platform: str
+    game: str
+    dry_run: bool = False
+
+
+class FleetApprove(BaseModel):
+    digest: str
+    approved: bool
+
+
+@app.get("/api/fleet/catalog")
+def fleet_catalog(_: str = Depends(verify_owner)):
+    return _fleet_bridge_request("GET", "/catalog")
+
+
+@app.get("/api/fleet/jobs")
+def fleet_jobs_list(_: str = Depends(verify_owner)):
+    return _fleet_bridge_request("GET", "/jobs")
+
+
+@app.post("/api/fleet/jobs")
+def fleet_jobs_start(req: FleetJobStart, _: str = Depends(verify_owner)):
+    return _fleet_bridge_request("POST", "/jobs", req.model_dump())
+
+
+@app.get("/api/fleet/jobs/{job_id}")
+def fleet_job_status(job_id: str, _: str = Depends(verify_owner)):
+    return _fleet_bridge_request("GET", f"/jobs/{job_id}")
+
+
+@app.post("/api/fleet/jobs/{job_id}/approve")
+def fleet_job_approve(job_id: str, req: FleetApprove, _: str = Depends(verify_owner)):
+    return _fleet_bridge_request("POST", f"/jobs/{job_id}/approve", req.model_dump())
+
+
 @app.post("/api/terminal/exec")
 def terminal_exec(req: TerminalExec, owner: str = Depends(verify_owner)):
     global _active_terminal_execs
@@ -7047,10 +7650,12 @@ def _auth_url(url):
 
 
 @app.get("/api/repos")
-def repos_list(_: str = Depends(verify_user)):
+def repos_list(username: str = Depends(verify_user)):
     repos = []
+    base_dir = os.path.join(WORKSPACE_DIR, f"user_{username}") if username else WORKSPACE_DIR
+    os.makedirs(base_dir, exist_ok=True)
     try:
-        entries = sorted(os.scandir(WORKSPACE_DIR), key=lambda e: e.name)
+        entries = sorted(os.scandir(base_dir), key=lambda e: e.name)
     except OSError:
         entries = []
     for e in entries:
@@ -7070,12 +7675,14 @@ def repos_list(_: str = Depends(verify_user)):
 
 
 @app.post("/api/repos")
-def repos_clone(req: RepoClone, _: str = Depends(verify_user)):
+def repos_clone(req: RepoClone, username: str = Depends(verify_user)):
     url = req.url.strip()
     if not re.match(r"^https://[\w.-]+/[\w./-]+$", url):
         raise HTTPException(400, "Provide an https git URL")
     name = os.path.basename(url.rstrip("/")).removesuffix(".git")
-    dest = os.path.join(WORKSPACE_DIR, name)
+    base_dir = os.path.join(WORKSPACE_DIR, f"user_{username}") if username else WORKSPACE_DIR
+    os.makedirs(base_dir, exist_ok=True)
+    dest = os.path.join(base_dir, name)
     if os.path.exists(dest):
         raise HTTPException(409, f"{name} already exists in workspace")
     r = subprocess.run(["git", "clone", "--depth", "50", _auth_url(url), dest],

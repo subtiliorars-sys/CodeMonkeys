@@ -35,6 +35,9 @@ async function api(path, method = "GET", body = null) {
   return data;
 }
 
+window.state = state;
+window.api = api;
+
 /* ---------------- auth ---------------- */
 
 function hideAll() {
@@ -60,19 +63,13 @@ function showMain() {
   if (!state.sid) showLanding();
 }
 
-// Encryption-status banner: non-blocking warning when model keys are stored
-// unencrypted (CM_MASTER_KEY unset) or couldn't be decrypted (wrong key).
+// Encryption-status banner: only when saved keys couldn't be decrypted (wrong/lost master key).
 async function checkEncryptionBanner() {
   try {
     const d = await api("/api/encryption-status");
-    let msg = "";
     if (d.decrypt_failed) {
-      msg = "Could not decrypt saved model API keys (master key missing or changed). Re-enter your keys in ⚙ Settings > Models & keys.";
-    } else if (!d.encrypted) {
-      msg = "Model API keys are stored unencrypted. Set CM_MASTER_KEY to encrypt them at rest (see docs/RECOVERY.md).";
-    }
-    if (msg) {
-      $("enc-banner-msg").textContent = msg;
+      $("enc-banner-msg").textContent =
+        "Could not decrypt saved model API keys (master key missing or changed). Re-enter your keys in ⚙ Settings > Models & keys.";
       $("enc-banner").classList.remove("hidden");
     } else {
       $("enc-banner").classList.add("hidden");
@@ -769,6 +766,7 @@ function addFile(f) {
   };
   reader.readAsDataURL(f);
 }
+window.__cmAddFile = addFile;
 
 $("btn-attach").onclick = () => $("file-input").click();
 $("file-input").onchange = () => {
@@ -1069,13 +1067,16 @@ async function loadProviders() {
     const dotColor = !p.last_error_at
       ? (p.has_key ? "text-green-400" : "text-slate-600")
       : (errAge < 3600 ? "text-red-400" : "text-yellow-500");
+    const isVertex = p.kind === "vertex";
     const dotTitle = p.last_error
       ? `Error ${errAge < 60 ? "just now" : errAge < 3600 ? Math.round(errAge/60)+"m ago" : Math.round(errAge/3600)+"h ago"}: ${p.last_error}`
-      : (p.has_key
-          ? (p.id === "openrouter"
-              ? `key set ${p.key_hint} — authenticated (higher rate limits)`
-              : `key set ${p.key_hint}`)
-          : (p.id === "openrouter" ? "no key — unauthenticated (rate-limited free tier)" : "no key"));
+      : (isVertex
+          ? (p.has_key ? "Vertex Gemini — GCP Application Default Credentials ready" : "Vertex — run gcloud auth application-default login (see docs/VERTEX_GCP_CREDITS.md)")
+          : (p.has_key
+              ? (p.id === "openrouter"
+                  ? `key set ${p.key_hint} — authenticated (higher rate limits)`
+                  : `key set ${p.key_hint}`)
+              : (p.id === "openrouter" ? "no key — unauthenticated (rate-limited free tier)" : "no key")));
     const catAge = p.catalog_refreshed_at ? now - p.catalog_refreshed_at : null;
     const catAgeStr = catAge === null ? null
       : catAge < 60 ? "just now"
@@ -1119,8 +1120,10 @@ async function loadProviders() {
           data-models="${esc(JSON.stringify(sortedModels))}" data-current="${esc(p.model)}"
           placeholder="filter…" title="Filter models">` : ""}
         <select class="pv-model input rounded px-1 py-0.5 flex-1" data-id="${esc(p.id)}">${opts}</select>
-        <input type="password" class="pv-key input rounded px-1 py-0.5 flex-1" data-id="${esc(p.id)}"
-          placeholder="${p.has_key ? "key set ✓ (type to replace)" : "paste API key"}">
+        ${isVertex
+          ? `<span class="text-green-400/90 text-xs flex-1 px-1" title="Uses GCP billing credits via Application Default Credentials">GCP ADC — no API key · projects/shared/vertex-credits/</span>`
+          : `<input type="password" class="pv-key input rounded px-1 py-0.5 flex-1" data-id="${esc(p.id)}"
+          placeholder="${p.has_key ? "key set ✓ (type to replace)" : "paste API key"}">`}
         <input type="text" class="pv-notes input rounded px-1 py-0.5 w-32 text-xs" data-id="${esc(p.id)}"
           placeholder="notes…" value="${esc(p.notes || "")}" title="Freeform notes (shown as label tooltip)">
         <button data-id="${esc(p.id)}" class="pv-savekey gold-btn rounded px-2 py-0.5">save</button>
@@ -1505,17 +1508,8 @@ document.getElementsByName("route-mode").forEach((r) => {
 let _budgetAlertShownAt = 0; // pct threshold at which alert was last shown (75 or 95)
 
 function _updateBudgetBar(spent, cap) {
-  const wrap = $("budget-bar-wrap");
-  const fill = $("budget-bar-fill");
-  if (!wrap || !fill) return;
-  if (!cap || cap <= 0) { wrap.classList.add("hidden"); return; }
+  if (!cap || cap <= 0) return;
   const pct = Math.min(100, (spent / cap) * 100);
-  const color = pct < 50 ? "bg-green-500" : pct < 80 ? "bg-yellow-500" : "bg-red-500";
-  wrap.classList.remove("hidden");
-  fill.className = `h-full transition-all ${color}`;
-  fill.style.width = `${pct.toFixed(1)}%`;
-  fill.title = `$${spent.toFixed(4)} spent / $${cap.toFixed(2)} cap (${Math.round(pct)}%)`;
-  // Budget alert at 75% and 95%
   const alertEl = $("budget-alert");
   const alertMsg = $("budget-alert-msg");
   if (alertEl && alertMsg) {
@@ -2350,6 +2344,14 @@ $("btn-feedback-inbox").onclick = () => {
   if (typeof FieldReport !== "undefined") FieldReport.init();
 };
 $("fb-inbox-close").onclick = () => $("modal-feedback").classList.add("hidden");
+
+$("btn-fleet-store")?.addEventListener("click", () => {
+  if (typeof Workbench !== "undefined") {
+    Workbench.toggleFleet(true);
+    const p = document.getElementById("panel-fleet");
+    if (p && typeof FleetStore !== "undefined") FleetStore.init(p);
+  }
+});
 
 /* ---------------- boot ---------------- */
 

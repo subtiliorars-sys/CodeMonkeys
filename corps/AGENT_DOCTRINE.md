@@ -104,6 +104,7 @@ model on every Cursor Task spawn.
 | Unit | Mission | Model |
 |------|---------|-------|
 | **provost-qa** | Tests + verification (run/observe) | Sonnet |
+| **code-gremlins** | Savage roast + stress/efficiency raid (report only) | Sonnet (T2) |
 | **red-team** | Adversarial review: try to *refute* / break | Opus |
 
 ## 4. Standing orders (every unit obeys)

@@ -1,0 +1,56 @@
+{
+  "project": "codemonkeys-498819",
+  "description": "Frivolous-but-productive Vertex burn jobs — games, revenue, payment paths",
+  "jobs": [
+    {
+      "id": "freak-franchise-expand",
+      "title": "Freak Franchise — NPC & fail-mode expansion",
+      "out": "freak-franchise-expansion.md",
+      "context_files": [
+        "PixelSports/docs/franchise/POOL_OF_RIDICULOUSNESS_FRANCHISE_BIBLE.md",
+        "PixelSports/docs/franchise/FREAK_SHOW_ROSTER.md",
+        "PixelSports/docs/franchise/EVERY_FREAKING_TIME_GDD.md"
+      ],
+      "prompt": "Expand the Freak Franchise with: (1) ten new 'Every Freaking Time' fail modes with one-line sting copy each, (2) five new carnival NPCs with mock/cheer duality and one bond scene beat each, (3) three crossover moments linking Pool of Ridiculousness R-units. Tone: joyful ridiculousness, dignity under spectacle, mandatory dog pat moments. Markdown with clear headings. No cruelty toward real marginalized groups."
+    },
+    {
+      "id": "fleet-itch-store-copy",
+      "title": "Fleet demos — itch.io store pages batch",
+      "out": "fleet-itch-store-copy.md",
+      "context_files": ["PixelSports/public/fleet-demos/index.html"],
+      "prompt": "Write itch.io store page copy (title, short description, long description, tags) for each fleet demo: Every Freaking Time, What the Freak, Pool of Ridiculousness, Get To It Man, Run Away, On the Fly, Broadside. Include 'pat the dog' as a bullet where relevant. JimmyTheHat / PixelSports publisher voice. Markdown one section per game."
+    },
+    {
+      "id": "revenue-payment-playbook",
+      "title": "Revenue & payment options playbook",
+      "out": "revenue-payment-playbook.md",
+      "prompt": "Draft a practical revenue playbook for an indie fleet (PixelSports browser games + itch + future Steam): payment options ranked by speed-to-ship (itch tips, itch sales, Stripe Checkout on a landing page, Ko-fi, Patreon tier sketch). For each: setup steps, fees, what to sell first (fleet bundle vs individual demos), and a 30-day 'push goodness into the world' launch sequence. No legal lecture — actionable checklist tone."
+    },
+    {
+      "id": "pixelsports-volleyball-marketing",
+      "title": "PixelSports commission UI — marketing microcopy",
+      "out": "pixelsports-marketing-microcopy.md",
+      "context_files": ["PixelSports/README.md"],
+      "prompt": "Generate marketing microcopy: 5 tweet-length hooks, 3 email subject lines, and a 'why commission sports games' paragraph for PixelSports. Whimsical but credible. Mention fleet demos as funnel."
+    },
+    {
+      "id": "drivingmenuts-events",
+      "title": "Driving Me Nuts — district event vignettes",
+      "out": "drivingmenuts-district-events.md",
+      "context_files": ["DrivingMeNuts/README.md"],
+      "prompt": "Write 6 short district event vignettes for a trucking life sim: absurd but warm, NPC voice, optional dog at truck stop. Each: trigger, 3 player choices, consequence one-liner. Markdown."
+    },
+    {
+      "id": "meniscus-tradition-microcopy",
+      "title": "MeniscusMaximus — tradition zone microcopy",
+      "out": "meniscus-tradition-microcopy.md",
+      "prompt": "Write 12 ultra-short Witness lines (under 12 words each) for MeniscusMaximus tradition zones — observational not preachy. One line per tradition theme: lantern, table, door, hearth, lamp, market, self-support, unpaid hand, unbuilt hall, still water, lighthouse, masks. Plus Steady Ground card copy (2 sentences max)."
+    },
+    {
+      "id": "omnitender-absurd-tender",
+      "title": "OmniTender — absurd bid failure lines",
+      "out": "omnitender-absurd-bids.md",
+      "prompt": "Write 20 humorous tender/bid failure lines in the tone 'every freaking time' for a restaurant tender app — bureaucratic absurdity, never mean to staff. Each line max 15 words. Group by failure type: typo, deadline, attachment, format, signature."
+    }
+  ]
+}
