@@ -1,47 +1,99 @@
-# Handoff — session wrap (2026-06-13)
+# Handoff — CodeMonkeys mobile + feedback (2026-06-13)
 
-## Pushed to GitHub
+**Owner intent:** Phone-usable CodeMonkeys console; anonymous feedback (especially login issues); no floating pills cluttering login on CM or MM.
 
-| Repo | Branch | Commit | What shipped |
-|------|--------|--------|--------------|
-| **CodeMonkeys** | `work/frontend-polish` | `b152635` | Vertex GCP provider + burn scripts, Cursor Desk, Code Gremlins, auto `data/master.key` encryption, workbench/fleet-store UI, broken `.claude` submodule cleanup |
-| **MeniscusMaximus** | `work/cairn-guided-experiences` | `be0c10d` | Cursor Desk (MM-only, brand-safe) in console |
-| **PixelSports** | `work/store-launch-v0.1` | `fdeffd6` | Freak Franchise GDDs, fleet demos (R-06/R-07), Vertex-generated docs |
-| **CodeMonkeys** (`~/` repo origin) | `master` | `9055162` | Portable kit at `projects/shared/vertex-credits/` + this handoff file |
+---
 
-PR links (create if needed):
-- https://github.com/subtiliorars-sys/CodeMonkeys/compare/main...work/frontend-polish
-- https://github.com/subtiliorars-sys/MeniscusMaximus/compare/master...work/cairn-guided-experiences
-- https://github.com/subtiliorars-sys/PixelSports/compare/main...work/store-launch-v0.1
+## CodeMonkeys (`projects/claude/CodeMonkeys/`)
 
-## After pull on any machine
+**Branch:** `work/frontend-polish` (local, uncommitted)
 
-1. **CodeMonkeys:** restart server once → `data/master.key` auto-created, keys encrypt at rest, yellow banner gone.
-2. **Vertex credits:** `bash projects/shared/vertex-credits/setup.sh` (or `.ps1` on Windows).
-3. **GCP burn:** `python3 projects/claude/CodeMonkeys/scripts/vertex_burn.py` (uses ADC, not Cursor billing).
+### Shipped (local)
 
-## Local stashes (not pushed — pop when ready)
+| Feature | Files |
+|---------|--------|
+| Mobile drawer console (≤767px) | `static/forge/index.html`, `app.js`, `workbench.js` |
+| PWA install | `manifest.webmanifest`, `/sw.js` route, `icons/icon-{192,512}.png` |
+| Push on approval gates | `push.js`, `server.py` `/api/push/*`, `pywebpush==2.0.1` |
+| Mobile lite `/m` | `server.py` route, `cm-lite` CSS in `index.html` |
+| Anonymous feedback | `feedback.js` + `server.py` `optional_verify_user` |
+| **No 💬 on login/setup** | `feedback.js` CSS + `app.js` `syncWithAuthScreen()` |
 
-- `CodeMonkeys` `stash@{0}`: fleet-automation WIP, agent-governance edits, test_session_resume
-- `MeniscusMaximus` `stash@{0}`: Cairn/dog UI WIP across home.js, MENISCUS_USAGE, etc.
-- `PixelSports` `stash@{0}`: store-launch volleyball/broadside WIP not in franchise commit
+### Deploy CM
 
-## Still local / not committed
+```bash
+cd ~/projects/claude/CodeMonkeys
+git add requirements.txt server.py static/forge/   # stage only CM paths
+# commit + push work/frontend-polish → Fly deploy per your CM pipeline
+```
 
-- CodeMonkeys `tools/fleet-automation/` (full tree — in stash)
-- MeniscusMaximus: large GDD + fleet-demo batch (Broadside, Pool hub, etc.) — separate from Cursor Desk
-- PixelSports: volleyball pixel-art docs, release zips, other store-launch edits — in stash
-- Fly secrets / `.env` / `data/` volumes — never in git
+### Verify CM (after deploy)
 
-## Deploy gates (owner)
+- Phone ≤767px: ☰ drawer, chat composer, `/m` lite route
+- Settings → 🔔 Approval push (HTTPS required)
+- Login screen: **no** floating 💬; after login 💬 returns
+- Login → anonymous feedback works from main console (not from login — by design)
 
-- **MeniscusMaximus:** merge `work/cairn-guided-experiences` → `master` before Fly deploy (master auto-deploys).
-- **CodeMonkeys:** merge `work/frontend-polish` → `main` when ready for prod.
-- **PixelSports:** franchise demos live on branch; merge when fleet Pages workflow should pick them up.
+---
 
-## Session features recap
+## Meniscus Maximus (`projects/claude/MeniscusMaximus/`)
 
-- **Cursor Desk:** browser panel, screenshot→composer, settings hub (CM + MM).
-- **Code Gremlins:** deployable roast/red-team agent + UI in CM Settings.
-- **Vertex:** `vertex-gemini` provider + portable credits kit; Cursor chat still uses Cursor credits.
-- **Encryption:** automatic at-rest API key encryption via `data/master.key`.
+**Branch:** `work/cairn-guided-experiences` (local, uncommitted; **includes other WIP** — dog assets, home, etc.)
+
+### Shipped (this thread — feedback/mobile overlap)
+
+| Feature | Files |
+|---------|--------|
+| Anonymous `/api/feedback` (no token) | `server.py`, `test_crisis_surfaces.py`, `test_feedback_screenshot.py` |
+| Steady Ground vs 💬 overlap fix | `static/console/feedback.js`, `index.html` mobile CSS |
+| **No 💬 on login/recovery** | `static/console/app.js`, `feedback.js` CSS `:has()` |
+| Cairn parity (anonymous submit) | `static/cairn/feedback.js`, `field-report.js` |
+
+**Steady Ground** (`🫂` pill, bottom-left on mobile) **stays on login** — crisis exit is intentional.
+
+### Deploy MM
+
+```bash
+cd ~/projects/claude/MeniscusMaximus
+# Prefer a focused commit: server.py + static/console/feedback.js field-report.js index.html app.js + tests
+# Branch has unrelated changes — do NOT git add -A from home root
+fly deploy   # master → Fly (per repo rules)
+```
+
+### Verify MM (after deploy)
+
+- Login: only **Steady Ground** (bottom-left on phone), no 💬
+- After sign-in: 💬 bottom-right; modal hides both pills while open
+- Anonymous report from Settings → Send Feedback or 💬 (no “Please sign in first”)
+- `python3 test_crisis_surfaces.py` && `python3 test_feedback_screenshot.py` (pass locally)
+
+---
+
+## Cross-app confusion (for next agent)
+
+- User voice-to-text **“Study Ground”** = **Steady Ground** (MM crisis button only)
+- CodeMonkeys has **no** Steady Ground — only 💬 feedback FAB
+- Earlier CM feedback fixes were correct repo; MM needed separate pass
+
+---
+
+## Not done / optional next
+
+- CM: commit + Fly deploy not run this session
+- MM: commit + deploy not run; branch mixed with dog/companion WIP
+- PWA “Add to Home Screen” smoke test on real Android
+- Push notifications end-to-end test on HTTPS Fly URL
+- Login-screen “Report a problem” link (if feedback off login is too hidden)
+
+---
+
+## Key paths
+
+| What | Path |
+|------|------|
+| CM mobile CSS/JS | `CodeMonkeys/static/forge/{index.html,app.js,feedback.js,push.js,sw.js}` |
+| CM push API | `CodeMonkeys/server.py` (~`/api/push/*`, `request_approval`) |
+| MM console feedback | `MeniscusMaximus/static/console/{feedback.js,field-report.js,app.js}` |
+| MM Steady Ground markup | `MeniscusMaximus/static/console/index.html` (~L317) |
+
+**Transcript:** `.cursor/projects/home-subtiliorars/agent-transcripts/0d0a50e5-adbb-420d-8a70-24368a482995/`
