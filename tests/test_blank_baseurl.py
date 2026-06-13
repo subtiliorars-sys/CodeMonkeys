@@ -100,13 +100,13 @@ def test_load_models_backfills_builtin_blank_baseurl(monkeypatch, tmp_path):
     cfg = server._new_cfg()
     cfg["providers"]["openrouter"]["base_url"] = ""     # the live-smoke shape
     cfg["providers"]["openrouter"]["key"] = "k"
-    server._save_json(str(models_file), cfg)
+    server._write_enc_file(str(models_file), cfg)
 
     loaded = server.load_models()
     expected = server.DEFAULT_PROVIDERS["openrouter"]["base_url"]
     assert loaded["providers"]["openrouter"]["base_url"] == expected
     # repair persisted, not just in-memory
-    reloaded = server._load_json(str(models_file), None)
+    reloaded, _ = server._read_enc_file(str(models_file), None)
     assert reloaded["providers"]["openrouter"]["base_url"] == expected
     # key untouched by the repair
     assert loaded["providers"]["openrouter"]["key"] == "k"
@@ -115,7 +115,7 @@ def test_load_models_backfills_builtin_blank_baseurl(monkeypatch, tmp_path):
 def test_load_models_leaves_anthropic_blank_baseurl_alone(monkeypatch, tmp_path):
     models_file = tmp_path / "models.json"
     monkeypatch.setattr(server, "MODELS_FILE", str(models_file))
-    server._save_json(str(models_file), server._new_cfg())
+    server._write_enc_file(str(models_file), server._new_cfg())
 
     loaded = server.load_models()
     assert loaded["providers"]["anthropic"]["base_url"] == ""
@@ -127,7 +127,7 @@ def test_load_models_custom_provider_not_backfilled(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "MODELS_FILE", str(models_file))
     cfg = server._new_cfg()
     cfg["providers"]["mycustom"] = _prov("mycustom", base_url="")
-    server._save_json(str(models_file), cfg)
+    server._write_enc_file(str(models_file), cfg)
 
     loaded = server.load_models()
     assert loaded["providers"]["mycustom"]["base_url"] == ""

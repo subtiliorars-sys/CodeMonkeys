@@ -25,5 +25,5 @@ def test_openai_base_url_vertex():
 
 
 def test_callable_vertex_when_adc_present(monkeypatch):
-    monkeypatch.setattr(server, "_vertex_credentials_ready", lambda: True)
+    monkeypatch.setattr(server, "_user_can_use_vertex", lambda username=None: True)
     assert server._callable_provider(server.DEFAULT_PROVIDERS["vertex-gemini"])

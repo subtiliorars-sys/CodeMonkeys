@@ -177,11 +177,11 @@ def test_outcome_field_carried(cap, monkeypatch):
 def _run_with_provider(monkeypatch, fake_call):
     """Drive run_session_message synchronously with a stubbed model call."""
     monkeypatch.setattr(server, "main_provider",
-                        lambda cfg: {"name": "p", "kind": "openai", "model": "m",
+                        lambda cfg, username=None: {"name": "p", "kind": "openai", "model": "m",
                                      "base_url": "http://x", "api_key": "k",
                                      "input_cost_per_m": 0, "output_cost_per_m": 0})
     monkeypatch.setattr(server, "call_model", fake_call)
-    monkeypatch.setattr(server, "_pricier_provider", lambda cfg, p: None)
+    monkeypatch.setattr(server, "_pricier_provider", lambda cfg, p, username=None: None)
 
 
 def test_run_outcome_ok_on_clean_finish(monkeypatch):

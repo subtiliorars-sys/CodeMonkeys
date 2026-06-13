@@ -290,9 +290,9 @@ def test_run_persists_running_status(monkeypatch):
         orig_persist()
 
     monkeypatch.setattr(server, "_persist_index", cap_persist)
-    monkeypatch.setattr(server, "main_provider", lambda cfg: _fake_provider())
+    monkeypatch.setattr(server, "main_provider", lambda cfg, username=None: _fake_provider())
     monkeypatch.setattr(server, "call_model", _fake_call)
-    monkeypatch.setattr(server, "_pricier_provider", lambda cfg, p: None)
+    monkeypatch.setattr(server, "_pricier_provider", lambda cfg, p, username=None: None)
 
     s = server.new_session(title="persist-run")
     server.run_session_message(s, "go")
@@ -314,9 +314,9 @@ def test_run_persists_idle_status_on_finish(monkeypatch):
         orig_persist()
 
     monkeypatch.setattr(server, "_persist_index", cap_persist)
-    monkeypatch.setattr(server, "main_provider", lambda cfg: _fake_provider())
+    monkeypatch.setattr(server, "main_provider", lambda cfg, username=None: _fake_provider())
     monkeypatch.setattr(server, "call_model", _fake_call)
-    monkeypatch.setattr(server, "_pricier_provider", lambda cfg, p: None)
+    monkeypatch.setattr(server, "_pricier_provider", lambda cfg, p, username=None: None)
 
     s = server.new_session(title="persist-idle")
     server.run_session_message(s, "go")

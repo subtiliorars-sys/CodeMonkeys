@@ -378,7 +378,7 @@ def test_debate_panel_degraded_by_cooldown_requires_unanimous(monkeypatch):
     monkeypatch.setattr(server, "load_models", lambda: {})
     one = {"name": "p", "pid": "solo", "model": "m",
            "input_cost_per_m": 0, "output_cost_per_m": 0}
-    monkeypatch.setattr(server, "_verifier_providers", lambda cfg: [one, one, one])
+    monkeypatch.setattr(server, "_verifier_providers", lambda cfg, username=None: [one, one, one])
     monkeypatch.setattr(server, "_cooldown_snapshot", lambda *a, **k: {"other": 30.0})
     seq = iter(["ALLOW: ok", "ALLOW: ok", "REFUTE: nope"])   # 1 refute
     monkeypatch.setattr(server, "call_model",
@@ -394,7 +394,7 @@ def test_debate_panel_majority_when_not_cooldown_degraded(monkeypatch):
     monkeypatch.setattr(server, "load_models", lambda: {})
     one = {"name": "p", "pid": "solo", "model": "m",
            "input_cost_per_m": 0, "output_cost_per_m": 0}
-    monkeypatch.setattr(server, "_verifier_providers", lambda cfg: [one, one, one])
+    monkeypatch.setattr(server, "_verifier_providers", lambda cfg, username=None: [one, one, one])
     monkeypatch.setattr(server, "_cooldown_snapshot", lambda *a, **k: {})  # nothing cooled
     seq = iter(["ALLOW: ok", "ALLOW: ok", "REFUTE: nope"])
     monkeypatch.setattr(server, "call_model",

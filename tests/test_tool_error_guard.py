@@ -38,9 +38,9 @@ def _make_session(mode="default"):
 
 def _run(session, monkeypatch, call_model_fn):
     """Drive agent_loop synchronously with a stubbed provider."""
-    monkeypatch.setattr(server, "main_provider", lambda cfg: ZERO_COST_PROVIDER)
+    monkeypatch.setattr(server, "main_provider", lambda cfg, username=None: ZERO_COST_PROVIDER)
     monkeypatch.setattr(server, "call_model", call_model_fn)
-    monkeypatch.setattr(server, "_pricier_provider", lambda cfg, p: None)
+    monkeypatch.setattr(server, "_pricier_provider", lambda cfg, p, username=None: None)
     server.run_session_message(session, "go")
 
 

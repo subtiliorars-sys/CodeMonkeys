@@ -71,9 +71,9 @@ def _run(session, monkeypatch, call_model_fn=None):
     if call_model_fn is None:
         call_model_fn = _fake_call_model()
     monkeypatch.setattr(server, "main_provider",
-                        lambda cfg: ZERO_COST_PROVIDER)
+                        lambda cfg, username=None: ZERO_COST_PROVIDER)
     monkeypatch.setattr(server, "call_model", call_model_fn)
-    monkeypatch.setattr(server, "_pricier_provider", lambda cfg, p: None)
+    monkeypatch.setattr(server, "_pricier_provider", lambda cfg, p, username=None: None)
     server.run_session_message(session, "hi")
 
 
@@ -384,7 +384,7 @@ def test_debate_verify_spend_accrues_to_daily(monkeypatch):
     monkeypatch.setattr(server, "load_models", lambda: {})
     prov = {"name": "p", "model": "m",
             "input_cost_per_m": 1000.0, "output_cost_per_m": 1000.0}
-    monkeypatch.setattr(server, "_verifier_providers", lambda cfg: [prov, prov, prov])
+    monkeypatch.setattr(server, "_verifier_providers", lambda cfg, username=None: [prov, prov, prov])
     monkeypatch.setattr(server, "call_model",
                         lambda *a, **k: {"text": "ALLOW: ok",
                                          "in_tokens": 1000, "out_tokens": 1000})

@@ -320,11 +320,25 @@ const AgentsHub = {
       + `</div></div>`;
   },
 
+  _renderHooks() {
+    return `<div class="ah-rules">`
+      + `<p class="text-slate-400 text-xs mb-3">Cursor-style hooks fire on session events (preToolUse, subagentStart, etc.). CodeMonkeys corps hooks live in git-guards; IDE hooks are a separate Cursor Desktop feature.</p>`
+      + `<div class="ah-rule-cards">`
+      + `<div class="ah-rule-card"><strong>Secret scan</strong><span>Pre-commit — blocks credentials in commits</span></div>`
+      + `<div class="ah-rule-card"><strong>Brand lint</strong><span>Pre-push on public marketing paths</span></div>`
+      + `<div class="ah-rule-card"><strong>Approval gate</strong><span>Push/deploy/destructive bash pauses in UI</span></div>`
+      + `<div class="ah-rule-card"><strong>Debate-verify</strong><span>Auto-mode risky bash → 3-lens panel</span></div>`
+      + `</div>`
+      + `<p class="text-slate-600 text-[.65rem] mt-3">CM-UI-W3 will surface editable hook config here when wired to a server endpoint.</p>`
+      + `</div>`;
+  },
+
   _renderMain() {
     switch (this.tab) {
       case "automations": return this._renderAutomations();
       case "personas": return this._renderPersonas();
       case "rules": return this._renderRules();
+      case "hooks": return this._renderHooks();
       default: return this._renderSessionDetail();
     }
   },
@@ -418,6 +432,7 @@ const AgentsHub = {
       + `<button type="button" class="ah-tab owner-only" data-tab="automations">Automations</button>`
       + `<button type="button" class="ah-tab owner-only" data-tab="personas">Personas</button>`
       + `<button type="button" class="ah-tab" data-tab="rules">Rules</button>`
+      + `<button type="button" class="ah-tab owner-only" data-tab="hooks">Hooks</button>`
       + `</nav>`
       + `<div id="ah-main" class="flex-1 overflow-y-auto p-4 text-sm"></div>`
       + `<p id="ah-msg" class="ah-msg px-4 pb-2 text-[.65rem] min-h-[1rem]"></p>`
