@@ -1,0 +1,106 @@
+{
+  "publisher": "JimmyTheHat",
+  "itch_user": "subtiliorars",
+  "itch_profile": "https://subtiliorars.itch.io",
+  "kofi": "https://ko-fi.com/subtiliorars",
+  "buymeacoffee": "https://buymeacoffee.com/subtilior.ars",
+  "paypal": "https://paypal.me/DanielRead413",
+  "pwyw_suggested_usd": 3,
+  "games": [
+    {
+      "id": "pixelsports-hub",
+      "title": "PixelSports Hub",
+      "status": "live",
+      "play": "https://subtiliorars.itch.io/jimmythehat-pixelsports",
+      "itch": "https://subtiliorars.itch.io/jimmythehat-pixelsports",
+      "pwyw": true,
+      "screenshot": null,
+      "paste_ready": "projects/claude/PixelSports/docs/ITCH_PASTE_READY.md"
+    },
+    {
+      "id": "yes-man",
+      "title": "Yes Man",
+      "status": "live",
+      "play": "https://subtiliorars.itch.io/jimmythehat-yes-man",
+      "itch": "https://subtiliorars.itch.io/jimmythehat-yes-man",
+      "pwyw": true,
+      "paste_ready": "projects/claude/yes-man/docs/ITCH_PASTE_READY.md"
+    },
+    {
+      "id": "no-complete-sentence",
+      "title": "No Is a Complete Sentence",
+      "status": "live",
+      "play": "https://subtiliorars.itch.io/jimmythehat-no-complete-sentence",
+      "itch": "https://subtiliorars.itch.io/jimmythehat-no-complete-sentence",
+      "pwyw": true,
+      "paste_ready": "projects/claude/yes-man/docs/ITCH_PASTE_READY_NO.md"
+    },
+    {
+      "id": "tradegame",
+      "title": "TradeGame",
+      "status": "live",
+      "play": "https://subtiliorars.itch.io/tradegame-trading-simulator",
+      "itch": "https://subtiliorars.itch.io/tradegame-trading-simulator",
+      "pwyw": true,
+      "paste_ready": "projects/claude/TradeGame/docs/assets/ITCH_IO_PAGE.md"
+    },
+    {
+      "id": "driving-me-nuts",
+      "title": "Driving Me Nuts",
+      "status": "hub_embed",
+      "play": "https://subtiliorars.itch.io/jimmythehat-pixelsports/driving-me-nuts/",
+      "itch": "https://subtiliorars.itch.io/jimmythehat-driving-me-nuts",
+      "itch_needs_create": true,
+      "pwyw": true,
+      "paste_ready": "projects/claude/DrivingMeNuts/docs/ITCH_PASTE_READY.md"
+    },
+    {
+      "id": "broadside",
+      "title": "Broadside",
+      "status": "needs_itch_page",
+      "play_local": "npm run broadside:serve",
+      "itch": "https://subtiliorars.itch.io/jimmythehat-broadside",
+      "itch_needs_create": true,
+      "zip": "projects/claude/PixelSports/release/broadside-browser-v0.1.0.zip",
+      "pwyw": true,
+      "paste_ready": "projects/claude/PixelSports/docs/ITCH_PASTE_READY_BROADSIDE.md"
+    },
+    {
+      "id": "sortie",
+      "title": "Sortie",
+      "status": "needs_itch_page",
+      "play_local": "npm run sortie:serve",
+      "itch": "https://subtiliorars.itch.io/jimmythehat-sortie",
+      "itch_needs_create": true,
+      "zip": "projects/claude/PixelSports/release/sortie-browser-v0.1.0.zip",
+      "pwyw": true,
+      "paste_ready": "projects/claude/PixelSports/docs/ITCH_PASTE_READY_SORTIE.md"
+    }
+  ],
+  "tools_and_sites": [
+    {
+      "id": "codemonkeys",
+      "title": "CodeMonkeys",
+      "status": "hosted",
+      "tagline": "Your agents. Any model. Any browser.",
+      "donate_only": true,
+      "paste_ready": "projects/claude/CodeMonkeys/docs/ITCH_PASTE_READY.md"
+    },
+    {
+      "id": "cairn",
+      "title": "Cairn",
+      "status": "preview",
+      "tagline": "An adventure that leads somewhere real.",
+      "donate_only": true,
+      "url": "https://trycairn.org"
+    },
+    {
+      "id": "ilerioluwa",
+      "title": "Ilerioluwa GK Training",
+      "status": "client_site",
+      "tagline": "Specialist goalkeeper coaching — Ibadan",
+      "donate_only": false,
+      "note": "Simon client — no fleet donate funnel without approval"
+    }
+  ]
+}

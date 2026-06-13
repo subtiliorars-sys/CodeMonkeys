@@ -1,0 +1,216 @@
+{
+  "games": [
+    {
+      "id": "jimmythehat-pixelsports",
+      "title": "PixelSports — Free Browser Hub",
+      "short_description": "Free browser hub — volleyball, dorodango, bocce, curling, golf. Procedural pixel art. JimmyTheHat.",
+      "description": "PIXELSPORTS · FREE BROWSER HUB · v0.2 SLATE · JIMMYTHEHAT\n\nNo paywall. Play everything in your browser — one hub links to every game.\nProcedural pixel art built in code. Fleet links to Yes Man, Driving Me Nuts, and more.",
+      "tags": ["sports", "pixel-art", "volleyball", "browser", "procedural", "indie", "free"],
+      "platforms": {
+        "itch": {
+          "slug": "jimmythehat-pixelsports",
+          "price": 0,
+          "pwyw_suggested_usd": 3,
+          "kind": "html",
+          "play_in_browser": true,
+          "store_assets": {
+            "cover": "../PixelSports/release/store-assets/cover-hub-630x500.png",
+            "screenshots": [
+              "../PixelSports/release/store-assets/screenshot-01-hub.png",
+              "../PixelSports/release/store-assets/screenshot-01-title.png",
+              "../PixelSports/release/store-assets/screenshot-02-rally.png"
+            ]
+          }
+        },
+        "steam": { "app_id": null, "coming_soon": true },
+        "gamejolt": { "slug": null, "enabled": false }
+      }
+    },
+    {
+      "id": "jimmythehat-yes-man",
+      "title": "Yes Man",
+      "short_description": "The world's most enthusiastic idle clicker. Say yes. Earn Cheer. Prestige for a Fresh Outlook. Free in browser.",
+      "description": "YES MAN · EARLY ACCESS · FREE IN BROWSER\n\nClick YES. Earn Cheer. Buy generators. Answer prompt cards. Prestige when ready.",
+      "tags": ["idle", "clicker", "casual", "comedy", "browser", "incremental", "cozy"],
+      "platforms": {
+        "itch": {
+          "slug": "jimmythehat-yes-man",
+          "price": 0,
+          "kind": "html",
+          "play_in_browser": true,
+          "store_assets": {
+            "cover": "../yes-man/release/store-assets/cover-630x500.png",
+            "screenshots": [
+              "../yes-man/release/store-assets/screenshot-01-title.png"
+            ]
+          }
+        },
+        "steam": { "app_id": null, "coming_soon": true },
+        "gamejolt": { "slug": null, "enabled": false }
+      }
+    },
+    {
+      "id": "jimmythehat-no-complete-sentence",
+      "title": "No Is a Complete Sentence",
+      "short_description": "The anti–Yes Man. Practice boundaries. Earn Clarity. Free cozy browser game by JimmyTheHat.",
+      "description": "NO IS A COMPLETE SENTENCE · FREE IN BROWSER\n\nReskin of the Yes Man engine — say no, set boundaries, earn Clarity.",
+      "tags": ["idle", "casual", "comedy", "browser", "cozy", "free"],
+      "platforms": {
+        "itch": {
+          "slug": "jimmythehat-no-complete-sentence",
+          "price": 0,
+          "kind": "html",
+          "play_in_browser": true,
+          "store_assets": {
+            "cover": "../yes-man/release/store-assets-no/cover-630x500.png"
+          }
+        },
+        "steam": { "app_id": null, "coming_soon": true },
+        "gamejolt": { "slug": null, "enabled": false }
+      }
+    },
+    {
+      "id": "tradegame-trading-simulator",
+      "title": "TradeGame — Trading Simulator",
+      "short_description": "Paper trading simulator with onboarding tutorial. Learn markets in the browser.",
+      "description": "TRADEGAME · TRADING SIMULATOR · v0.1 WEB BUILD\n\nSimulated trading with first-session onboarding tutorial.",
+      "tags": ["simulation", "education", "browser", "trading", "free"],
+      "platforms": {
+        "itch": {
+          "slug": "tradegame-trading-simulator",
+          "price": 0,
+          "kind": "html",
+          "play_in_browser": true,
+          "store_assets": {
+            "cover": "../TradeGame/release/store-assets/cover-630x500.png"
+          }
+        },
+        "steam": { "app_id": null, "coming_soon": true },
+        "gamejolt": { "slug": null, "enabled": false }
+      }
+    },
+    {
+      "id": "jimmythehat-driving-me-nuts",
+      "title": "Driving Me Nuts",
+      "short_description": "Run a roasted-peanut food truck. Roast, price, survive the legume lecture. Cozy pixel RPG. Free in browser.",
+      "description": "DRIVING ME NUTS · EARLY ACCESS · FREE IN BROWSER\n\nCozy pixel food-truck RPG + honest small-business mechanics.",
+      "tags": ["cozy", "pixel-art", "idle", "simulation", "business", "comedy", "browser"],
+      "platforms": {
+        "itch": {
+          "slug": "jimmythehat-driving-me-nuts",
+          "price": 0,
+          "kind": "html",
+          "play_in_browser": true,
+          "store_assets": {
+            "cover": "../DrivingMeNuts/release/store-assets/cover-630x500.png"
+          }
+        },
+        "steam": { "app_id": null, "coming_soon": true },
+        "gamejolt": { "slug": null, "enabled": false }
+      }
+    },
+    {
+      "id": "jimmythehat-broadside",
+      "title": "◈ Broadside — Wireframe Naval Ops",
+      "short_description": "Pirates!-inspired space broadside sortie. Free browser demo. Pet Meniscus Maximus.",
+      "description": "BROADSIDE · wireframe sector map · tactical broadside combat · career rivals · Meniscus Maximus side quest.",
+      "tags": ["strategy", "naval", "browser", "indie", "free", "demo"],
+      "platforms": {
+        "itch": {
+          "slug": "jimmythehat-broadside",
+          "price": 0,
+          "kind": "html",
+          "play_in_browser": true
+        },
+        "steam": { "app_id": null, "coming_soon": true },
+        "gamejolt": { "slug": null, "enabled": false }
+      }
+    },
+    {
+      "id": "jimmythehat-get-to-it-man",
+      "title": "Get To It Man",
+      "short_description": "Motivational satire — slovenly noob to giga chad. Day loop. GET TO IT.",
+      "description": "GET TO IT MAN · couch dopamine vs momentum · phone pings · rent · shame · Chad XP.",
+      "tags": ["simulation", "comedy", "browser", "indie", "free", "demo"],
+      "platforms": {
+        "itch": {
+          "slug": "jimmythehat-get-to-it-man",
+          "price": 0,
+          "kind": "html",
+          "play_in_browser": true
+        },
+        "steam": { "app_id": null, "coming_soon": true },
+        "gamejolt": { "slug": null, "enabled": false }
+      }
+    },
+    {
+      "id": "jimmythehat-on-the-fly",
+      "title": "On the Fly",
+      "short_description": "Corncob Lane flight + housefly kitchen tour + improv trivia. Three modes.",
+      "description": "ON THE FLY · flat-shade suburb flight · insect room scale · trivia on the fly.",
+      "tags": ["simulation", "arcade", "browser", "indie", "free", "demo"],
+      "platforms": {
+        "itch": {
+          "slug": "jimmythehat-on-the-fly",
+          "price": 0,
+          "kind": "html",
+          "play_in_browser": true
+        },
+        "steam": { "app_id": null, "coming_soon": true },
+        "gamejolt": { "slug": null, "enabled": false }
+      }
+    },
+    {
+      "id": "jimmythehat-run-away",
+      "title": "Run Away!",
+      "short_description": "Holy Grail retreat sim. Caerbannog rabbit chase. RUN AWAY button.",
+      "description": "RUN AWAY · parody homage · retreat from the killer rabbit · distance score.",
+      "tags": ["action", "comedy", "browser", "indie", "free", "demo"],
+      "platforms": {
+        "itch": {
+          "slug": "jimmythehat-run-away",
+          "price": 0,
+          "kind": "html",
+          "play_in_browser": true
+        },
+        "steam": { "app_id": null, "coming_soon": true },
+        "gamejolt": { "slug": null, "enabled": false }
+      }
+    },
+    {
+      "id": "jimmythehat-pool-ridiculousness",
+      "title": "Pool of Ridiculousness",
+      "short_description": "Fight encroaching seriousness with deployed absurdity. Meta strategy + fleet registry.",
+      "description": "POOL OF RIDICULOUSNESS · the pool is pooling · deploy Ridiculousness Units · hold the Pitch Meeting.",
+      "tags": ["strategy", "comedy", "browser", "indie", "free", "demo"],
+      "platforms": {
+        "itch": {
+          "slug": "jimmythehat-pool-ridiculousness",
+          "price": 0,
+          "kind": "html",
+          "play_in_browser": true
+        },
+        "steam": { "app_id": null, "coming_soon": true },
+        "gamejolt": { "slug": null, "enabled": false }
+      }
+    },
+    {
+      "id": "jimmythehat-sortie",
+      "title": "Sortie — Pixel Dogfight",
+      "short_description": "Arcade pixel dogfight sortie. Free browser demo. Fleet playtest.",
+      "description": "SORTIE · FREE BROWSER DEMO · JIMMYTHEHAT\n\nLock cone · wingman callouts · debrief stats.",
+      "tags": ["action", "flight", "shooter", "browser", "indie", "free", "demo"],
+      "platforms": {
+        "itch": {
+          "slug": "jimmythehat-sortie",
+          "price": 0,
+          "pwyw_suggested_usd": 3,
+          "kind": "html",
+          "play_in_browser": true
+        },
+        "steam": { "app_id": null, "coming_soon": true },
+        "gamejolt": { "slug": null, "enabled": false }
+      }
+    }
+  ]
+}
