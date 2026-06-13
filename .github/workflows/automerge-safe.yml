@@ -1,0 +1,45 @@
+name: automerge-safe
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const prs = context.payload.workflow_run.pull_requests || [];
+            if (!prs.length) return;
+            const prNumber = prs[0].number;
+            const { owner, repo } = context.repo;
+            const { data: pr } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+            if (pr.draft || pr.merged) return;
+            const branch = pr.head.ref;
+            const labels = (await github.rest.issues.listLabelsOnIssue({ owner, repo, issue_number: prNumber })).data.map(l => l.name);
+            if (!branch.startsWith("automation/") && !labels.includes("automerge-safe")) return;
+            const SENSITIVE = [
+              "SECURITY.md", "GOVERNANCE.md", "fly.toml", "Dockerfile",
+              "server.py", ".env", "docs/RECOVERY.md",
+            ];
+            const files = await github.paginate(github.rest.pulls.listFiles, { owner, repo, pull_number: prNumber, per_page: 100 });
+            for (const f of files) {
+              if (f.filename === "server.py") {
+                console.log("Skip: server.py needs owner review");
+                return;
+              }
+              for (const s of SENSITIVE) {
+                if (f.filename === s || f.filename.startsWith(s)) return;
+              }
+            }
+            await github.rest.pulls.merge({ owner, repo, pull_number: prNumber, merge_method: "squash" });
