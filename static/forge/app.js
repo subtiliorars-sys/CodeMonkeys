@@ -46,21 +46,44 @@ function hideAll() {
 function showLogin() {
   hideAll();
   $("view-login").classList.remove("hidden");
+  FeedbackFab.syncWithAuthScreen?.();
   api("/api/registration-status").then(d => {
     if (d.open) $("lg-toggle").classList.remove("hidden");
     else $("lg-toggle").classList.add("hidden");
   }).catch(() => {});
 }
-function showSetup() { hideAll(); $("view-setup").classList.remove("hidden"); }
+function showSetup() {
+  hideAll();
+  $("view-setup").classList.remove("hidden");
+  FeedbackFab.syncWithAuthScreen?.();
+}
 function showMain() {
   hideAll(); $("view-main").classList.remove("hidden");
   $("who").textContent = state.username;
   // Owner-only controls hidden for invited Members
   document.querySelectorAll(".owner-only").forEach((el) =>
     el.classList.toggle("hidden", state.role !== "Owner"));
-  refreshSessions(); refreshSpecs(); refreshRepos(); listPasskeys();
+  refreshSessions(); refreshSpecs(); refreshRepos(); listPasskeys(); loadVertexMemberPanel();
   if (state.role === "Owner") checkEncryptionBanner();
   if (!state.sid) showLanding();
+  MobileDrawer.init();
+  if (typeof PushAlerts !== "undefined") PushAlerts.initAfterLogin();
+  handleDeepLink();
+  if (document.documentElement.classList.contains("cm-lite") && MobileDrawer.isMobile() && !state.sid) {
+    MobileDrawer.setOpen(true);
+  }
+  FeedbackFab.syncWithAuthScreen?.();
+}
+
+function handleDeepLink() {
+  const sid = new URLSearchParams(location.search).get("sid");
+  if (!sid || !state.token) return;
+  openSession(sid);
+  try {
+    const u = new URL(location.href);
+    u.searchParams.delete("sid");
+    history.replaceState({}, "", u.pathname + u.search);
+  } catch (_) {}
 }
 
 // Encryption-status banner: only when saved keys couldn't be decrypted (wrong/lost master key).
@@ -292,10 +315,30 @@ $("inv-create").onclick = async () => {
 
 async function loadUsers() {
   const d = await api("/api/users");
+  const vertexLabel = (u) => {
+    const { vertex_access: mode, vertex_ready: ready, vertex_provisioned: prov } = u;
+    if (mode === "assigned") return ready ? "Vertex · auto" : "Vertex · assigned (server not ready)";
+    if (mode === "byo") {
+      if (ready && prov) return "Vertex · provisioned";
+      if (ready) return "Vertex · own key";
+      return prov ? "Vertex · reprovision?" : "Vertex · paste SA JSON";
+    }
+    return "No Vertex";
+  };
   $("user-rows").innerHTML = d.users.map((u) => `
-    <div class="flex items-center gap-2 border-b border-slate-800/60 py-1">
-      <span class="flex-1 ${u.role === "Owner" ? "text-[var(--gold-bright)]" : "text-slate-300"}">${esc(u.username)}
+    <div class="flex items-center gap-2 border-b border-slate-800/60 py-1 flex-wrap">
+      <span class="flex-1 min-w-[8rem] ${u.role === "Owner" ? "text-[var(--gold-bright)]" : "text-slate-300"}">${esc(u.username)}
         <span class="text-slate-600">${esc(u.role)}${u.pending ? " · pending first login" : (u.has_mfa ? " · active" : "")}</span></span>
+      ${u.role === "Owner"
+        ? `<span class="text-green-400/80 text-[.65rem]" title="Owner always uses server Vertex when configured">Vertex · owner</span>`
+        : `<select data-u="${esc(u.username)}" class="user-vertex input rounded px-1 py-0.5 text-[.65rem]" title="Grant GCP Vertex credits access">
+            <option value="off" ${u.vertex_access === "off" ? "selected" : ""}>No Vertex</option>
+            <option value="assigned" ${u.vertex_access === "assigned" ? "selected" : ""}>Vertex · automatic</option>
+            <option value="byo" ${u.vertex_access === "byo" ? "selected" : ""}>Vertex · paste key</option>
+          </select>
+          <button data-u="${esc(u.username)}" class="user-vertex-provision gold-btn rounded px-1.5 py-0.5 text-[.65rem]"
+            title="Create GCP service account + Vertex role + JSON key">⚡ key</button>
+          <span class="user-vertex-status text-[.6rem] text-slate-500">${esc(vertexLabel(u))}</span>`}
       ${u.role === "Owner" ? "" : `<button data-u="${esc(u.username)}" class="user-del text-red-500/70 hover:text-red-400">remove</button>`}
     </div>`).join("");
   document.querySelectorAll(".user-del").forEach((b) => (b.onclick = async () => {
@@ -303,7 +346,105 @@ async function loadUsers() {
       await api(`/api/users/${encodeURIComponent(b.dataset.u)}`, "DELETE"); loadUsers();
     }
   }));
+  document.querySelectorAll(".user-vertex").forEach((sel) => (sel.onchange = async () => {
+    const u = sel.dataset.u;
+    const mode = sel.value;
+    try {
+      const r = await api(`/api/users/${encodeURIComponent(u)}/vertex`, "PATCH", { mode });
+      const row = sel.closest(".flex");
+      const st = row && row.querySelector(".user-vertex-status");
+      if (st) st.textContent = vertexLabel({ ...r, vertex_provisioned: false });
+      loadUsers();
+    } catch (e) { alert(e.message); loadUsers(); }
+  }));
+  document.querySelectorAll(".user-vertex-provision").forEach((btn) => (btn.onclick = async () => {
+    const u = btn.dataset.u;
+    if (!confirm(`Create a GCP Vertex service account + key for ${u}?`)) return;
+    btn.disabled = true;
+    try {
+      const r = await api(`/api/users/${encodeURIComponent(u)}/vertex/provision`, "POST");
+      showVertexKeyModal(r);
+      loadUsers();
+    } catch (e) { alert(e.message);
+    } finally { btn.disabled = false; }
+  }));
 }
+
+function showVertexKeyModal(r) {
+  $("vk-u").textContent = r.username || "";
+  $("vk-email").textContent = r.client_email || "";
+  $("vk-json").value = r.credentials_json || "";
+  $("modal-vertex-key").classList.remove("hidden");
+}
+
+$("vertex-key-close").onclick = () => $("modal-vertex-key").classList.add("hidden");
+$("vk-done").onclick = () => $("modal-vertex-key").classList.add("hidden");
+$("vk-copy").onclick = async () => {
+  try {
+    await navigator.clipboard.writeText($("vk-json").value || "");
+    $("vk-copy").textContent = "Copied!";
+    setTimeout(() => { $("vk-copy").textContent = "Copy JSON"; }, 2000);
+  } catch (_) {
+    $("vk-json").select();
+    document.execCommand("copy");
+  }
+};
+
+/* ---------------- member Vertex GCP credits ---------------- */
+
+async function loadVertexMemberPanel() {
+  const panel = $("vertex-member-panel");
+  const msg = $("vertex-member-msg");
+  const paste = $("vertex-sa-paste");
+  const actions = $("vertex-member-actions");
+  if (!panel || !msg) return;
+  try {
+    const d = await api("/api/me/vertex");
+    if (d.mode === "off") {
+      panel.classList.add("hidden");
+      return;
+    }
+    panel.classList.remove("hidden");
+    if (d.mode === "assigned") {
+      msg.textContent = d.ready
+        ? `Vertex enabled on project ${d.project} — no API key needed. Sessions use your owner's GCP credits automatically.`
+        : "Vertex access granted, but server credentials aren't ready yet — ask the owner to configure Vertex on the server.";
+      paste.classList.add("hidden");
+      actions.classList.add("hidden");
+      return;
+    }
+    msg.textContent = d.ready
+      ? `Vertex is active on ${d.project} — sessions bill the owner's GCP credits. No paste needed if the owner used ⚡ key.`
+      : `Paste the service account JSON your PA gave you (project ${d.project}), or ask the owner to click ⚡ key in Invite developers.`;
+    if (d.ready) {
+      paste.classList.add("hidden");
+      actions.classList.add("hidden");
+    } else {
+      paste.classList.remove("hidden");
+      actions.classList.remove("hidden");
+    }
+  } catch (_) {
+    panel.classList.add("hidden");
+  }
+}
+
+$("btn-vertex-save")?.addEventListener("click", async () => {
+  const raw = ($("vertex-sa-paste")?.value || "").trim();
+  if (!raw) { alert("Paste the service account JSON first."); return; }
+  try {
+    await api("/api/me/vertex/credentials", "POST", { credentials_json: raw });
+    $("vertex-sa-paste").value = "";
+    await loadVertexMemberPanel();
+  } catch (e) { alert(e.message); }
+});
+
+$("btn-vertex-clear")?.addEventListener("click", async () => {
+  if (!confirm("Remove your saved Vertex service account?")) return;
+  try {
+    await api("/api/me/vertex/credentials", "DELETE");
+    await loadVertexMemberPanel();
+  } catch (e) { alert(e.message); }
+});
 
 /* ---------------- biometrics / passkey (WebAuthn) ---------------- */
 
@@ -543,11 +684,13 @@ function openSession(sid) {
   $("budget-alert")?.classList.add("hidden");
   $("stream").innerHTML = "";
   _clearStreamState();
+  hideProviderWait();
   hideLanding();
   refreshSessions();
   startPolling(true);
   $("btn-export-transcript")?.classList.remove("hidden");
   $("btn-copy-transcript")?.classList.remove("hidden");
+  MobileDrawer.close();
 }
 
 $("btn-export-transcript").onclick = _exportTranscript;
@@ -585,6 +728,58 @@ document.querySelectorAll(".pv-preset").forEach((b) => {
 });
 
 /* ---------------- event stream ---------------- */
+
+const PROVIDER_WAIT_JOKES = [
+  "One monkey slipped on a banana peel — the troop is lining up the next thrower…",
+  "DeepSeek went for a snack. Another monkey is warming up at the keyboard.",
+  "The first model is napping. Monkeys are passing the banana relay baton.",
+  "API hiccup! Two monkeys are arguing over who gets to press Enter next.",
+  "Rate limit detected. The monkeys are doing a quick banana-toss cooldown.",
+  "That provider ghosted us. The backup monkey is putting on their typing gloves.",
+  "Hang tight — the monkeys are juggling API keys and one of them almost dropped a banana.",
+  "Model busy. Our chief banana officer is negotiating with the next server in line.",
+  "Technical difficulties (monkey business). Switching to a fresher pair of opposable thumbs.",
+  "The previous model left the chat. A substitute monkey is sprinting from the break room.",
+];
+const PROVIDER_WAIT_BUDGET_JOKES = [
+  "Budget bell rang — the monkeys are switching to the free snack tier.",
+  "Wallet getting light. The troop is moving you to the complimentary banana lane.",
+  "Spend threshold hit. A frugal monkey is dusting off the free-tier keyboard.",
+];
+
+function _pickProviderWaitJoke(reason) {
+  const pool = reason === "budget" ? PROVIDER_WAIT_BUDGET_JOKES : PROVIDER_WAIT_JOKES;
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+function showProviderWait(reason) {
+  let el = document.getElementById("provider-wait-banner");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "provider-wait-banner";
+    el.className = "provider-wait";
+    $("stream").appendChild(el);
+  }
+  el.innerHTML =
+    `<div class="provider-wait-monkeys" aria-hidden="true">`
+    + `<span class="pw-monkey pw-monkey-left">🐒</span>`
+    + `<span class="pw-banana">🍌</span>`
+    + `<span class="pw-monkey pw-monkey-right">🐒</span>`
+    + `</div>`
+    + `<div class="provider-wait-spinner" role="status" aria-label="Working"></div>`
+    + `<p class="provider-wait-joke">${esc(_pickProviderWaitJoke(reason))}</p>`
+    + `<p class="provider-wait-sub">Finding the next model — no action needed.</p>`;
+  const stream = $("stream");
+  stream.scrollTop = stream.scrollHeight;
+}
+
+function hideProviderWait() {
+  document.getElementById("provider-wait-banner")?.remove();
+}
+
+function _isLegacyProviderRotateError(msg) {
+  return /Model call failed.*rotating to/i.test(msg || "");
+}
 
 function agentTag(e) {
   return e.agent ? `<span class="text-[var(--gold-dark)]">[${esc(e.agent)}]</span> ` : "";
@@ -674,15 +869,25 @@ function renderEvent(e) {
         div.querySelectorAll("button").forEach((x) => (x.disabled = true));
         div.style.opacity = 0.5;
       }));
+      if (typeof PushAlerts !== "undefined") PushAlerts.notifyLocal(e.command);
       break;
     case "approval_result":
       div.className = "ev-tool px-3";
       div.textContent = e.approved ? "✓ approved" : "✗ denied"; break;
     case "error":
+      if (_isLegacyProviderRotateError(e.message)) {
+        showProviderWait();
+        return null;
+      }
+      hideProviderWait();
       _clearStreamState();
       div.className = "ev-err rounded px-3 py-2";
       div.innerHTML = agentTag(e) + esc(e.message); break;
+    case "provider_wait":
+      showProviderWait(e.reason);
+      return null;
     case "done":
+      hideProviderWait();
       _clearStreamState();
       div.className = "ev-cost px-3"; div.textContent = "— done —"; break;
     default: return null;
@@ -701,10 +906,22 @@ async function poll() {
     const stream = $("stream");
     const atBottom = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 60;
     for (const e of d.events) {
+      if (e.type === "provider_wait") {
+        if (d.status === "running") showProviderWait(e.reason);
+        state.after = e.i;
+        continue;
+      }
+      if (e.type === "error" && _isLegacyProviderRotateError(e.message)) {
+        if (d.status === "running") showProviderWait();
+        state.after = e.i;
+        continue;
+      }
+      if (e.type !== "text_delta") hideProviderWait();
       const el = renderEvent(e);
       if (el) stream.appendChild(el);
       state.after = e.i;
     }
+    if (d.status === "idle") hideProviderWait();
     if (d.events.length && atBottom) stream.scrollTop = stream.scrollHeight;
     state.status = d.status;
     $("hdr-dot").className = "dot " + d.status;
@@ -851,7 +1068,7 @@ $("btn-settings").onclick = (e) => {
 // the passkey button keeps it open so its inline status message stays visible.
 $("settings-menu").addEventListener("click", (e) => {
   const t = e.target.closest("a, button");
-  if (t && t.id !== "btn-passkey") setSettingsOpen(false);
+  if (t && t.id !== "btn-passkey" && t.id !== "btn-vertex-save" && t.id !== "btn-vertex-clear") setSettingsOpen(false);
 });
 // Click outside the settings area closes it.
 document.addEventListener("click", (e) => {
@@ -859,6 +1076,116 @@ document.addEventListener("click", (e) => {
   if (!e.target.closest("#btn-settings") && !e.target.closest("#settings-menu"))
     setSettingsOpen(false);
 });
+
+/* ---------------- mobile drawer ---------------- */
+
+const MobileDrawer = {
+  _ready: false,
+  MOBILE_MAX: 767,
+  isMobile() { return window.matchMedia(`(max-width: ${this.MOBILE_MAX}px)`).matches; },
+  init() {
+    if (this._ready) return;
+    const btn = $("btn-mobile-menu");
+    const overlay = $("sidebar-overlay");
+    const sidebar = $("sidebar");
+    if (!btn || !overlay || !sidebar) return;
+    this._ready = true;
+    btn.onclick = () => this.setOpen(!sidebar.classList.contains("drawer-open"));
+    overlay.onclick = () => this.close();
+    sidebar.addEventListener("click", (e) => {
+      if (!this.isMobile()) return;
+      if (e.target.closest(".session-item, #btn-new-session, a[href]")) this.close();
+    });
+    window.addEventListener("resize", () => { if (!this.isMobile()) this.close(); });
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && sidebar.classList.contains("drawer-open")) this.close();
+    });
+  },
+  setOpen(open) {
+    const sidebar = $("sidebar");
+    const overlay = $("sidebar-overlay");
+    const btn = $("btn-mobile-menu");
+    if (!sidebar || !overlay) return;
+    if (open && !this.isMobile()) return;
+    sidebar.classList.toggle("drawer-open", open);
+    overlay.classList.toggle("visible", open);
+    overlay.classList.toggle("hidden", !open);
+    overlay.setAttribute("aria-hidden", open ? "false" : "true");
+    if (btn) btn.setAttribute("aria-expanded", open ? "true" : "false");
+  },
+  close() { this.setOpen(false); },
+};
+window.MobileDrawer = MobileDrawer;
+
+/* ---------------- mobile keyboard (keep composer visible) ---------------- */
+
+const MobileKeyboard = {
+  _ready: false,
+  MOBILE_MAX: 767,
+  isMobile() { return window.matchMedia(`(max-width: ${this.MOBILE_MAX}px)`).matches; },
+  visibleHeight() { return window.visualViewport?.height ?? window.innerHeight; },
+  keyboardOpen() {
+    return this.isMobile() && window.innerHeight - this.visibleHeight() > 80;
+  },
+  init() {
+    if (this._ready) return;
+    this._ready = true;
+    const sync = () => this.sync();
+    window.visualViewport?.addEventListener("resize", sync);
+    window.visualViewport?.addEventListener("scroll", sync);
+    window.addEventListener("resize", sync);
+    window.addEventListener("orientationchange", () => setTimeout(sync, 150));
+    document.addEventListener("focusin", (e) => {
+      if (!this.isMobile()) return;
+      const t = e.target;
+      if (!t?.matches?.("textarea, input:not([type=hidden]):not([type=checkbox]):not([type=radio])")) return;
+      if (t.id === "msg") {
+        const stream = $("stream");
+        if (stream) stream.scrollTop = stream.scrollHeight;
+      }
+      this.ensureVisible(t);
+    });
+    sync();
+  },
+  sync() {
+    if (this.isMobile()) {
+      this.applyShellHeight(this.visibleHeight());
+    } else {
+      this.clearShellHeight();
+    }
+    document.documentElement.classList.toggle("cm-kb-active", this.keyboardOpen());
+  },
+  _shellEls() {
+    return [document.body, $("view-main"), document.querySelector("#view-main > main")].filter(Boolean);
+  },
+  applyShellHeight(h) {
+    const px = `${Math.round(h)}px`;
+    document.documentElement.style.setProperty("--cm-vvh", px);
+    for (const el of this._shellEls()) {
+      el.style.height = px;
+      el.style.maxHeight = px;
+    }
+  },
+  clearShellHeight() {
+    document.documentElement.style.removeProperty("--cm-vvh");
+    for (const el of this._shellEls()) {
+      el.style.height = "";
+      el.style.maxHeight = "";
+    }
+  },
+  ensureVisible(el) {
+    if (!el || !this.isMobile()) return;
+    requestAnimationFrame(() => {
+      el.scrollIntoView({ block: "nearest", inline: "nearest" });
+    });
+  },
+};
+window.MobileKeyboard = MobileKeyboard;
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", () => MobileKeyboard.init());
+} else {
+  MobileKeyboard.init();
+}
 
 /* ---------------- sidebar advanced toggle ---------------- */
 
@@ -2346,6 +2673,10 @@ $("btn-feedback-inbox").onclick = () => {
 $("fb-inbox-close").onclick = () => $("modal-feedback").classList.add("hidden");
 
 $("btn-fleet-store")?.addEventListener("click", () => {
+  if (window.matchMedia("(max-width: 767px)").matches) {
+    alert("Fleet Store needs a wider screen — use desktop or tablet landscape.");
+    return;
+  }
   if (typeof Workbench !== "undefined") {
     Workbench.toggleFleet(true);
     const p = document.getElementById("panel-fleet");

@@ -85,6 +85,14 @@ except ImportError:
     _google_auth_requests = None  # type: ignore[assignment]
     _GOOGLE_AUTH_AVAILABLE = False
 
+try:
+    from pywebpush import WebPushException, webpush
+    _WEBPUSH_AVAILABLE = True
+except ImportError:
+    WebPushException = Exception  # type: ignore[assignment,misc]
+    webpush = None  # type: ignore[assignment]
+    _WEBPUSH_AVAILABLE = False
+
 # ----------------------------------------------------------------- config
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -162,7 +170,14 @@ SECRET_FILE = os.path.join(DATA_DIR, "session_secret.key")
 CORPS_DIR = os.path.join(BASE_DIR, "corps", "agents")
 
 MCP_TOKENS_FILE = os.path.join(DATA_DIR, "mcp_tokens.json")
+VERTEX_USER_CREDS_DIR = os.path.join(DATA_DIR, "vertex_user")
 DAILY_SPEND_FILE = os.path.join(DATA_DIR, "daily_spend.json")
+VERTEX_ACCESS_OFF = "off"
+VERTEX_ACCESS_ASSIGNED = "assigned"   # owner's server GCP creds — no member setup
+VERTEX_ACCESS_BYO = "byo"             # member uploads service account JSON (PA handoff)
+VERTEX_SA_ROLE = "roles/aiplatform.user"
+VERTEX_SA_PREFIX = "cm-"
+_GCP_API_TIMEOUT = 30
 # OAuth state entries expire after this many seconds (short window reduces CSRF exposure)
 _OAUTH_STATE_TTL = 600
 
@@ -188,6 +203,10 @@ LOGIN_GLOBAL_MAX_FAILS = int(os.environ.get("LOGIN_GLOBAL_MAX_FAILS", "200"))
 # and in-window counters SURVIVE A RESTART (the pre-#13 in-memory tracker was
 # fail-open on restart). Lives under DATA_DIR like users.json / mcp_tokens.json.
 LOGIN_THROTTLE_FILE = os.path.join(DATA_DIR, "login_throttle.json")
+PUSH_SUBS_FILE = os.path.join(DATA_DIR, "push_subscriptions.json")
+PUSH_VAPID_FILE = os.path.join(DATA_DIR, "push_vapid.json")
+PUSH_VAPID_SUBJECT = os.environ.get("VAPID_SUBJECT", "mailto:owner@codemonkeys.local")
+_PUSH_LOCK = threading.Lock()
 # M-7 real erasure (constitution invariant, OWNER-RATIFIED Option A). When an
 # account is erased we hard-delete every per-user store, write a TOMBSTONE so the
 # id can never be reactivated/re-registered into residue, and append an
@@ -1058,6 +1077,28 @@ def verify_user(username: str = Depends(verify_token)):
     return username
 
 
+def optional_verify_user(authorization: str = Header(default="")) -> str | None:
+    """Valid session token if present; None for anonymous callers."""
+    if not authorization.startswith("Bearer "):
+        return None
+    username = parse_token(authorization[7:])
+    if not username or username not in load_users():
+        return None
+    user = load_users().get(username, {})
+    if user.get("must_reset") or user.get("role") not in ("Owner", "Member"):
+        return None
+    return username
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()[:64]
+    if request.client and request.client.host:
+        return request.client.host[:64]
+    return "unknown"
+
+
 class RegisterRequest(BaseModel):
     username: str
     pin: str
@@ -1319,7 +1360,14 @@ def login(req: LoginRequest, request: Request = None):
 @app.get("/api/me")
 def me(username: str = Depends(verify_token)):
     u = load_users()[username]
-    return {"username": username, "role": u["role"], "must_reset": bool(u.get("must_reset"))}
+    mode = _user_vertex_access_mode(username)
+    return {
+        "username": username,
+        "role": u["role"],
+        "must_reset": bool(u.get("must_reset")),
+        "vertex_access": mode,
+        "vertex_ready": _user_can_use_vertex(username),
+    }
 
 
 # ------------------------------------------------- invitations (Owner -> dev)
@@ -1359,8 +1407,134 @@ def users_list(_: str = Depends(verify_owner)):
     return {"users": sorted([
         {"username": u, "role": d.get("role"),
          "pending": bool(d.get("must_reset")),
-         "has_mfa": bool(d.get("mfa_secret")), "created": d.get("created", 0)}
+         "has_mfa": bool(d.get("mfa_secret")),
+         "vertex_access": _user_vertex_access_mode(u),
+         "vertex_ready": _user_can_use_vertex(u),
+         "vertex_sa_email": d.get("vertex_sa_email", ""),
+         "vertex_provisioned": bool(d.get("vertex_provisioned_at")),
+         "created": d.get("created", 0)}
         for u, d in load_users().items()], key=lambda x: x["created"])}
+
+
+class VertexAccessUpdate(BaseModel):
+    mode: str = VERTEX_ACCESS_OFF
+
+
+@app.patch("/api/users/{uname}/vertex")
+def users_vertex_access(uname: str, req: VertexAccessUpdate,
+                        owner: str = Depends(verify_owner)):
+    mode = (req.mode or VERTEX_ACCESS_OFF).strip().lower()
+    if mode not in (VERTEX_ACCESS_OFF, VERTEX_ACCESS_ASSIGNED, VERTEX_ACCESS_BYO):
+        raise HTTPException(400, "mode must be off, assigned, or byo")
+    with _USERS_LOCK:
+        users = load_users()
+        user = users.get(uname)
+        if not user:
+            raise HTTPException(404, "No such user")
+        if user.get("role") == "Owner":
+            raise HTTPException(400, "Owner always has Vertex access when server credentials are configured")
+        if mode == VERTEX_ACCESS_OFF:
+            user.pop("vertex_access", None)
+            for k in ("vertex_sa_email", "vertex_sa_account_id", "vertex_sa_key_name",
+                      "vertex_provisioned_at"):
+                user.pop(k, None)
+        else:
+            user["vertex_access"] = mode
+            if mode != VERTEX_ACCESS_BYO:
+                for k in ("vertex_sa_email", "vertex_sa_account_id", "vertex_sa_key_name",
+                          "vertex_provisioned_at"):
+                    user.pop(k, None)
+        save_users(users)
+    if mode != VERTEX_ACCESS_BYO:
+        _clear_user_vertex_credentials(uname)
+    return {
+        "ok": True,
+        "username": uname,
+        "vertex_access": _user_vertex_access_mode(uname),
+        "vertex_ready": _user_can_use_vertex(uname),
+    }
+
+
+@app.post("/api/users/{uname}/vertex/provision")
+def users_vertex_provision(uname: str, owner: str = Depends(verify_owner)):
+    """One-click: create GCP service account + Vertex role + key for a member.
+
+    Stores the key server-side (member is ready immediately) and returns the
+    JSON once for the owner/PA to copy — same pattern as starter PIN handoff.
+    Requires the server's admin SA to have Service Account Admin + Project IAM Admin.
+    """
+    with _USERS_LOCK:
+        users = load_users()
+        if uname not in users:
+            raise HTTPException(404, "No such user")
+        if users[uname].get("role") == "Owner":
+            raise HTTPException(400, "Owner account does not need provisioning")
+    result = _provision_member_vertex_sa(uname)
+    result["ok"] = True
+    return result
+
+
+def _clear_user_vertex_credentials(username: str) -> None:
+    base = _user_vertex_creds_store(username)
+    for path in (base, base + ".sa.json"):
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+        except OSError as e:
+            _log.warning("vertex BYO clear failed for %r (%s): %s", username, path, e)
+    with _VERTEX_TOKEN_LOCK:
+        _VERTEX_TOKEN_CACHE.pop(f"byo:{_safe_vertex_username(username)}", None)
+
+
+class VertexCredentialsUpload(BaseModel):
+    credentials_json: str = ""
+
+
+@app.get("/api/me/vertex")
+def me_vertex_status(username: str = Depends(verify_user)):
+    mode = _user_vertex_access_mode(username)
+    return {
+        "mode": mode,
+        "ready": _user_can_use_vertex(username),
+        "server_vertex_ready": _vertex_credentials_ready(),
+        "has_own_credentials": (
+            _user_vertex_credentials_ready(username) if mode == VERTEX_ACCESS_BYO else False
+        ),
+        "project": VERTEX_PROJECT,
+        "setup_doc": "projects/shared/vertex-credits/README.md",
+    }
+
+
+@app.post("/api/me/vertex/credentials")
+def me_vertex_upload(req: VertexCredentialsUpload, username: str = Depends(verify_user)):
+    if _user_vertex_access_mode(username) != VERTEX_ACCESS_BYO:
+        raise HTTPException(403, "Your account is not set up for bring-your-own Vertex credentials")
+    raw = (req.credentials_json or "").strip()
+    if not raw:
+        raise HTTPException(400, "credentials_json is required")
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        raise HTTPException(400, "Invalid JSON — paste the full service account key file")
+    if data.get("type") != "service_account":
+        raise HTTPException(400, "Expected a Google service account JSON (type: service_account)")
+    proj = data.get("project_id") or VERTEX_PROJECT
+    if VERTEX_PROJECT and proj != VERTEX_PROJECT:
+        raise HTTPException(400, f"Service account must be for project {VERTEX_PROJECT}")
+    os.makedirs(VERTEX_USER_CREDS_DIR, mode=0o700, exist_ok=True)
+    _write_enc_file(_user_vertex_creds_store(username), data, mode=0o600)
+    _user_vertex_sa_materialized(username)
+    with _VERTEX_TOKEN_LOCK:
+        _VERTEX_TOKEN_CACHE.pop(f"byo:{_safe_vertex_username(username)}", None)
+    return {"ok": True, "ready": _user_can_use_vertex(username)}
+
+
+@app.delete("/api/me/vertex/credentials")
+def me_vertex_clear(username: str = Depends(verify_user)):
+    if _user_vertex_access_mode(username) != VERTEX_ACCESS_BYO:
+        raise HTTPException(403, "Your account is not set up for bring-your-own Vertex credentials")
+    _clear_user_vertex_credentials(username)
+    return {"ok": True, "ready": False}
 
 
 # ---------------------------------------------------------------- M-7 erasure
@@ -1391,7 +1565,7 @@ def _is_erased(uname: str) -> bool:
     return uname in _load_erased()
 
 
-def _erase_user_data(uname: str) -> list:
+def _erase_user_data(uname: str, user_snapshot: dict | None = None) -> list:
     """Cascade-delete every DERIVED per-user store for *uname* (the users.json
     record itself is removed by the caller under _USERS_LOCK). Returns the list of
     stores cleared, for the receipt. Best-effort per store: one failure must not
@@ -1414,6 +1588,18 @@ def _erase_user_data(uname: str) -> list:
             cleared.append("webauthn_state")
     except Exception as e:
         _log.warning("M-7 erasure: webauthn_state clear failed for %r: %s", uname, e)
+    try:
+        rec = user_snapshot if user_snapshot is not None else load_users().get(uname, {})
+        if rec.get("vertex_sa_email") or rec.get("vertex_sa_key_name"):
+            _gcp_cleanup_member_vertex_sa(uname, rec)
+            cleared.append("vertex_gcp_sa")
+        elif os.path.isdir(VERTEX_USER_CREDS_DIR):
+            base = _user_vertex_creds_store(uname)
+            if os.path.isfile(base) or os.path.isfile(base + ".sa.json"):
+                _clear_user_vertex_credentials(uname)
+                cleared.append("vertex_user_credentials")
+    except Exception as e:
+        _log.warning("M-7 erasure: vertex_user clear failed for %r: %s", uname, e)
     return cleared
 
 
@@ -1461,13 +1647,14 @@ def users_delete(uname: str, owner: str = Depends(verify_owner)):
             raise HTTPException(400, "Can't delete an Owner")
         if uname not in users:
             raise HTTPException(404, "No such user")
+        user_snapshot = dict(users[uname])
         del users[uname]
         save_users(users)        # primary store gone → tokens for it 401 at once
         # Tombstone INSIDE the users lock: an erased id is unregisterable from the
         # same instant the record vanishes (no re-register/restore race window).
         ts = _write_tombstone(uname, by=owner)
     # Derived per-user stores + receipt can land after the lock is released.
-    stores = ["users.json"] + _erase_user_data(uname)
+    stores = ["users.json"] + _erase_user_data(uname, user_snapshot=user_snapshot)
     _write_receipt(uname, by=owner, stores=stores, ts=ts)
     return {"ok": True, "erased": uname, "stores": stores}
 
@@ -1815,6 +2002,255 @@ def _bootstrap_vertex_credentials():
 _bootstrap_vertex_credentials()
 
 
+def _safe_vertex_username(username: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_.-]", "_", (username or "").strip())[:64]
+
+
+def _user_vertex_creds_store(username: str) -> str:
+    return os.path.join(VERTEX_USER_CREDS_DIR, f"{_safe_vertex_username(username)}.json")
+
+
+def _user_vertex_sa_materialized(username: str) -> str | None:
+    """Return on-disk SA JSON path for a member's BYO credentials, or None."""
+    store = _user_vertex_creds_store(username)
+    data, _ = _read_enc_file(store, None)
+    if not isinstance(data, dict) or data.get("type") != "service_account":
+        return None
+    sa_path = store + ".sa.json"
+    try:
+        os.makedirs(VERTEX_USER_CREDS_DIR, mode=0o700, exist_ok=True)
+        raw = json.dumps(data, separators=(",", ":")).encode()
+        if os.path.isfile(sa_path):
+            try:
+                with open(sa_path, "rb") as f:
+                    if f.read() == raw:
+                        return sa_path
+            except OSError:
+                pass
+        tmp = sa_path + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(raw)
+        os.replace(tmp, sa_path)
+        os.chmod(sa_path, 0o600)
+        return sa_path
+    except OSError as e:
+        _log.warning("vertex BYO materialize failed for %r: %s", username, e)
+        return None
+
+
+def _user_vertex_credentials_ready(username: str) -> bool:
+    return _user_vertex_sa_materialized(username) is not None
+
+
+def _user_vertex_access_mode(username: str | None) -> str:
+    if not username:
+        return VERTEX_ACCESS_OFF
+    user = load_users().get(username, {})
+    if user.get("role") == "Owner":
+        return VERTEX_ACCESS_ASSIGNED
+    mode = (user.get("vertex_access") or VERTEX_ACCESS_OFF).strip().lower()
+    return mode if mode in (VERTEX_ACCESS_ASSIGNED, VERTEX_ACCESS_BYO) else VERTEX_ACCESS_OFF
+
+
+def _user_can_use_vertex(username: str | None) -> bool:
+    mode = _user_vertex_access_mode(username)
+    if mode == VERTEX_ACCESS_OFF:
+        return False
+    if mode == VERTEX_ACCESS_ASSIGNED:
+        return _vertex_credentials_ready()
+    if mode == VERTEX_ACCESS_BYO:
+        return _user_vertex_credentials_ready(username)
+    return False
+
+
+def _gcp_api_error(resp) -> str:
+    try:
+        err = resp.json().get("error", {})
+        return err.get("message") or resp.text[:300]
+    except Exception:
+        return (getattr(resp, "text", None) or str(resp))[:300]
+
+
+def _gcp_access_token() -> str:
+    if not _GOOGLE_AUTH_AVAILABLE:
+        raise HTTPException(503, "google-auth not installed — cannot call GCP APIs")
+    if not _vertex_credentials_ready():
+        raise HTTPException(
+            503,
+            "Server Vertex credentials not configured — set VERTEX_CREDENTIALS_JSON or "
+            "vertex-sa.json before provisioning per-user keys",
+        )
+    try:
+        creds, _ = google.auth.default(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        creds.refresh(_google_auth_requests.Request())
+        return creds.token
+    except Exception as e:
+        raise HTTPException(502, f"GCP auth failed: {e}") from e
+
+
+def _gcp_request(method: str, url: str, body: dict | None = None):
+    token = _gcp_access_token()
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    try:
+        return requests.request(
+            method, url, headers=headers, json=body, timeout=_GCP_API_TIMEOUT)
+    except requests.RequestException as e:
+        raise HTTPException(502, f"GCP API unreachable: {e}") from e
+
+
+def _vertex_sa_account_id(username: str) -> str:
+    """GCP service account id (6–30 chars, lowercase, starts with letter)."""
+    safe = re.sub(r"[^a-z0-9]", "", username.lower())
+    if not safe or not safe[0].isalpha():
+        safe = "u" + safe
+    return (VERTEX_SA_PREFIX + safe)[:30]
+
+
+def _vertex_sa_email(account_id: str) -> str:
+    return f"{account_id}@{VERTEX_PROJECT}.iam.gserviceaccount.com"
+
+
+def _vertex_sa_resource_name(email: str) -> str:
+    return (f"projects/{VERTEX_PROJECT}/serviceAccounts/"
+            f"{urllib.parse.quote(email, safe='')}")
+
+
+def _ensure_gcp_vertex_service_account(username: str) -> dict:
+    account_id = _vertex_sa_account_id(username)
+    email = _vertex_sa_email(account_id)
+    base = f"https://iam.googleapis.com/v1/projects/{VERTEX_PROJECT}/serviceAccounts"
+    resource = _vertex_sa_resource_name(email)
+    got = _gcp_request("GET", f"https://iam.googleapis.com/v1/{resource}")
+    if got.status_code == 200:
+        return got.json()
+    created = _gcp_request("POST", base, {
+        "accountId": account_id,
+        "serviceAccount": {"displayName": f"CodeMonkeys Vertex — {username}"},
+    })
+    if created.status_code in (200, 201):
+        return created.json()
+    if created.status_code == 409:
+        retry = _gcp_request("GET", f"https://iam.googleapis.com/v1/{resource}")
+        if retry.status_code == 200:
+            return retry.json()
+    raise HTTPException(502, f"GCP service account create failed: {_gcp_api_error(created)}")
+
+
+def _grant_vertex_role_to_service_account(email: str) -> None:
+    member = f"serviceAccount:{email}"
+    crm = f"https://cloudresourcemanager.googleapis.com/v1/projects/{VERTEX_PROJECT}"
+    pol = _gcp_request("POST", f"{crm}:getIamPolicy", {"options": {"requestedPolicyVersion": 3}})
+    if pol.status_code != 200:
+        raise HTTPException(502, f"GCP getIamPolicy failed: {_gcp_api_error(pol)}")
+    policy = pol.json()
+    bindings = policy.setdefault("bindings", [])
+    role_binding = next((b for b in bindings if b.get("role") == VERTEX_SA_ROLE), None)
+    if role_binding is None:
+        role_binding = {"role": VERTEX_SA_ROLE, "members": []}
+        bindings.append(role_binding)
+    members = set(role_binding.get("members") or [])
+    if member in members:
+        return
+    members.add(member)
+    role_binding["members"] = sorted(members)
+    applied = _gcp_request("POST", f"{crm}:setIamPolicy", {"policy": policy})
+    if applied.status_code != 200:
+        raise HTTPException(502, f"GCP setIamPolicy failed: {_gcp_api_error(applied)}")
+
+
+def _create_gcp_service_account_key(email: str) -> tuple[dict, str]:
+    resource = _vertex_sa_resource_name(email)
+    url = f"https://iam.googleapis.com/v1/{resource}/keys"
+    resp = _gcp_request("POST", url, {
+        "privateKeyType": "TYPE_GOOGLE_CREDENTIALS_FILE",
+        "keyAlgorithm": "KEY_ALG_RSA_2048",
+    })
+    if resp.status_code not in (200, 201):
+        raise HTTPException(502, f"GCP key create failed: {_gcp_api_error(resp)}")
+    payload = resp.json()
+    b64 = payload.get("privateKeyData") or ""
+    key_name = payload.get("name") or ""
+    if not b64:
+        raise HTTPException(502, "GCP key create returned no privateKeyData")
+    try:
+        key_json = json.loads(base64.b64decode(b64))
+    except Exception as e:
+        raise HTTPException(502, f"GCP key JSON decode failed: {e}") from e
+    return key_json, key_name
+
+
+def _delete_gcp_service_account_key(key_name: str) -> None:
+    if not key_name:
+        return
+    try:
+        _gcp_request("DELETE", f"https://iam.googleapis.com/v1/{key_name}")
+    except HTTPException as e:
+        _log.warning("GCP key delete failed for %s: %s", key_name, e.detail)
+
+
+def _store_user_vertex_key_json(username: str, key_json: dict) -> None:
+    os.makedirs(VERTEX_USER_CREDS_DIR, mode=0o700, exist_ok=True)
+    _write_enc_file(_user_vertex_creds_store(username), key_json, mode=0o600)
+    _user_vertex_sa_materialized(username)
+    with _VERTEX_TOKEN_LOCK:
+        _VERTEX_TOKEN_CACHE.pop(f"byo:{_safe_vertex_username(username)}", None)
+
+
+def _gcp_cleanup_member_vertex_sa(username: str, user_record: dict | None = None) -> None:
+    """Best-effort revoke of provisioned GCP SA + local creds (erasure / user delete)."""
+    rec = user_record if user_record is not None else load_users().get(username, {})
+    _clear_user_vertex_credentials(username)
+    key_name = rec.get("vertex_sa_key_name") or ""
+    email = rec.get("vertex_sa_email") or ""
+    _delete_gcp_service_account_key(key_name)
+    if email:
+        resource = _vertex_sa_resource_name(email)
+        try:
+            resp = _gcp_request("DELETE", f"https://iam.googleapis.com/v1/{resource}")
+            if resp.status_code not in (200, 204, 404):
+                _log.warning("GCP SA delete for %r: %s", email, _gcp_api_error(resp))
+        except HTTPException as e:
+            _log.warning("GCP SA delete for %r failed: %s", email, e.detail)
+
+
+def _provision_member_vertex_sa(username: str) -> dict:
+    if not VERTEX_PROJECT:
+        raise HTTPException(503, "GOOGLE_CLOUD_PROJECT is not set")
+    users = load_users()
+    user = users.get(username)
+    if not user:
+        raise HTTPException(404, "No such user")
+    if user.get("role") == "Owner":
+        raise HTTPException(400, "Owner account does not need provisioning")
+    sa = _ensure_gcp_vertex_service_account(username)
+    email = sa.get("email") or _vertex_sa_email(_vertex_sa_account_id(username))
+    _grant_vertex_role_to_service_account(email)
+    old_key = user.get("vertex_sa_key_name") or ""
+    key_json, key_name = _create_gcp_service_account_key(email)
+    _delete_gcp_service_account_key(old_key)
+    account_id = _vertex_sa_account_id(username)
+    with _USERS_LOCK:
+        users = load_users()
+        user = users.get(username)
+        if not user:
+            raise HTTPException(404, "No such user")
+        user["vertex_access"] = VERTEX_ACCESS_BYO
+        user["vertex_sa_email"] = email
+        user["vertex_sa_account_id"] = account_id
+        user["vertex_sa_key_name"] = key_name
+        user["vertex_provisioned_at"] = int(time.time())
+        save_users(users)
+    _store_user_vertex_key_json(username, key_json)
+    return {
+        "username": username,
+        "client_email": email,
+        "credentials_json": json.dumps(key_json),
+        "vertex_access": VERTEX_ACCESS_BYO,
+        "vertex_ready": True,
+    }
+
+
 def _vertex_credentials_ready():
     if not _GOOGLE_AUTH_AVAILABLE:
         return False
@@ -1835,26 +2271,52 @@ def _vertex_credentials_ready():
     return os.path.isfile(adc)
 
 
-_VERTEX_TOKEN_CACHE = {"token": "", "expires_at": 0.0}
+_VERTEX_TOKEN_CACHE: dict[str, dict] = {}
 _VERTEX_TOKEN_LOCK = threading.Lock()
 
 
-def _vertex_access_token():
-    if not _vertex_credentials_ready():
-        raise ProviderAuthError("Vertex: no Google credentials (run gcloud auth application-default login "
-                                "or set VERTEX_CREDENTIALS_JSON)", http_status=401)
+def _vertex_token_cache_key(username: str | None) -> str:
+    if not username:
+        return "_server"
+    mode = _user_vertex_access_mode(username)
+    if mode == VERTEX_ACCESS_BYO:
+        return f"byo:{_safe_vertex_username(username)}"
+    return "_server"
+
+
+def _vertex_access_token(username: str | None = None):
+    if username and not _user_can_use_vertex(username):
+        raise ProviderAuthError("Vertex: GCP credits not enabled for this account",
+                                http_status=401)
+    cache_key = _vertex_token_cache_key(username)
     with _VERTEX_TOKEN_LOCK:
-        if time.time() < _VERTEX_TOKEN_CACHE["expires_at"] - 60:
-            return _VERTEX_TOKEN_CACHE["token"]
+        cached = _VERTEX_TOKEN_CACHE.get(cache_key, {})
+        if time.time() < cached.get("expires_at", 0) - 60:
+            return cached["token"]
+    cred_path = None
+    if username and _user_vertex_access_mode(username) == VERTEX_ACCESS_BYO:
+        cred_path = _user_vertex_sa_materialized(username)
+        if not cred_path:
+            raise ProviderAuthError("Vertex: upload your service account JSON in Settings",
+                                    http_status=401)
     try:
-        creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        if cred_path:
+            creds, _ = google.auth.load_credentials_from_file(
+                cred_path, scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        else:
+            if not _vertex_credentials_ready():
+                raise ProviderAuthError(
+                    "Vertex: no Google credentials (run gcloud auth application-default login "
+                    "or set VERTEX_CREDENTIALS_JSON)", http_status=401)
+            creds, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
         creds.refresh(_google_auth_requests.Request())
         token = creds.token
         exp = creds.expiry.timestamp() if creds.expiry else time.time() + 3300
         with _VERTEX_TOKEN_LOCK:
-            _VERTEX_TOKEN_CACHE["token"] = token
-            _VERTEX_TOKEN_CACHE["expires_at"] = exp
+            _VERTEX_TOKEN_CACHE[cache_key] = {"token": token, "expires_at": exp}
         return token
+    except ProviderAuthError:
+        raise
     except Exception as e:
         raise ProviderAuthError(f"Vertex auth failed: {e}", http_status=401) from e
 
@@ -1872,7 +2334,7 @@ def _openai_base_url(provider):
 
 def _openai_auth_header(provider):
     if provider.get("kind") == "vertex":
-        return f"Bearer {_vertex_access_token()}"
+        return f"Bearer {_vertex_access_token(provider.get('vertex_username'))}"
     return f"Bearer {provider['api_key']}"
 
 
@@ -2008,12 +2470,13 @@ def _catalog_for_api(prov: dict) -> dict:
             for e in prov.get("catalog", []) if e.get("id")}
 
 
-def _resolve(prov, pid=None):
+def _resolve(prov, pid=None, username=None):
     """Provider entry -> dict the chat layer consumes.
 
     *pid* is threaded through so cooldown helpers can bench by provider-id.
     Per-model catalog costs override provider defaults when the active model
     has a catalog entry (N12).
+    *username* gates per-user Vertex GCP credit access.
     """
     model = prov.get("model", "")
     in_cost = prov.get("in", 0)
@@ -2028,21 +2491,22 @@ def _resolve(prov, pid=None):
             "project": prov.get("project", VERTEX_PROJECT),
             "region": prov.get("region", VERTEX_REGION),
             "input_cost_per_m": in_cost, "output_cost_per_m": out_cost,
-            "context_window": prov.get("context_window", COMPACT_CONTEXT_WINDOW_DEFAULT)}
+            "context_window": prov.get("context_window", COMPACT_CONTEXT_WINDOW_DEFAULT),
+            "vertex_username": username}
 
 
-def _callable_provider(p):
+def _callable_provider(p, username=None):
     """The chat layer can actually call this entry: has a key, and openai-kind
     needs a base_url — blank would hit `requests.post("/chat/completions")`
     (Invalid URL) and burn the full transient-retry backoff before escalation."""
     if p.get("kind") == "vertex":
-        return _vertex_credentials_ready()
+        return _user_can_use_vertex(username)
     if not p.get("key"):
         return False
     return p.get("kind") != "openai" or bool(str(p.get("base_url") or "").strip())
 
 
-def _find_free_provider(cfg):
+def _find_free_provider(cfg, username=None):
     """Find a callable zero-cost provider for budget fallback.
 
     Tries providers in _FREE_FALLBACK order (Gemini first — rate-limited
@@ -2052,17 +2516,17 @@ def _find_free_provider(cfg):
     """
     for pid, model in _FREE_FALLBACK:
         p = cfg.get("providers", {}).get(pid)
-        if not p or not _callable_provider(p):
+        if not p or not _callable_provider(p, username=username):
             continue
         prov_copy = json.loads(json.dumps(p))
         prov_copy["model"] = model
         prov_copy["in"] = 0        # free tier — zero cost for budget tracking
         prov_copy["out"] = 0
-        return _resolve(prov_copy, pid=pid)
+        return _resolve(prov_copy, pid=pid, username=username)
     return None
 
 
-def _usable(cfg):
+def _usable(cfg, username=None):
     """Callable, non-cooled providers sorted cheapest-first by output cost.
 
     All-cooled fallback: if every callable provider is currently in cooldown,
@@ -2070,7 +2534,7 @@ def _usable(cfg):
     callers always get *something* rather than an empty list.
     """
     all_callable = [(pid, p) for pid, p in cfg["providers"].items()
-                    if _callable_provider(p)]
+                    if _callable_provider(p, username=username)]
     all_callable = sorted(all_callable, key=lambda kv: kv[1].get("out", 1e9))
     active = [(pid, p) for pid, p in all_callable if not _is_cooled(pid)]
     if active:
@@ -2083,31 +2547,31 @@ def _usable(cfg):
     return [(pid, p) for pid, p in all_callable if pid == fallback_pid]
 
 
-def main_provider(cfg):
-    usable = _usable(cfg)
+def main_provider(cfg, username=None):
+    usable = _usable(cfg, username=username)
     if not usable:
         return None
     sel = cfg.get("selected", "auto")
     if sel != "auto" and not cfg.get("auto_cheapest"):
         prov = cfg["providers"].get(sel)
-        if prov and _callable_provider(prov) and not _is_cooled(sel):
-            return _resolve(prov, pid=sel)
+        if prov and _callable_provider(prov, username=username) and not _is_cooled(sel):
+            return _resolve(prov, pid=sel, username=username)
     # auto / auto_cheapest: cheapest provider flagged for the cascade, else cheapest
     auto = [(pid, p) for pid, p in usable if p.get("auto")]
     pid, p = auto[0] if auto else usable[0]
-    return _resolve(p, pid=pid)
+    return _resolve(p, pid=pid, username=username)
 
 
-def provider_for_tier(cfg, tier):
+def provider_for_tier(cfg, tier, username=None):
     """Cost governor: order usable providers by cost, pick by tier position."""
-    usable = _usable(cfg)
+    usable = _usable(cfg, username=username)
     if not usable:
         return None
     n = len(usable)
     idx = {"t0": 0, "t1": n // 3, "t2": (2 * n) // 3,
            "t3": n - 1}.get(tier, n // 2)
     pid, p = usable[min(idx, n - 1)]
-    return _resolve(p, pid=pid)
+    return _resolve(p, pid=pid, username=username)
 
 
 class ProviderUpsert(BaseModel):
@@ -2417,14 +2881,14 @@ def models_clear_errors(_: str = Depends(verify_owner)):
 
 
 @app.post("/api/models/{pid}/ping")
-def ping_provider(pid: str, _: str = Depends(verify_owner)):
+def ping_provider(pid: str, owner: str = Depends(verify_owner)):
     """Fire a 1-token request to a provider and return latency_ms + ok/error.
     Uses the stored base_url — no user-supplied URLs."""
     cfg = load_models()
     p = cfg["providers"].get(pid)
     if not p:
         raise HTTPException(404, "Provider not found")
-    if not _callable_provider(p):
+    if not _callable_provider(p, username=owner):
         raise HTTPException(400, "Provider not configured (API key or Vertex credentials missing)")
     model = p.get("model", "")
     if not model:
@@ -2433,12 +2897,13 @@ def ping_provider(pid: str, _: str = Depends(verify_owner)):
     start = time.time()
     try:
         if kind in ("openai", "vertex"):
-            base_url = _openai_base_url(_resolve(p, pid=pid))
+            resolved = _resolve(p, pid=pid, username=owner)
+            base_url = _openai_base_url(resolved)
             if not base_url:
                 raise HTTPException(400, "No base_url configured for this provider")
             r = requests.post(
                 base_url.rstrip("/") + "/chat/completions",
-                headers={"Authorization": _openai_auth_header(_resolve(p, pid=pid)),
+                headers={"Authorization": _openai_auth_header(resolved),
                          "Content-Type": "application/json"},
                 json={"model": model,
                       "messages": [{"role": "user", "content": "hi"}],
@@ -2508,15 +2973,16 @@ class DeskSettingsUpdate(BaseModel):
 
 
 @app.get("/api/desk/status")
-def desk_status(_: str = Depends(verify_token)):
+def desk_status(username: str = Depends(verify_token)):
     cfg = load_models()
     keyed = sum(
         1 for p in cfg.get("providers", {}).values()
-        if (p.get("kind") == "vertex" and _vertex_credentials_ready()) or p.get("key")
+        if (p.get("kind") == "vertex" and _user_can_use_vertex(username)) or p.get("key")
     )
     return {
-        "vertex_ready": _vertex_credentials_ready(),
-        "vertex_project": os.environ.get("GOOGLE_CLOUD_PROJECT", ""),
+        "vertex_ready": _user_can_use_vertex(username),
+        "vertex_access": _user_vertex_access_mode(username),
+        "vertex_project": os.environ.get("GOOGLE_CLOUD_PROJECT", VERTEX_PROJECT),
         "models_configured": keyed,
         "desk_settings": _load_desk_settings(),
     }
@@ -4110,13 +4576,13 @@ def call_model(provider, system, history, tools, max_tokens=8192,
         raise
 
 
-def _pricier_provider(cfg, current):
+def _pricier_provider(cfg, current, username=None):
     """Escalation-on-failure: the cheapest USABLE provider strictly pricier than
     `current` (by output cost), or None. Lets the loop retry one tier up when a
     provider keeps failing rather than dying on the cheapest one."""
     cur_out = current.get("output_cost_per_m", 0)
     cur_model = current.get("model")
-    candidates = [_resolve(p, pid=pid) for pid, p in _usable(cfg)]
+    candidates = [_resolve(p, pid=pid, username=username) for pid, p in _usable(cfg, username=username)]
     pricier = [p for p in candidates
                if p.get("output_cost_per_m", 0) > cur_out and p.get("model") != cur_model]
     return pricier[0] if pricier else None
@@ -4369,15 +4835,15 @@ _DEBATE_LENSES = (
 )
 
 
-def _verifier_providers(cfg):
+def _verifier_providers(cfg, username=None):
     """One provider per debate lens. Prefer DISTINCT providers (decorrelates the
     panel — a single model's blind spot/jailbreak/injection no longer defeats
     all three at once); fall back to repeating the cheapest when fewer than 3
     keyed providers exist. Returns a list of len(_DEBATE_LENSES) or []."""
-    usable = _usable(cfg)
+    usable = _usable(cfg, username=username)
     if not usable:
         return []
-    provs = [_resolve(p, pid=pid) for pid, p in usable]  # cheapest-first
+    provs = [_resolve(p, pid=pid, username=username) for pid, p in usable]  # cheapest-first
     n = len(_DEBATE_LENSES)
     if len(provs) >= n:
         return provs[:n]
@@ -4388,7 +4854,8 @@ def _debate_verify(session, cmd):
     """Run the 3-lens verifier panel over a pending auto-mode risky command.
     Returns (allowed: bool, summary: str). Fail closed throughout."""
     cfg = load_models()
-    providers = _verifier_providers(cfg)
+    username = session.get("username")
+    providers = _verifier_providers(cfg, username=username)
     if not providers:
         return False, "no model provider available to verify — blocked"
     # F1 (N1 red-team): if COOLDOWN shrank the distinct verifier set below the
@@ -5351,6 +5818,7 @@ def request_approval(session, command):
     session["approvals"][aid] = {"flag": flag, "approve": None, "command": command}
     emit(session, "approval", approval_id=aid, command=command)
     session["status"] = "waiting_approval"
+    _notify_approval_push(session, aid, command)
     flag.wait(APPROVAL_TIMEOUT)
     session["status"] = "running"
     return session["approvals"].pop(aid, {}).get("approve") is True
@@ -5611,57 +6079,10 @@ def make_executor(session, allowed, agent_label=None, depth=0):
                 with open(full, "r", errors="replace") as f:
                     return f.read(_BB_MAX + 1)[:_BB_MAX], True
             if name == "blackboard_write":
-<<<<<<< HEAD
                 r = t_blackboard_write(args)
                 return r, not r.startswith("ERROR")
             if name == "run_lint":
                 return t_run_lint(args, session=session), True
-=======
-                slug = _bb_slug(args.get("slug", ""))
-                section = str(args.get("section", "")).upper()
-                content = (args.get("content", "") or "").strip()
-                mode = args.get("mode", "append")
-                if not slug:
-                    return "ERROR: slug is empty after sanitization", False
-                if section not in _BB_SECTIONS:
-                    return f"ERROR: section must be one of {_BB_SECTIONS}, got {section!r}", False
-                if mode not in ("append", "replace"):
-                    return "ERROR: mode must be 'append' or 'replace'", False
-                try:
-                    full = _jail_blackboard(slug, username)
-                except ValueError as e:
-                    return f"ERROR: {e}", False
-                with _BB_LOCK:
-                    existing = ""
-                    if os.path.exists(full):
-                        with open(full, "r", errors="replace") as f:
-                            existing = f.read(_BB_MAX * 2)
-                    sections = _bb_parse(existing)
-                    if mode == "replace":
-                        sections[section] = content
-                    else:
-                        bullet = content if content.startswith(("-", "*")) else f"- {content}"
-                        sections[section] = (sections[section] + "\n" + bullet).strip()
-                    rendered = _bb_render(slug, sections)
-                    if len(rendered) > _BB_MAX:
-                        return (f"ERROR: blackboard would exceed {_BB_MAX} chars — "
-                                "replace/trim a section instead of appending"), False
-                    os.makedirs(os.path.dirname(full), exist_ok=True)
-                    tmp = full + ".tmp"
-                    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
-                    try:
-                        fd = os.open(tmp, flags, 0o644)
-                        with os.fdopen(fd, "w") as f:
-                            f.write(rendered)
-                        os.replace(tmp, full)
-                    except OSError as e:
-                        try:
-                            os.unlink(tmp)
-                        except OSError:
-                            pass
-                        return f"ERROR: could not open blackboard for writing: {e}", False
-                return f"Updated {section} ({mode}) → .codemonkeys/blackboard-{slug}.md", True
->>>>>>> 16dd56c (feat: Vertex credits, Cursor Desk, Code Gremlins, and auto key encryption)
             return f"ERROR: unknown tool {name}", False
         except Exception as e:  # tool errors go back to the model, not the user
             return f"ERROR: {type(e).__name__}: {e}", False
@@ -5810,15 +6231,12 @@ def agent_loop(session, provider, system, history, tool_names, max_turns,
                 and session["spent_usd"] >= BUDGET_FALLBACK_USD
                 and session["spent_usd"] < _budget):
             cfg = load_models()
-            free_prov = _find_free_provider(cfg)
+            _vuser = session.get("username")
+            free_prov = _find_free_provider(cfg, username=_vuser)
             if free_prov is not None and provider.get("api_key") != free_prov.get("api_key"):
                 provider = free_prov
                 session["_fell_back"] = True
-                emit(session, "warning", agent=agent_label,
-                     message=f"Budget threshold ${BUDGET_FALLBACK_USD:.2f} reached "
-                             f"(spent ${session['spent_usd']:.2f}). "
-                             f"Switching to free model ({free_prov['model']}) "
-                             f"to keep going. Session budget is ${_budget:.2f}.")
+                emit(session, "provider_wait", agent=agent_label, reason="budget")
         if session["spent_usd"] >= _budget:
             emit(session, "error", agent=agent_label,
                  message=f"Session budget ${_budget:.2f} reached "
@@ -5839,31 +6257,29 @@ def agent_loop(session, provider, system, history, tool_names, max_turns,
             # ALL usable providers before giving up.  Sessions shouldn't die
             # just because one provider is rate-limited or has a bad key.
             _cfg = load_models()
+            _vuser = session.get("username")
             tried = {provider.get("model")}
             candidates = []
             if depth == 0:
-                pp = _pricier_provider(_cfg, provider)
+                pp = _pricier_provider(_cfg, provider, username=_vuser)
                 if pp:
                     candidates.append(pp)
-                for pid, p in _usable(_cfg):
+                for pid, p in _usable(_cfg, username=_vuser):
                     resolved = _resolve(p, pid=pid)
                     if resolved.get("model") not in tried:
                         candidates.append(resolved)
                         tried.add(resolved.get("model"))
             rotated = False
             for alt in candidates:
-                emit(session, "error", agent=agent_label,
-                     message=f"Model call failed ({e}); rotating to "
-                             f"{alt['model']}")
+                emit(session, "provider_wait", agent=agent_label)
                 try:
                     resp = call_model(alt, system, history, tools,
                                       session=session, agent_label=agent_label)
                     provider = alt      # stick with the working provider
                     rotated = True
                     break
-                except Exception as e_next:
-                    emit(session, "warning", agent=agent_label,
-                         message=f"{alt['model']} also failed: {e_next}")
+                except Exception:
+                    pass   # try next candidate — UI shows a playful wait, not errors
             if not rotated:
                 emit(session, "error", message=f"All providers failed. Last error: {e}",
                      agent=agent_label)
@@ -5976,7 +6392,9 @@ def run_subagent(session, agent_name, task):
     session["agents_spawned"] += 1
     cfg = load_models()
     tier = corps_tier(agent_def)
-    provider = provider_for_tier(cfg, tier) or main_provider(cfg)
+    _vuser = session.get("username")
+    provider = (provider_for_tier(cfg, tier, username=_vuser)
+                or main_provider(cfg, username=_vuser))
     if not provider:
         return "ERROR: no enabled model provider"
     tool_names = corps_tools(agent_def)
@@ -6126,9 +6544,14 @@ def _notify_done(session, errored: bool, outcome: str = "ok"):
 
 def run_session_message(session, text):
     cfg = load_models()
-    provider = main_provider(cfg)
+    _vuser = session.get("username")
+    provider = main_provider(cfg, username=_vuser)
     if not provider:
-        emit(session, "error", message="No enabled model provider — add an API key in Models settings.")
+        msg = ("No enabled model provider — add an API key in Models settings."
+               if _vuser and load_users().get(_vuser, {}).get("role") == "Owner"
+               else "No enabled model provider — ask the owner to configure models "
+                    "or grant you Vertex GCP access.")
+        emit(session, "error", message=msg)
         emit(session, "done")
         session["status"] = "idle"
         _notify_done(session, errored=True, outcome="no_provider")
@@ -6188,6 +6611,137 @@ class MessageRequest(BaseModel):
 class ApproveRequest(BaseModel):
     approval_id: str
     approve: bool
+
+
+class PushKeys(BaseModel):
+    p256dh: str
+    auth: str
+
+
+class PushSubscribeRequest(BaseModel):
+    endpoint: str
+    keys: PushKeys
+
+
+class PushUnsubscribeRequest(BaseModel):
+    endpoint: str
+
+
+def _ensure_vapid_keys():
+    """Return {public_key, private_pem, subject} or None if web push unavailable."""
+    if not _WEBPUSH_AVAILABLE:
+        return None
+    pub_env = os.environ.get("VAPID_PUBLIC_KEY")
+    pem_env = os.environ.get("VAPID_PRIVATE_KEY")
+    if pub_env and pem_env:
+        return {"public_key": pub_env, "private_pem": pem_env, "subject": PUSH_VAPID_SUBJECT}
+    cached = _load_json(PUSH_VAPID_FILE, None)
+    if isinstance(cached, dict) and cached.get("public_key") and cached.get("private_pem"):
+        return cached
+    from cryptography.hazmat.primitives import serialization
+    from py_vapid import Vapid
+
+    v = Vapid()
+    v.generate_keys()
+    raw = v.public_key.public_bytes(
+        encoding=serialization.Encoding.X962,
+        format=serialization.PublicFormat.UncompressedPoint,
+    )
+    data = {
+        "public_key": base64.urlsafe_b64encode(raw).decode().rstrip("="),
+        "private_pem": v.private_pem().decode(),
+        "subject": PUSH_VAPID_SUBJECT,
+    }
+    _save_json(PUSH_VAPID_FILE, data)
+    return data
+
+
+def _send_push_approval(username: str, sid: str, aid: str, command: str) -> None:
+    if not _WEBPUSH_AVAILABLE or not webpush:
+        return
+    vapid = _ensure_vapid_keys()
+    if not vapid:
+        return
+    with _PUSH_LOCK:
+        subs = list(_load_json(PUSH_SUBS_FILE, {}).get(username, []))
+    if not subs:
+        return
+    payload = json.dumps({
+        "title": "⚠ CodeMonkeys — approval required",
+        "body": command[:180],
+        "tag": f"approval-{sid}-{aid}",
+        "data": {"url": f"/m?sid={sid}", "sid": sid, "approval_id": aid},
+    })
+    dead: list[str] = []
+    for sub in subs:
+        try:
+            webpush(
+                subscription_info=sub,
+                data=payload,
+                vapid_private_key=vapid["private_pem"],
+                vapid_claims={"sub": vapid.get("subject", PUSH_VAPID_SUBJECT)},
+            )
+        except WebPushException as ex:
+            status = getattr(getattr(ex, "response", None), "status_code", None)
+            if status in (404, 410):
+                dead.append(sub.get("endpoint", ""))
+        except Exception:
+            _log.debug("push send failed for %s", username, exc_info=True)
+    if dead:
+        with _PUSH_LOCK:
+            store = _load_json(PUSH_SUBS_FILE, {})
+            store[username] = [
+                s for s in store.get(username, [])
+                if s.get("endpoint") not in dead
+            ]
+            _save_json(PUSH_SUBS_FILE, store)
+
+
+def _notify_approval_push(session, aid: str, command: str) -> None:
+    username = session.get("username")
+    if not username:
+        return
+    threading.Thread(
+        target=_send_push_approval,
+        args=(username, session["id"], aid, command),
+        daemon=True,
+    ).start()
+
+
+@app.get("/api/push/vapid-public")
+def push_vapid_public(_: str = Depends(verify_user)):
+    if not _WEBPUSH_AVAILABLE:
+        raise HTTPException(503, "Web push not available on this server")
+    vapid = _ensure_vapid_keys()
+    if not vapid:
+        raise HTTPException(503, "VAPID keys unavailable")
+    return {"public_key": vapid["public_key"]}
+
+
+@app.post("/api/push/subscribe")
+def push_subscribe(req: PushSubscribeRequest, username: str = Depends(verify_user)):
+    if not _WEBPUSH_AVAILABLE:
+        raise HTTPException(503, "Web push not available on this server")
+    sub = {"endpoint": req.endpoint, "keys": {"p256dh": req.keys.p256dh, "auth": req.keys.auth}}
+    with _PUSH_LOCK:
+        store = _load_json(PUSH_SUBS_FILE, {})
+        lst = [s for s in store.get(username, []) if s.get("endpoint") != req.endpoint]
+        lst.append(sub)
+        store[username] = lst
+        _save_json(PUSH_SUBS_FILE, store)
+    return {"ok": True}
+
+
+@app.post("/api/push/unsubscribe")
+def push_unsubscribe(req: PushUnsubscribeRequest, username: str = Depends(verify_user)):
+    with _PUSH_LOCK:
+        store = _load_json(PUSH_SUBS_FILE, {})
+        store[username] = [
+            s for s in store.get(username, [])
+            if s.get("endpoint") != req.endpoint
+        ]
+        _save_json(PUSH_SUBS_FILE, store)
+    return {"ok": True}
 
 
 @app.post("/api/sessions")
@@ -6421,7 +6975,7 @@ def specs_execute(slug: str, req: SpecExecuteRequest,
             f"Slug {clean!r} exists but has no plan or tasks artifacts to execute")
 
     title = req.title or f"exec:{clean}"
-    s = new_session(title, budget_usd=req.budget_usd)
+    s = new_session(title, budget_usd=req.budget_usd, username=username)
     sid = s["id"]
 
     # Seed as default mode — the approval gate stays on (non-negotiable for
@@ -7329,14 +7883,19 @@ _active_terminal_execs = 0
 FEEDBACK_STATUS_MAX = 1000
 
 @app.post("/api/feedback")
-def submit_feedback(req: FeedbackRequest, user: str = Depends(verify_user)):
+def submit_feedback(
+    req: FeedbackRequest,
+    request: Request,
+    username: str | None = Depends(optional_verify_user),
+):
     category = (req.category or "").strip().lower()
     if category not in FEEDBACK_CATEGORIES:
         raise HTTPException(status_code=400, detail="Invalid report type.")
     message = _scrub_feedback(req.message, FEEDBACK_MAX_MESSAGE)
     if not message:
         raise HTTPException(status_code=400, detail="Report is empty.")
-    if not _feedback_rate_ok(user):
+    rate_key = f"user:{username}" if username else f"ip:{_client_ip(request)}"
+    if not _feedback_rate_ok(rate_key):
         raise HTTPException(status_code=429, detail="Too many reports — please try again later.")
     record = {
         "id": secrets.token_hex(8),
@@ -7788,12 +8347,31 @@ class NoCacheStaticFiles(StaticFiles):
 app.mount("/static", NoCacheStaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
 
+_FORGE_INDEX = os.path.join(BASE_DIR, "static", "forge", "index.html")
+_FORGE_MANIFEST = os.path.join(BASE_DIR, "static", "forge", "manifest.webmanifest")
+_FORGE_SW = os.path.join(BASE_DIR, "static", "forge", "sw.js")
+_NOCACHE = {"Cache-Control": "no-cache"}
+
+
 @app.get("/")
 def root():
-    return FileResponse(
-        os.path.join(BASE_DIR, "static", "forge", "index.html"),
-        headers={"Cache-Control": "no-cache"},
-    )
+    return FileResponse(_FORGE_INDEX, headers=_NOCACHE)
+
+
+@app.get("/m")
+def mobile_root():
+    """Mobile-lite entry — same console, cm-lite CSS via push.js path detect."""
+    return FileResponse(_FORGE_INDEX, headers=_NOCACHE)
+
+
+@app.get("/manifest.webmanifest")
+def pwa_manifest():
+    return FileResponse(_FORGE_MANIFEST, media_type="application/manifest+json", headers=_NOCACHE)
+
+
+@app.get("/sw.js")
+def service_worker():
+    return FileResponse(_FORGE_SW, media_type="application/javascript", headers=_NOCACHE)
 
 
 # ---- secret-hardening: evict secret-named env vars after boot ----------------
