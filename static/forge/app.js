@@ -73,6 +73,7 @@ function showMain() {
     MobileDrawer.setOpen(true);
   }
   FeedbackFab.syncWithAuthScreen?.();
+  $("btn-agents-hub")?.classList.remove("hidden");
 }
 
 function handleDeepLink() {
@@ -692,6 +693,7 @@ function openSession(sid) {
   $("btn-copy-transcript")?.classList.remove("hidden");
   MobileDrawer.close();
 }
+window.openSession = openSession;
 
 $("btn-export-transcript").onclick = _exportTranscript;
 
@@ -2593,11 +2595,12 @@ $("btn-submit-pr").onclick = async () => {
 
 /* ---------------- Agent Corps Editor ---------------- */
 
-$("btn-corps").onclick = () => {
+$("btn-corps")?.addEventListener("click", () => {
   $("modal-corps").classList.remove("hidden");
   loadCorpsFiles();
-};
+});
 $("corps-close").onclick = () => $("modal-corps").classList.add("hidden");
+window.loadCorpsFiles = loadCorpsFiles;
 
 async function loadCorpsFiles() {
   try {
@@ -2649,15 +2652,7 @@ $("btn-feedback-inbox").onclick = () => {
 $("fb-inbox-close").onclick = () => $("modal-feedback").classList.add("hidden");
 
 $("btn-fleet-store")?.addEventListener("click", () => {
-  if (window.matchMedia("(max-width: 767px)").matches) {
-    alert("Fleet Store needs a wider screen — use desktop or tablet landscape.");
-    return;
-  }
-  if (typeof Workbench !== "undefined") {
-    Workbench.toggleFleet(true);
-    const p = document.getElementById("panel-fleet");
-    if (p && typeof FleetStore !== "undefined") FleetStore.init(p);
-  }
+  if (window.AgentsHub) AgentsHub.open("automations");
 });
 
 /* ---------------- boot ---------------- */
