@@ -10,16 +10,6 @@ Read `docs/STATE.md` + `docs/IDEATION.md` before each wave. Never merge your own
 
 ## Active queue
 
-### Wave CM-W1 — N5 Streaming output
-**Status:** `active`  
-**Spec:** `docs/IDEATION.md` N5  
-**Branch:** `automation/wave-cm-w1-streaming`
-
-**Acceptance:**
-- [ ] Stream partial model text to console UI
-- [ ] Red-team: no secret leakage in stream path
-- [ ] `pytest` green (472+ tests)
-
 ### Wave CM-W2 — N8 Context auto-compaction
 **Status:** `pending`  
 **Spec:** `docs/IDEATION.md` N8  
@@ -36,4 +26,11 @@ Read `docs/STATE.md` + `docs/IDEATION.md` before each wave. Never merge your own
 - SECURITY.md substantive changes
 
 ## Completed
+
+### Wave CM-W1 — N5 Streaming output ✅
+**Branch:** `automation/wave-cm-w1-streaming`  
+**Shipped:** SSE streaming via `STREAM_ENABLED=1`; `text_delta` events redacted
+server-side; forge + terminal UIs render live partial text; non-streaming
+fallback on error; default-off preserves pre-N5 behaviour.
+
 See `docs/STATE.md` — Waves 1–4, N1–N4, N6–N11 shipped.
