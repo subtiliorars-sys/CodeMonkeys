@@ -117,6 +117,15 @@ DATA_DIR=./data ./.venv/bin/uvicorn server:app --reload --port 8080
 # browse http://localhost:8080
 ```
 
+Optional: enable live token streaming (N5) — partial model text appears in the
+console as it arrives. Off by default; set `STREAM_ENABLED=1` on the server.
+Chunks are redacted server-side before emission (same `_redact` path as
+non-streaming output).
+
+```bash
+DATA_DIR=./data STREAM_ENABLED=1 ./.venv/bin/uvicorn server:app --reload --port 8080
+```
+
 ## Troubleshooting
 
 - **Locked out (lost authenticator):**

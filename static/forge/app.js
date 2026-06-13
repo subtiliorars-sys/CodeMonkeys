@@ -12,6 +12,8 @@ const state = {
   sid: null, after: -1, status: "idle", timer: null, pollMs: 0, budget_usd: null,
   files: [], registering: false,
   mode: localStorage.getItem("cm_mode") || "default",
+  // N5 streaming: live div for partial assistant text (text_delta events).
+  streamDiv: null, streamPrefix: "", streamBuf: "",
 };
 
 const MODE_HINTS = {
@@ -456,7 +458,10 @@ async function refreshSessions() {
       if (!confirm("Delete this session and its history?")) return;
       try { await api(`/api/sessions/${el.dataset.del}`, "DELETE"); }
       catch (err) { alert(err.message); return; }
-      if (state.sid === el.dataset.del) { state.sid = null; stopPolling(); $("stream").innerHTML = ""; $("hdr-title").textContent = "no session"; showLanding(); }
+      if (state.sid === el.dataset.del) {
+        state.sid = null; stopPolling(); $("stream").innerHTML = ""; _clearStreamState();
+        $("hdr-title").textContent = "no session"; showLanding();
+      }
       refreshSessions();
     }));
   } catch (e) { /* ignore */ }
@@ -531,11 +536,16 @@ $("btn-clone").onclick = async () => {
   $("btn-clone").textContent = "clone";
 };
 
+function _clearStreamState() {
+  state.streamDiv = null; state.streamPrefix = ""; state.streamBuf = "";
+}
+
 function openSession(sid) {
   state.sid = sid; state.after = -1; state.budget_usd = null;
   _budgetAlertShownAt = 0;
   $("budget-alert")?.classList.add("hidden");
   $("stream").innerHTML = "";
+  _clearStreamState();
   hideLanding();
   refreshSessions();
   startPolling(true);
@@ -583,19 +593,41 @@ function agentTag(e) {
   return e.agent ? `<span class="text-[var(--gold-dark)]">[${esc(e.agent)}]</span> ` : "";
 }
 
+function _formatAssistantText(e) {
+  return agentTag(e) + esc(e.text)
+    .replace(/```([\s\S]*?)```/g, '<code class="block bg-black/50 rounded p-2 my-1 overflow-x-auto">$1</code>')
+    .replace(/`([^`]+)`/g, '<code class="bg-black/50 px-1 rounded">$1</code>');
+}
+
 function renderEvent(e) {
   const div = document.createElement("div");
   switch (e.type) {
     case "user":
       div.className = "ev-user rounded px-3 py-2 ml-12";
       div.innerHTML = esc(e.text); break;
+    case "text_delta": {
+      if (!state.streamDiv) {
+        const live = document.createElement("div");
+        live.className = "ev-text rounded px-3 py-2 mr-12";
+        state.streamDiv = live;
+        state.streamPrefix = e.agent ? `[${e.agent}] ` : "";
+        state.streamBuf = "";
+      }
+      state.streamBuf += String(e.text || "");
+      state.streamDiv.textContent = state.streamPrefix + state.streamBuf;
+      return state.streamDiv.parentNode ? null : state.streamDiv;
+    }
     case "text":
+      if (state.streamDiv) {
+        state.streamDiv.innerHTML = _formatAssistantText(e);
+        _clearStreamState();
+        return null;
+      }
       div.className = "ev-text rounded px-3 py-2 mr-12";
-      div.innerHTML = agentTag(e) + esc(e.text)
-        .replace(/```([\s\S]*?)```/g, '<code class="block bg-black/50 rounded p-2 my-1 overflow-x-auto">$1</code>')
-        .replace(/`([^`]+)`/g, '<code class="bg-black/50 px-1 rounded">$1</code>');
+      div.innerHTML = _formatAssistantText(e);
       break;
     case "tool":
+      _clearStreamState();
       div.className = "ev-tool px-3";
       div.innerHTML = `${agentTag(e)}⚙ ${esc(e.name)} <span class="detail">${esc(e.detail)}</span>`;
       div.onclick = () => div.classList.toggle("open"); break;
@@ -645,9 +677,11 @@ function renderEvent(e) {
       div.className = "ev-tool px-3";
       div.textContent = e.approved ? "✓ approved" : "✗ denied"; break;
     case "error":
+      _clearStreamState();
       div.className = "ev-err rounded px-3 py-2";
       div.innerHTML = agentTag(e) + esc(e.message); break;
     case "done":
+      _clearStreamState();
       div.className = "ev-cost px-3"; div.textContent = "— done —"; break;
     default: return null;
   }
@@ -773,7 +807,8 @@ async function send() {
   try {
     if (!state.sid) {
       const d = await api("/api/sessions", "POST", { title: text.slice(0, 40) });
-      state.sid = d.id; state.after = -1; $("stream").innerHTML = ""; refreshSessions();
+      state.sid = d.id; state.after = -1; $("stream").innerHTML = ""; _clearStreamState();
+      refreshSessions();
     }
     await api(`/api/sessions/${state.sid}/message`, "POST",
       { text, files: state.files, mode: state.mode });
