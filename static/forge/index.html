@@ -192,6 +192,8 @@
         <button id="btn-settings" class="w-full text-left text-slate-400 hover:text-[var(--gold)] flex justify-between items-center">
           <span>⚙ Settings</span><span id="settings-caret" class="text-slate-600">▸</span></button>
         <div id="settings-menu" class="hidden mt-2 space-y-2 rounded border border-yellow-900/40 bg-black/40 p-2">
+          <button id="btn-desk-hub" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">🖥 Cursor Desk</button>
+          <button id="btn-gremlins" class="w-full text-left text-slate-400 hover:text-[var(--gold)]">👹 Code Gremlins</button>
           <button id="btn-models" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">⚙ Models &amp; keys</button>
           <button id="btn-corps" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">⚙ Agent Corps (Personas)</button>
           <button id="btn-mcp" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">🔌 MCP connectors</button>
@@ -223,11 +225,7 @@
       <button id="btn-export-transcript" class="hidden text-slate-500 hover:text-slate-300 text-[.65rem] border border-slate-800 rounded px-1.5 py-0.5" title="Download session as Markdown file">⎘ md</button>
       <span id="hdr-spend" class="text-[var(--gold)]"></span>
     </header>
-    <!-- session budget progress bar -->
-    <div id="budget-bar-wrap" class="hidden owner-only h-1 bg-slate-800/60">
-      <div id="budget-bar-fill" class="h-full bg-green-500 transition-all" style="width:0%" title=""></div>
-    </div>
-    <!-- budget alert banner -->
+    <!-- budget alert banner (only when session budget nears cap) -->
     <div id="budget-alert" class="hidden owner-only px-4 py-1 text-xs bg-red-900/30 border-b border-red-700/50 text-red-300 flex items-center gap-2">
       <span id="budget-alert-msg"></span>
       <button id="budget-alert-close" class="ml-auto text-red-500 hover:text-red-200">✕</button>
@@ -250,7 +248,11 @@
           <button id="landing-models" class="gold-border rounded-lg py-3 text-sm text-slate-300 hover:text-[var(--gold-bright)] flex items-center justify-center gap-2">
             <span>⚙</span><span>Configure Models</span>
           </button>
+          <button id="landing-gremlins" class="gold-border rounded-lg py-3 text-sm text-slate-300 hover:text-red-300/90 col-span-full sm:col-span-2 flex items-center justify-center gap-2 border-red-900/40">
+            <span>👹</span><span>Code Gremlins — roast your code before it ships</span>
+          </button>
         </div>
+        <p id="gremlins-toast" class="hidden text-red-400/80 text-xs mt-3"></p>
         <p class="text-slate-600 text-xs mt-6">mode: <span id="landing-mode" class="text-[var(--gold)]">default</span></p>
       </div>
     </div>
@@ -267,6 +269,7 @@
         <button id="btn-attach" title="Attach files" class="gold-border rounded px-2 py-2 text-sm hover:bg-yellow-900/20">📎</button>
         <input id="file-input" type="file" multiple class="hidden">
         <button id="btn-mic" title="Voice input" class="gold-border rounded px-2 py-2 text-sm hover:bg-yellow-900/20">🎤</button>
+        <button id="btn-gremlin-raid" title="Unleash Code Gremlins on this session" class="gold-border rounded px-2 py-2 text-sm hover:bg-red-900/30 text-red-300/90">👹</button>
         <textarea id="msg" rows="2" class="input flex-1 rounded px-3 py-2 text-sm resize-none"
           placeholder="Tell the monkeys what to build… (Enter to send, Shift+Enter for newline. Paste or drag-drop images/files here.)"></textarea>
         <button id="btn-stop" class="hidden rounded px-3 py-2 text-sm bg-red-900/60 hover:bg-red-800">■</button>
@@ -534,6 +537,31 @@
   </div>
 </div>
 
+<!-- ============ CODE GREMLINS MODAL ============ -->
+<div id="modal-gremlins" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+  <div class="panel gold-border rounded-lg p-5 w-full max-w-lg max-h-[90vh] overflow-y-auto text-sm border-red-900/30">
+    <div class="flex justify-between items-center mb-3">
+      <h2 class="wordmark font-bold text-red-300/90">👹 Code Gremlins</h2>
+      <button id="gremlins-close" class="text-slate-400 hover:text-white">✕</button>
+    </div>
+    <p class="text-slate-400 text-xs leading-relaxed mb-4">
+      The feral red team of CodeMonkeys. Gremlins <strong class="text-slate-300">insult your code with evidence</strong>,
+      hunt waste and complexity, stress hot paths, and suggest simpler routes — then hand fixes back to the monkeys.
+      For auth, secrets, and data isolation, they escalate to formal <span class="text-yellow-500/80">red-team</span>.
+    </p>
+    <ul class="text-[.72rem] text-slate-500 space-y-2 mb-4 list-disc pl-4">
+      <li>Roast board with file:line citations — not vague vibes</li>
+      <li>Load / stress notes (local benchmarks, scaled fixtures)</li>
+      <li>&ldquo;Do it this way instead&rdquo; when you over-built</li>
+    </ul>
+    <div class="flex flex-col sm:flex-row gap-2 mb-3">
+      <button id="gremlins-unleash-session" class="gold-btn rounded-lg py-2 px-4 text-xs flex-1">Unleash on this session</button>
+      <button id="gremlins-unleash-workspace" class="gold-border rounded-lg py-2 px-4 text-xs text-slate-300 hover:text-red-200 flex-1">Raid whole workspace</button>
+    </div>
+    <p class="text-[.65rem] text-slate-600">Prefills the composer with a spawn prompt — review and Send. Agent: <code class="text-yellow-600/80">corps/agents/code-gremlins.md</code></p>
+  </div>
+</div>
+
 <!-- ============ FEEDBACK INBOX MODAL ============ -->
 <div id="modal-feedback" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
   <div class="panel gold-border rounded-lg p-5 w-full max-w-lg max-h-[90vh] overflow-y-auto text-sm">
@@ -546,6 +574,10 @@
 </div>
 
 <script src="/static/forge/omni-search.js"></script>
+<script src="/static/forge/fleet-store.js"></script>
+<script src="/static/forge/workbench.js"></script>
+<script src="/static/forge/cursor-desk.js"></script>
+<script src="/static/forge/gremlins.js"></script>
 <script src="/static/forge/app.js"></script>
 <script src="/static/forge/field-report.js"></script>
 <script src="/static/forge/feedback.js"></script>

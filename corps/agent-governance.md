@@ -325,3 +325,5 @@ Medallion will *derive* the guardrails rather than just obey them:
 
 Medallion-compliant itch/Steam automation: `tools/fleet-automation/` (12 Steps + 12 Traditions
 enforced in `src/governance/medallion-loop.ts`). Red-team report: `tools/fleet-automation/docs/RED_TEAM.md`.
+
+**Coding craft research:** [coding-skills-lab](https://github.com/subtiliorars-sys/coding-skills-lab) — Dave's Garage RSS inbox; only `data/reviewed/` notes may inform refactors. Treat as background insight, not authoritative doctrine.

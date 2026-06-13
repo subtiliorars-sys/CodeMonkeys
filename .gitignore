@@ -4,7 +4,11 @@ data/
 __pycache__/
 *.pyc
 .env
+vertex.env
+.vertex.env
+**/vertex-sa.json
 # editor / tooling
 .cursor/
 # build artifact — vendored Tailwind is generated in the Docker image / CI (#3)
 static/forge/tailwind.css
+.claude/
