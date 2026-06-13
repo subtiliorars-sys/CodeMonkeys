@@ -10,11 +10,6 @@ Read `docs/STATE.md` + `docs/IDEATION.md` before each wave. Never merge your own
 
 ## Active queue
 
-### Wave CM-W2 — N8 Context auto-compaction
-**Status:** `pending`  
-**Spec:** `docs/IDEATION.md` N8  
-**Branch:** `automation/wave-cm-w2-compaction`
-
 ### Wave CM-W3 — N12 Model catalog refresh
 **Status:** `pending`  
 **Spec:** `docs/IDEATION.md` N12  
@@ -26,6 +21,13 @@ Read `docs/STATE.md` + `docs/IDEATION.md` before each wave. Never merge your own
 - SECURITY.md substantive changes
 
 ## Completed
+
+### Wave CM-W2 — N8 Context auto-compaction ✅
+**Branch:** `automation/wave-cm-w2-compaction`  
+**Shipped:** Deterministic in-loop compaction via fractal digest when estimated
+tokens exceed `COMPACT_AT_FRAC` of per-model `context_window`; first user turn +
+recent `KEEP_RECENT` window preserved; tool-call/result pairing intact;
+`compaction` audit events; 17-test suite in `tests/test_context_compaction.py`.
 
 ### Wave CM-W1 — N5 Streaming output ✅
 **Branch:** `automation/wave-cm-w1-streaming`  

@@ -1,7 +1,7 @@
 # Design: N8 — context auto-compaction via the fractal digest
 
-**Status:** PROPOSED (design only, no code). Build as its own PR after the current
-stack (#58–#62) merges, since it edits `agent_loop` (same region as #59/#60).
+**Status:** SHIPPED (CM-W2). Implementation in `server.py` (`_compact_history`,
+agent_loop hook); tests in `tests/test_context_compaction.py`.
 
 ## Problem
 Long sessions grow `history` until it approaches the model's context window. Today

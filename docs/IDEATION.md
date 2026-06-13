@@ -70,7 +70,7 @@ suite 338/338 green**.
 | N5 | **Streaming output** — stream partial model text to the console | ✅ **CM-W1** | med |
 | ~~N6~~ | **Session resume after restart** (survive Fly scale-to-zero/deploy mid-run) | ✅ **PR #60** | med |
 | N7 | **Plan→execute handoff** (run a saved spec-mode plan) | ✅ **PR #55** | low |
-| N8 | **Context auto-compaction** via the fractal digest near token limit | queued | med |
+| ~~N8~~ | **Context auto-compaction** via the fractal digest near token limit | ✅ **CM-W2** | med |
 | ~~N9~~ | **Structured tool-error retry/repair** (bounded, signature-aware) | ✅ **PR #59** | low |
 | N10 | **Readiness probe** `/readyz` (deep health vs liveness) | ✅ **PR #49** | low |
 | N11 | **Owner audit-log viewer** (security-event UI) | ✅ **PR #54** (red-team GO) | low |
@@ -79,7 +79,7 @@ suite 338/338 green**.
 **Wave 1+2 (N1–N4/N7/N10/N11) = PRs #49–#56 — MERGED + DEPLOYED v15.**
 **Wave 3 = S4-B #58 + N9 #59 + N6 #60 — built/reviewed, merge-ready, unmerged**
 (integration-tested: merge #58→#59→#60 clean, 535 green; see `docs/RELEASE_NOTES.md`).
-**Next buildable (queued):** N8 context-compaction, N12 model-catalog
+**Next buildable (queued):** N12 model-catalog
 — build ONE at a time (shared agent_loop/call_model/load_models regions).
 *(legacy note below predates Wave 3)* N5/N6/N8 touch the
 agent loop / call_model — sequence them to limit `server.py` merge churn.
