@@ -1,0 +1,45 @@
+---
+description: Spend GCP Vertex credits (codemonkeys-498819) on batch game/revenue work — any OS
+alwaysApply: true
+---
+
+# Vertex GCP credits (portable)
+
+Project **`codemonkeys-498819`** · region **`us-central1`**.
+
+## What burns GCP credits (not Cursor billing)
+
+| Tool | Command / path |
+|------|----------------|
+| Batch content jobs | `CodeMonkeys/scripts/vertex_burn.py --all` |
+| CodeMonkeys agents | provider **`vertex-gemini`** or model **auto** |
+| Verify this machine | `projects/shared/vertex-credits/verify_vertex.py` |
+
+## One-time setup per machine
+
+| OS | Run once |
+|----|----------|
+| Linux / macOS / WSL | `projects/shared/vertex-credits/setup.sh` |
+| Windows | `powershell -File projects\shared\vertex-credits\setup.ps1` |
+
+Config lives outside git:
+
+- Linux: `~/.config/codemonkeys/vertex.env` (+ optional `vertex-sa.json`)
+- Windows: `%APPDATA%\codemonkeys\vertex.env` (+ optional `vertex-sa.json`)
+
+**Best cross-machine auth:** same service account JSON copied to both paths above (or password manager export). **Per-machine auth:** `gcloud auth application-default login`.
+
+## Agent behavior
+
+When building games, itch copy, payment flows, or franchise content at volume:
+
+1. Prefer **`vertex_burn.py`** jobs over burning Cursor credits on repetitive generation.
+2. Add new jobs to `CodeMonkeys/scripts/vertex_jobs.json` — output under `PixelSports/docs/vertex-generated/`.
+3. Do **not** commit `vertex-sa.json`, `VERTEX_CREDENTIALS_JSON`, or `.env` secrets.
+
+## Limits (honest)
+
+- **Cursor chat/Agent** in the IDE still bills Cursor — Vertex hook is CodeMonkeys + burn script.
+- Credits expire — check GCP Billing → Credits; set budget alerts.
+
+Full doc: `CodeMonkeys/docs/VERTEX_GCP_CREDITS.md` · kit: `projects/shared/vertex-credits/README.md`
