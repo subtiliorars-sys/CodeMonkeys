@@ -1,0 +1,13 @@
+{
+  "name": "@fleet/ui-audit",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "audit": "node run-all.mjs",
+    "audit:one": "node run-all.mjs --only",
+    "seed": "python3 seed-dev-accounts.py"
+  },
+  "dependencies": {
+    "playwright": "^1.49.1"
+  }
+}

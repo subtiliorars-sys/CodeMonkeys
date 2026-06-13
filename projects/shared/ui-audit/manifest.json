@@ -1,0 +1,122 @@
+{
+  "profiles": [
+    { "name": "mobile-iphone14", "width": 390, "height": 844, "isMobile": true },
+    { "name": "mobile-se", "width": 375, "height": 667, "isMobile": true },
+    { "name": "desktop", "width": 1280, "height": 900, "isMobile": false }
+  ],
+  "apps": [
+    {
+      "id": "codemonkeys",
+      "lane": "claude",
+      "project": "projects/claude/CodeMonkeys",
+      "port": 8091,
+      "start": "DATA_DIR=./data/audit USERS_FILE=./data/audit/users.json python3 -m uvicorn server:app --host 127.0.0.1 --port {port}",
+      "seed": "USERS_FILE=./data/audit/users.json DEV_USER=ui-audit DEV_PIN=9999 python3 scripts/dev_seed.py",
+      "paths": ["/", "/m"],
+      "auth": "codemonkeys",
+      "adapter": "codemonkeys"
+    },
+    {
+      "id": "meniscus-console",
+      "lane": "claude",
+      "project": "projects/claude/MeniscusMaximus",
+      "port": 8092,
+      "start": "USERS_FILE=./dev_users.json DEV_USER=ui-audit python3 -m uvicorn server:app --host 127.0.0.1 --port {port}",
+      "seed": "USERS_FILE=./dev_users.json DEV_USER=ui-audit DEV_PIN=1234 python3 dev_seed.py",
+      "paths": ["/static/console/index.html"],
+      "auth": "meniscus-dev",
+      "adapter": "meniscus-console"
+    },
+    {
+      "id": "meniscus-cairn",
+      "lane": "claude",
+      "project": "projects/claude/MeniscusMaximus",
+      "port": 8092,
+      "reuseServer": "meniscus-console",
+      "paths": ["/static/cairn/index.html"],
+      "auth": "meniscus-dev",
+      "adapter": "meniscus-cairn"
+    },
+    {
+      "id": "pixelsports-hub",
+      "lane": "claude",
+      "project": "projects/claude/PixelSports",
+      "port": 8093,
+      "start": "python3 -m http.server {port} --bind 127.0.0.1",
+      "paths": ["/index.html", "/public/driving-me-nuts/index.html"],
+      "auth": null,
+      "adapter": "static-site"
+    },
+    {
+      "id": "drivingmenuts",
+      "lane": "claude",
+      "project": "projects/claude/DrivingMeNuts",
+      "port": 8094,
+      "start": "npm run dev -- --host 127.0.0.1 --port {port}",
+      "paths": ["/"],
+      "auth": null,
+      "adapter": "canvas-game"
+    },
+    {
+      "id": "tradegame-site",
+      "lane": "claude",
+      "project": "projects/claude/TradeGame/site",
+      "port": 8095,
+      "start": "python3 -m http.server {port} --bind 127.0.0.1",
+      "paths": ["/index.html", "/play/index.html", "/quiz/index.html"],
+      "auth": null,
+      "adapter": "static-site"
+    },
+    {
+      "id": "tradegame-sim",
+      "lane": "claude",
+      "project": "projects/claude/TradeGame/sim/dist-ui",
+      "port": 8096,
+      "start": "python3 -m http.server {port} --bind 127.0.0.1",
+      "paths": ["/index.html"],
+      "auth": null,
+      "adapter": "canvas-game"
+    },
+    {
+      "id": "cairn",
+      "lane": "shared",
+      "project": "projects/shared/Cairn/site",
+      "port": 8097,
+      "start": "python3 -m http.server {port} --bind 127.0.0.1",
+      "paths": ["/index.html"],
+      "auth": null,
+      "adapter": "static-site"
+    },
+    {
+      "id": "ilerioluwa",
+      "lane": "shared",
+      "project": "projects/shared/Ilerioluwa-GoalKeeper-Training-Institute---Preview",
+      "port": 8098,
+      "start": "python3 -m http.server {port} --bind 127.0.0.1",
+      "paths": ["/index.html"],
+      "auth": null,
+      "adapter": "static-site"
+    },
+    {
+      "id": "omnitender-web",
+      "lane": "gemini",
+      "project": "projects/gemini/omnitender-web",
+      "port": 8099,
+      "start": "python3 -m http.server {port} --bind 127.0.0.1",
+      "paths": ["/index.html", "/pa/index.html"],
+      "auth": null,
+      "adapter": "static-site"
+    },
+    {
+      "id": "omni-herald",
+      "lane": "gemini",
+      "project": "projects/gemini/omni-herald",
+      "port": 8100,
+      "start": "OH_DATA_DIR=./data/audit SESSION_SECRET=ui-audit-session-secret-32chars-min OWNER_USERNAME=ui-audit OWNER_BOOTSTRAP_PASSWORD=audit-bootstrap-12 PORT={port} HOST=127.0.0.1 python3 server.py",
+      "seed": "OH_DATA_DIR=./data/audit SESSION_SECRET=ui-audit-session-secret-32chars-min OWNER_USERNAME=ui-audit OWNER_BOOTSTRAP_PASSWORD=audit-bootstrap-12 python3 -c \"import server\"",
+      "paths": ["/"],
+      "auth": "omni-herald",
+      "adapter": "omni-herald"
+    }
+  ]
+}
