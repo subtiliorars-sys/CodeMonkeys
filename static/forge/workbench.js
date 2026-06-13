@@ -1,6 +1,8 @@
 /* Cursor-like workbench: toggle fleet store panel + embedded terminal + layout persist */
 "use strict";
 
+const WB_MOBILE = () => window.matchMedia("(max-width: 767px)").matches;
+
 const Workbench = {
   init() {
     const main = document.querySelector("#view-main main");
@@ -12,7 +14,8 @@ const Workbench = {
       bar.id = "wb-toolbar";
       bar.className = "px-4 py-1 border-b border-yellow-900/30 flex gap-2 text-[.65rem]";
       bar.innerHTML =
-        '<button id="wb-toggle-fleet" class="gold-border rounded px-2 py-0.5 text-slate-400 hover:text-[var(--gold)]">🛒 Store</button>' +
+        '<button id="wb-toggle-agents" class="gold-border rounded px-2 py-0.5 text-slate-400 hover:text-[var(--gold)]">🤖 Agents</button>' +
+        '<button id="wb-toggle-fleet" class="gold-border rounded px-2 py-0.5 text-slate-400 hover:text-[var(--gold)] hidden" title="Use Agents hub → Automations">🛒 Store</button>' +
         '<button id="wb-toggle-term" class="gold-border rounded px-2 py-0.5 text-slate-400 hover:text-[var(--gold)]">⌨ Terminal</button>' +
         '<span class="text-slate-600 flex-1 text-right">drag terminal top edge to resize</span>';
       header.after(bar);
@@ -58,13 +61,31 @@ const Workbench = {
 
     document.getElementById("wb-toggle-fleet")?.addEventListener("click", () => this.toggleFleet());
     document.getElementById("wb-toggle-term")?.addEventListener("click", () => this.toggleTerminal());
+    document.getElementById("wb-toggle-agents")?.addEventListener("click", () => {
+      if (window.AgentsHub) AgentsHub.open("automations");
+    });
 
-    this.restoreLayout();
-    if (localStorage.getItem("cm_wb_fleet") === "1") this.toggleFleet(true);
-    if (localStorage.getItem("cm_wb_term") === "1") this.toggleTerminal(true);
+    this.applyMobileLayout();
+    window.addEventListener("resize", () => this.applyMobileLayout());
+
+    if (!WB_MOBILE()) {
+      this.restoreLayout();
+      if (localStorage.getItem("cm_wb_fleet") === "1") this.toggleFleet(true);
+      if (localStorage.getItem("cm_wb_term") === "1") this.toggleTerminal(true);
+    }
+  },
+
+  applyMobileLayout() {
+    const mobile = WB_MOBILE();
+    document.getElementById("wb-toolbar")?.classList.toggle("hidden", mobile);
+    if (mobile) {
+      document.getElementById("panel-fleet")?.classList.add("hidden");
+      document.getElementById("panel-terminal")?.classList.add("hidden");
+    }
   },
 
   toggleFleet(forceOpen) {
+    if (WB_MOBILE()) return;
     const p = document.getElementById("panel-fleet");
     if (!p) return;
     const open = forceOpen === true ? true : p.classList.contains("hidden");
@@ -74,6 +95,7 @@ const Workbench = {
   },
 
   toggleTerminal(forceOpen) {
+    if (WB_MOBILE()) return;
     const p = document.getElementById("panel-terminal");
     if (!p) return;
     const open = forceOpen === true ? true : p.classList.contains("hidden");
