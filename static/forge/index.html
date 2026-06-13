@@ -33,6 +33,23 @@
     html.cm-kb-active #enc-banner,
     html.cm-kb-active #budget-alert { display: none !important; }
     html.cm-kb-active #stream { flex: 1 1 auto !important; min-height: 0 !important; }
+    #fb-fab {
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 11rem) !important;
+      right: 0.75rem !important;
+    }
+    html.cm-kb-active #fb-fab {
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 0.75rem) !important;
+      left: 0.75rem !important;
+      right: auto !important;
+    }
+    #steady-ground-btn {
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 6.5rem) !important;
+    }
+    html.cm-kb-active #steady-ground-btn {
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 4.25rem) !important;
+      left: 0.75rem !important;
+      right: auto !important;
+    }
   }
 </style>
 <style>
@@ -486,10 +503,7 @@
           <div id="memory-list" class="space-y-1"></div>
           <button id="btn-cost-dashboard" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">💰 Cost dashboard</button>
           <button id="btn-feedback-inbox" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">📥 Feedback inbox</button>
-<<<<<<< HEAD
           <a href="/static/forge/terminal.html" class="block text-slate-400 hover:text-[var(--gold)]">💻 Terminal console</a>
-=======
->>>>>>> 0198557 (feat: Cursor-style Agents hub for sessions and automations)
           <a href="/static/forge/swarm.html" class="block text-slate-400 hover:text-[var(--gold)]">🐵 Swarm view</a>
           <a href="/swarm" class="block text-slate-400 hover:text-[var(--gold)]">🌿 Colony (Phase 1)</a>
         </div>
