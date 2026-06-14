@@ -10,7 +10,12 @@ Read `docs/STATE.md` + `docs/IDEATION.md` before each wave. Never merge your own
 
 ## Active queue
 
-*(none)*
+### Wave CM-W5 — Three-card Field Report triage 🚧
+**Branch:** `automation/wave-cm-w5-three-card-triage`  
+**Scope:** Owner-only three-card feedback triage in Field Report inbox — heuristic
+`[FIX]`/`[INVESTIGATE]`/`[DISMISS]` proposals per report; reroll/edit/accept/dismiss
+via `/api/feedback/proposals/*` + `/api/feedback/action`; forge UI via
+`three-card-triage.js` + `feedback_triage.py` module.
 
 ## Blocked / owner-gated (queue only)
 - OAuth app registration, webhook secrets, terminal activation

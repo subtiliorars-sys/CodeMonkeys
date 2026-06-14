@@ -52,13 +52,151 @@ function showSetup() { hideAll(); $("view-setup").classList.remove("hidden"); }
 function showMain() {
   hideAll(); $("view-main").classList.remove("hidden");
   $("who").textContent = state.username;
-  // Owner-only controls hidden for invited Members
-  document.querySelectorAll(".owner-only").forEach((el) =>
-    el.classList.toggle("hidden", state.role !== "Owner"));
-  refreshSessions(); refreshSpecs(); refreshRepos(); listPasskeys();
+  const ownerOnlySkip = new Set(["budget-alert", "enc-banner", "budget-bar-wrap", "spend-sparkline-wrap"]);
+  document.querySelectorAll(".owner-only").forEach((el) => {
+    if (ownerOnlySkip.has(el.id)) return;
+    el.classList.toggle("hidden", state.role !== "Owner");
+  });
+  $("budget-alert")?.classList.add("hidden");
+  refreshSessions();
+  if (state.sid) {
+    refreshSpecs(); refreshRepos();
+  }
+  listPasskeys();
   if (state.role === "Owner") checkEncryptionBanner();
+  else $("enc-banner")?.classList.add("hidden");
   if (!state.sid) showLanding();
+  updateSidebarSessionUI();
 }
+
+function updateSidebarSessionUI() {
+  const active = !!state.sid;
+  const panel = $("sidebar-session-active");
+  if (panel) panel.classList.toggle("hidden", !active);
+  const titleEl = $("sidebar-session-title");
+  if (titleEl) {
+    if (!active) titleEl.textContent = "";
+    else {
+      const row = document.querySelector(`.session-title[data-sid="${state.sid}"]`);
+      titleEl.textContent = row ? row.textContent.trim() : state.sid.slice(0, 8);
+    }
+  }
+  document.querySelector("#view-main main > header")?.classList.toggle("hidden", !active);
+  $("btn-export-transcript")?.classList.toggle("hidden", !active);
+  $("btn-copy-transcript")?.classList.toggle("hidden", !active);
+  $("composer")?.classList.toggle("hidden", !active);
+  if (!active) $("budget-bar-wrap")?.classList.add("hidden");
+}
+
+function closeSessionView() {
+  stopPolling();
+  state.sid = null;
+  state.after = -1;
+  state.budget_usd = null;
+  _budgetAlertShownAt = 0;
+  $("budget-alert")?.classList.add("hidden");
+  $("hdr-title").textContent = "no session";
+  $("hdr-status").textContent = "";
+  $("hdr-spend").textContent = "";
+  $("stream").innerHTML = "";
+  _clearStreamState();
+  showLanding();
+  updateSidebarSessionUI();
+  refreshSessions();
+}
+
+async function createSession(kind) {
+  const isAuto = kind === "automation";
+  const defaultTitle = isAuto ? "Automation" : "Agent session";
+  const title = prompt("Session title (optional):", defaultTitle) || defaultTitle;
+  const d = await api("/api/sessions", "POST", { title });
+  if (isAuto) {
+    state.mode = "auto";
+    localStorage.setItem("cm_mode", "auto");
+    renderMode();
+  }
+  await refreshSessions();
+  openSession(d.id);
+}
+
+function openNewSessionModal() {
+  $("modal-new-session")?.classList.remove("hidden");
+}
+function closeNewSessionModal() {
+  $("modal-new-session")?.classList.add("hidden");
+}
+
+/** When a child modal was opened from Settings, return there on close. */
+let _settingsReturnTo = null;
+
+function settingsCloseChild(modalId) {
+  $(modalId).classList.add("hidden");
+  if (_settingsReturnTo) {
+    $(_settingsReturnTo)?.classList.remove("hidden");
+    _settingsReturnTo = null;
+  }
+}
+
+function doubleConfirmDanger(first, second) {
+  if (!confirm(first)) return false;
+  if (!confirm(second)) return false;
+  return true;
+}
+
+function initSettingsHub() {
+  $("btn-settings").onclick = () => $("modal-settings-hub").classList.remove("hidden");
+  $("settings-hub-close").onclick = () => $("modal-settings-hub").classList.add("hidden");
+
+  document.querySelectorAll("[data-settings-open]").forEach((btn) => {
+    btn.onclick = () => {
+      const which = btn.dataset.settingsOpen;
+      $("modal-settings-hub").classList.add("hidden");
+      if (which === "models") {
+        _settingsReturnTo = "modal-settings-hub";
+        $("btn-models").click();
+        return;
+      }
+      const modal = $(`modal-settings-${which}`);
+      if (modal) modal.classList.remove("hidden");
+      if (which === "account") listPasskeys();
+      if (which === "tools") listBlackboards();
+    };
+  });
+  document.querySelectorAll("[data-settings-close]").forEach((btn) => {
+    btn.onclick = () => {
+      const modal = $(`modal-settings-${btn.dataset.settingsClose}`);
+      if (modal) modal.classList.add("hidden");
+      $("modal-settings-hub").classList.remove("hidden");
+    };
+  });
+
+  document.querySelectorAll("[data-tab-group]").forEach((group) => {
+    const name = group.dataset.tabGroup;
+    group.querySelectorAll(".cm-tab").forEach((tab) => {
+      tab.onclick = () => {
+        group.querySelectorAll(".cm-tab").forEach((t) => t.classList.toggle("active", t === tab));
+        group.parentElement.querySelectorAll(".cm-tab-panel").forEach((p) => p.classList.add("hidden"));
+        const panel = $(`${name}-panel-${tab.dataset.tab}`);
+        if (panel) panel.classList.remove("hidden");
+      };
+    });
+  });
+}
+initSettingsHub();
+
+$("btn-search-sessions").onclick = () => {
+  if (window.OmniSearch) OmniSearch.toggle();
+};
+$("ns-close").onclick = closeNewSessionModal;
+$("ns-agent").onclick = async () => {
+  closeNewSessionModal();
+  try { await createSession("agent"); } catch (e) { alert(e.message); }
+};
+$("ns-automation").onclick = async () => {
+  closeNewSessionModal();
+  try { await createSession("automation"); } catch (e) { alert(e.message); }
+};
+$("btn-close-session").onclick = closeSessionView;
 
 // Encryption-status banner: non-blocking warning when model keys are stored
 // unencrypted (CM_MASTER_KEY unset) or couldn't be decrypted (wrong key).
@@ -179,12 +317,15 @@ async function listBlackboards() {
 const _cd = $("btn-cost-dashboard");
 if (_cd) _cd.onclick = openCostDashboard;
 
-$("cost-close").onclick = () => $("modal-cost").classList.add("hidden");
+$("cost-close").onclick = () => settingsCloseChild("modal-cost");
 
 function fmtUsd(v) { return "$" + Number(v || 0).toFixed(4); }
 function fmtK(n) { return n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n || 0); }
 
 async function openCostDashboard() {
+  _settingsReturnTo = "modal-settings-advanced";
+  $("modal-settings-advanced")?.classList.add("hidden");
+  $("modal-settings-hub")?.classList.add("hidden");
   $("modal-cost").classList.remove("hidden");
   $("cd-err").classList.add("hidden");
   // reset displays
@@ -279,8 +420,13 @@ async function openCostDashboard() {
 
 /* ---------------- invite developers (Owner) ---------------- */
 
-$("btn-invite").onclick = () => { $("modal-invite").classList.remove("hidden"); loadUsers(); };
-$("invite-close").onclick = () => $("modal-invite").classList.add("hidden");
+$("btn-invite").onclick = () => {
+  _settingsReturnTo = "modal-settings-advanced";
+  $("modal-settings-advanced")?.classList.add("hidden");
+  $("modal-settings-hub")?.classList.add("hidden");
+  $("modal-invite").classList.remove("hidden"); loadUsers();
+};
+$("invite-close").onclick = () => settingsCloseChild("modal-invite");
 
 $("inv-create").onclick = async () => {
   try {
@@ -296,15 +442,25 @@ $("inv-create").onclick = async () => {
 async function loadUsers() {
   const d = await api("/api/users");
   $("user-rows").innerHTML = d.users.map((u) => `
-    <div class="flex items-center gap-2 border-b border-slate-800/60 py-1">
-      <span class="flex-1 ${u.role === "Owner" ? "text-[var(--gold-bright)]" : "text-slate-300"}">${esc(u.username)}
-        <span class="text-slate-600">${esc(u.role)}${u.pending ? " · pending first login" : (u.has_mfa ? " · active" : "")}</span></span>
-      ${u.role === "Owner" ? "" : `<button data-u="${esc(u.username)}" class="user-del text-red-500/70 hover:text-red-400">remove</button>`}
+    <div class="flex flex-wrap items-center gap-2 border-b border-slate-800/60 py-1.5">
+      <span class="flex-1 min-w-[8rem] ${u.role === "Owner" ? "text-[var(--gold-bright)]" : "text-slate-300"}">${esc(u.username)}
+        <span class="text-slate-600">${esc(u.role)}${u.pending ? " · pending first login" : (u.has_mfa ? " · active" : "")}${u.role === "Owner" ? " · master keys" : ""}</span></span>
+      ${u.role === "Owner" ? "" : `
+        <select data-keys="${esc(u.username)}" class="text-[10px] bg-slate-900 border border-slate-700 rounded px-1.5 py-0.5 text-slate-300" title="API key source">
+          <option value="shared"${u.api_key_policy === "shared" ? " selected" : ""}>Daniel's keys</option>
+          <option value="own"${u.api_key_policy === "own" ? " selected" : ""}>Own keys only</option>
+        </select>`}
+      ${u.role === "Owner" ? "" : `<button data-u="${esc(u.username)}" class="user-del text-red-500/70 hover:text-red-400 text-[10px]">remove</button>`}
     </div>`).join("");
   document.querySelectorAll(".user-del").forEach((b) => (b.onclick = async () => {
     if (confirm(`Remove ${b.dataset.u}?`)) {
       await api(`/api/users/${encodeURIComponent(b.dataset.u)}`, "DELETE"); loadUsers();
     }
+  }));
+  document.querySelectorAll("[data-keys]").forEach((sel) => (sel.onchange = async () => {
+    try {
+      await api(`/api/users/${encodeURIComponent(sel.dataset.keys)}/api-keys`, "PATCH", { policy: sel.value });
+    } catch (e) { alert(e.message); loadUsers(); }
   }));
 }
 
@@ -365,17 +521,28 @@ $("btn-passkey").onclick = async () => {
 // W12 — list + remove registered passkeys
 async function listPasskeys() {
   const box = $("passkey-list");
+  const manage = $("passkey-manage");
   if (!box) return;
   try {
     const r = await api("/api/webauthn/credentials", "GET");
-    if (!r.credentials.length) { box.innerHTML = ""; return; }
+    if (!r.credentials.length) {
+      box.innerHTML = "";
+      manage?.classList.add("hidden");
+      return;
+    }
+    manage?.classList.remove("hidden");
     box.innerHTML = r.credentials.map((c) =>
       `<div class="flex items-center justify-between text-[.65rem] text-slate-500">`
       + `<span>🔑 ${c.short}…</span>`
-      + `<button data-cid="${c.id}" class="pk-rm text-red-400 hover:text-red-300">remove</button>`
+      + `<button type="button" data-cid="${c.id}" class="pk-rm text-red-400/70 hover:text-red-300 text-[.6rem]">Remove passkey…</button>`
       + `</div>`).join("");
     box.querySelectorAll(".pk-rm").forEach((b) => {
       b.onclick = async () => {
+        const ok = doubleConfirmDanger(
+          "Remove this passkey?\n\nYour fingerprint is going to feel personally rejected.",
+          "Last chance! You'll need your PIN again like it's 2015. Still sure?",
+        );
+        if (!ok) return;
         try { await api("/api/webauthn/credentials/" + b.dataset.cid, "DELETE"); listPasskeys(); }
         catch (e) { $("passkey-msg").textContent = "✗ " + e.message; }
       };
@@ -459,10 +626,10 @@ async function refreshSessions() {
       try { await api(`/api/sessions/${el.dataset.del}`, "DELETE"); }
       catch (err) { alert(err.message); return; }
       if (state.sid === el.dataset.del) {
-        state.sid = null; stopPolling(); $("stream").innerHTML = ""; _clearStreamState();
-        $("hdr-title").textContent = "no session"; showLanding();
+        closeSessionView();
+      } else {
+        refreshSessions();
       }
-      refreshSessions();
     }));
   } catch (e) { /* ignore */ }
 }
@@ -521,11 +688,7 @@ async function refreshRepos() {
   } catch (e) { /* ignore */ }
 }
 
-$("btn-new-session").onclick = async () => {
-  const title = prompt("Session title (optional):") || "";
-  const d = await api("/api/sessions", "POST", { title });
-  await refreshSessions(); openSession(d.id);
-};
+$("btn-new-session").onclick = openNewSessionModal;
 
 $("btn-clone").onclick = async () => {
   const url = $("repo-url").value.trim();
@@ -548,9 +711,10 @@ function openSession(sid) {
   _clearStreamState();
   hideLanding();
   refreshSessions();
+  refreshSpecs();
+  refreshRepos();
+  updateSidebarSessionUI();
   startPolling(true);
-  $("btn-export-transcript")?.classList.remove("hidden");
-  $("btn-copy-transcript")?.classList.remove("hidden");
 }
 
 $("btn-export-transcript").onclick = _exportTranscript;
@@ -840,38 +1004,6 @@ document.querySelectorAll(".mode-btn").forEach((b) => (b.onclick = () => {
 }));
 renderMode();
 
-/* ---------------- settings dropdown ---------------- */
-function setSettingsOpen(open) {
-  $("settings-menu").classList.toggle("hidden", !open);
-  $("settings-caret").textContent = open ? "▾" : "▸";
-}
-$("btn-settings").onclick = (e) => {
-  e.stopPropagation();
-  setSettingsOpen($("settings-menu").classList.contains("hidden"));
-};
-// Clicking a menu item that opens a modal (or the swarm link) collapses the menu;
-// the passkey button keeps it open so its inline status message stays visible.
-$("settings-menu").addEventListener("click", (e) => {
-  const t = e.target.closest("a, button");
-  if (t && t.id !== "btn-passkey") setSettingsOpen(false);
-});
-// Click outside the settings area closes it.
-document.addEventListener("click", (e) => {
-  if ($("settings-menu").classList.contains("hidden")) return;
-  if (!e.target.closest("#btn-settings") && !e.target.closest("#settings-menu"))
-    setSettingsOpen(false);
-});
-
-/* ---------------- sidebar advanced toggle ---------------- */
-
-function setSidebarAdvanced(open) {
-  $("sidebar-advanced").classList.toggle("hidden", !open);
-  $("sidebar-adv-caret").textContent = open ? "▾" : "▸";
-}
-$("btn-sidebar-advanced").onclick = () => {
-  setSidebarAdvanced($("sidebar-advanced").classList.contains("hidden"));
-};
-
 /* ---------------- landing welcome buttons ---------------- */
 
 function updateLandingMode() {
@@ -879,10 +1011,8 @@ function updateLandingMode() {
   if (el) el.textContent = state.mode;
 }
 // Wire landing buttons as shorthands to existing actions
-$("landing-new-session").onclick = $("btn-new-session").onclick;
-$("landing-models").onclick = () => {
-  $("btn-models").click();
-};
+$("landing-new-session").onclick = openNewSessionModal;
+$("landing-search-sessions").onclick = () => { if (window.OmniSearch) OmniSearch.toggle(); };
 // Update landing mode text when mode changes
 const _origRenderMode = renderMode;
 renderMode = function() {
@@ -943,7 +1073,7 @@ $("btn-models").onclick = () => {
   loadProviders();
   _loadSpendSparkline();
 };
-$("modal-close").onclick = () => $("modal-models").classList.add("hidden");
+$("modal-close").onclick = () => settingsCloseChild("modal-models");
 
 // Track which provider rows are expanded (session-only; collapses reset on modal close)
 const _pvExpanded = new Set();
@@ -1110,7 +1240,6 @@ async function loadProviders() {
           <input type="checkbox" class="pv-auto accent-yellow-500" data-id="${esc(p.id)}" ${p.auto ? "checked" : ""}>✓auto</label>
         ${p.has_key ? `<button data-id="${esc(p.id)}" class="pv-ping text-slate-500/60 hover:text-slate-300 text-[.65rem] border border-slate-700/50 rounded px-1.5" title="Send 1-token request to measure latency">ping</button>` : ""}
         <span class="pv-ping-result text-[.65rem]" data-id="${esc(p.id)}"></span>
-        <button data-id="${esc(p.id)}" class="pv-del text-red-500/60 hover:text-red-400">remove</button>
       </div>
       ${p.last_error ? `<div class="pl-6 mt-0.5 text-red-400/80 text-xs truncate" title="${esc(p.last_error)}">⚠ ${esc(p.last_error.slice(0, 80))}${p.last_error.length > 80 ? "…" : ""}</div>` : ""}
       ${p.has_key && allModels.length === 0 ? `<div class="pl-6 mt-0.5 text-yellow-500/80 text-xs">⚠ No models configured — add at least one model to use this provider.</div>` : ""}
@@ -1126,6 +1255,7 @@ async function loadProviders() {
         <button data-id="${esc(p.id)}" class="pv-savekey gold-btn rounded px-2 py-0.5">save</button>
         <span class="text-slate-600">$${p.out}/M</span>
         ${catAgeStr ? `<span class="text-slate-600 text-xs" title="Catalog last fetched">↻ ${esc(catAgeStr)}</span>` : ""}
+        <button type="button" data-id="${esc(p.id)}" class="pv-del text-red-500/50 hover:text-red-400 text-[.65rem] border border-red-900/30 rounded px-1.5" title="Remove provider and stored API key">Remove provider &amp; key…</button>
       </div>
       <div class="pv-detail flex flex-wrap items-center gap-1 mt-1 pl-6 ${expanded ? "" : "hidden"}">
         ${allModels.length >= 2 ? allModels.map((m) => {
@@ -1181,11 +1311,15 @@ async function loadProviders() {
     loadProviders();
   }));
   document.querySelectorAll(".pv-del").forEach((b) => (b.onclick = async () => {
-    const pDel = d.providers.find((x) => x.id === b.dataset.id);
-    const warn = pDel?.has_key ? `\n⚠ This provider has a key stored — it will be deleted too.` : "";
-    if (confirm(`Remove provider ${b.dataset.id}?${warn}`)) {
-      await api(`/api/models/${encodeURIComponent(b.dataset.id)}`, "DELETE"); loadProviders();
-    }
+    const id = b.dataset.id;
+    const pDel = d.providers.find((x) => x.id === id);
+    const keyNote = pDel?.has_key ? " Its API key goes with it." : "";
+    const ok = doubleConfirmDanger(
+      `Remove provider "${id}"?${keyNote}\n\nThe monkeys are nervous — they don't know who's paying for bananas now.`,
+      `Okay, but SERIOUSLY: "${id}" will be gone until you add it back. For real for real?`,
+    );
+    if (!ok) return;
+    await api(`/api/models/${encodeURIComponent(id)}`, "DELETE"); loadProviders();
   }));
   // ping handler
   document.querySelectorAll(".pv-ping").forEach((b) => (b.onclick = async () => {
@@ -1522,8 +1656,11 @@ function _updateBudgetBar(spent, cap) {
     const threshold = pct >= 95 ? 95 : pct >= 75 ? 75 : 0;
     if (threshold && threshold > _budgetAlertShownAt) {
       _budgetAlertShownAt = threshold;
-      alertMsg.textContent = `Budget ${Math.round(pct)}% used — $${spent.toFixed(4)} / $${cap.toFixed(2)}`;
+      const msg = `Budget ${Math.round(pct)}% used — $${spent.toFixed(4)} / $${cap.toFixed(2)}`;
+      alertMsg.textContent = msg;
       alertEl.classList.remove("hidden");
+    } else if (!threshold) {
+      alertEl.classList.add("hidden");
     }
   }
 }
@@ -1984,8 +2121,13 @@ const _PROVIDER_PRESETS = [
 
 /* ---------------- MCP modal ---------------- */
 
-$("btn-mcp").onclick = () => { $("modal-mcp").classList.remove("hidden"); loadMcpServers(); loadConnectorCatalog(); };
-$("mcp-close").onclick = () => $("modal-mcp").classList.add("hidden");
+$("btn-mcp").onclick = () => {
+  _settingsReturnTo = "modal-settings-tools";
+  $("modal-settings-tools")?.classList.add("hidden");
+  $("modal-settings-hub")?.classList.add("hidden");
+  $("modal-mcp").classList.remove("hidden"); loadMcpServers(); loadConnectorCatalog();
+};
+$("mcp-close").onclick = () => settingsCloseChild("modal-mcp");
 
 // Wave 4 #9 — connector marketplace: list catalog entries; click pre-fills the
 // add-form. Defensive: never throws if a field/element is absent.
@@ -2297,10 +2439,13 @@ $("btn-submit-pr").onclick = async () => {
 /* ---------------- Agent Corps Editor ---------------- */
 
 $("btn-corps").onclick = () => {
+  _settingsReturnTo = "modal-settings-advanced";
+  $("modal-settings-advanced")?.classList.add("hidden");
+  $("modal-settings-hub")?.classList.add("hidden");
   $("modal-corps").classList.remove("hidden");
   loadCorpsFiles();
 };
-$("corps-close").onclick = () => $("modal-corps").classList.add("hidden");
+$("corps-close").onclick = () => settingsCloseChild("modal-corps");
 
 async function loadCorpsFiles() {
   try {
@@ -2346,10 +2491,13 @@ $("corps-save").onclick = async () => {
 /* ---------------- feedback ---------------- */
 
 $("btn-feedback-inbox").onclick = () => {
+  _settingsReturnTo = "modal-settings-advanced";
+  $("modal-settings-advanced")?.classList.add("hidden");
+  $("modal-settings-hub")?.classList.add("hidden");
   $("modal-feedback").classList.remove("hidden");
   if (typeof FieldReport !== "undefined") FieldReport.init();
 };
-$("fb-inbox-close").onclick = () => $("modal-feedback").classList.add("hidden");
+$("fb-inbox-close").onclick = () => settingsCloseChild("modal-feedback");
 
 /* ---------------- boot ---------------- */
 

@@ -8,6 +8,7 @@
      /static/forge/tailwind.css. Owner confirmed it renders correctly in prod,
      so the runtime Tailwind CDN tag is gone and CSP script-src is 'self'. -->
 <link rel="stylesheet" href="/static/forge/tailwind.css">
+<link rel="stylesheet" href="/static/forge/three-card-triage.css">
 <style>
   :root {
     --gold: #d4af37; --gold-bright: #f0c75e; --gold-dark: #a67c12;
@@ -51,6 +52,17 @@
   .monkey { image-rendering: pixelated; filter: drop-shadow(0 0 8px rgba(212,175,55,.5)); }
   ::-webkit-scrollbar { width: 8px; } ::-webkit-scrollbar-thumb { background: #2b2415; border-radius: 4px; }
   #composer.drop-active { outline: 2px dashed var(--gold); outline-offset: -4px; background: rgba(212,175,55,.06); }
+  .cm-tabs { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+  .cm-tab { padding: 0.35rem 0.75rem; border-radius: 0.375rem; font-size: 0.72rem;
+            border: 1px solid rgba(212,175,55,.25); color: #94a3b8; cursor: pointer; }
+  .cm-tab.active { background: rgba(212,175,55,.15); color: var(--gold-bright); border-color: var(--gold); }
+  .cm-tab-panel.hidden { display: none; }
+  .settings-hub-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.65rem; }
+  .settings-hub-card { text-align: left; padding: 0.85rem; border-radius: 0.5rem;
+                       border: 1px solid rgba(212,175,55,.35); background: rgba(0,0,0,.25);
+                       color: #e2e8f0; font-size: 0.85rem; line-height: 1.35; }
+  .settings-hub-card:hover { border-color: var(--gold); background: rgba(212,175,55,.08); }
+  .settings-hub-card span { display: block; color: #64748b; margin-top: 0.2rem; }
 </style>
 <body class="scanlines h-screen overflow-hidden">
 
@@ -158,57 +170,39 @@
     <div class="p-3 border-b border-yellow-900/40 flex items-center gap-2">
       <span class="monkey">🐒</span><span class="wordmark font-bold">CodeMonkeys</span>
     </div>
-    <div class="p-3 text-xs flex-1 overflow-y-auto">
-      <div class="flex justify-between items-center mb-1">
-        <span class="text-slate-500 uppercase tracking-wider">Sessions</span>
-        <button id="btn-new-session" class="text-[var(--gold)] hover:text-[var(--gold-bright)]">+ new</button>
-      </div>
-      <input id="session-filter" type="text" class="input rounded px-2 py-0.5 text-[.7rem] w-full mb-1" placeholder="filter sessions…">
-      <div id="session-list" class="space-y-1 mb-1"></div>
-      <div id="sidebar-spend-today" class="owner-only text-slate-600 text-[.65rem] mb-3 hidden"></div>
-      <div class="mt-3 pt-2 border-t border-yellow-900/20">
-        <button id="btn-sidebar-advanced" class="flex items-center gap-1 text-slate-400 hover:text-slate-300 w-full text-left py-1">
-          <span id="sidebar-adv-caret">▸</span>
-          <span class="uppercase tracking-wider text-[.65rem]">Advanced</span>
-        </button>
-        <div id="sidebar-advanced" class="hidden mt-1 space-y-1">
-          <div class="flex justify-between items-center mb-1">
+    <div class="p-3 text-xs flex-1 overflow-y-auto flex flex-col gap-2 min-h-0">
+      <button id="btn-new-session" type="button" class="gold-btn w-full rounded py-2 text-sm font-bold">+ New Session</button>
+      <button id="btn-search-sessions" type="button" class="w-full rounded py-1.5 text-sm gold-border text-slate-300 hover:text-[var(--gold-bright)]">🔍 Search Sessions</button>
+      <p class="text-[.65rem] text-slate-600 text-center">Ctrl+K also opens search</p>
+
+      <div id="sidebar-session-active" class="hidden flex flex-col gap-2 flex-1 min-h-0 pt-2 border-t border-yellow-900/20">
+        <div class="flex justify-between items-center">
+          <span class="text-slate-500 uppercase tracking-wider text-[.65rem]">Active session</span>
+          <button id="btn-close-session" type="button" class="text-slate-500 hover:text-slate-300 text-[.65rem]" title="Close this session (keeps your history)">✕ close</button>
+        </div>
+        <div id="sidebar-session-title" class="text-[var(--gold-bright)] text-xs font-bold truncate"></div>
+        <input id="session-filter" type="text" class="input rounded px-2 py-0.5 text-[.7rem] w-full" placeholder="filter sessions…">
+        <div id="session-list" class="space-y-1 overflow-y-auto flex-1 min-h-0 max-h-40"></div>
+        <div id="sidebar-spend-today" class="owner-only text-slate-600 text-[.65rem] hidden"></div>
+        <div class="pt-2 border-t border-yellow-900/20 space-y-2">
+          <div class="flex justify-between items-center">
             <span class="text-slate-500 uppercase tracking-wider text-[.65rem]">Saved Plans</span>
-            <button id="btn-refresh-specs" class="text-[var(--gold)] hover:text-[var(--gold-bright)] text-[.65rem]" title="Refresh list">↻</button>
+            <button id="btn-refresh-specs" type="button" class="text-[var(--gold)] hover:text-[var(--gold-bright)] text-[.65rem]" title="Refresh list">↻</button>
           </div>
-          <div id="spec-list" class="space-y-1 mb-3"><div class="text-slate-600">none yet</div></div>
-          <div class="text-slate-500 uppercase tracking-wider text-[.65rem] mb-1">Repos</div>
-          <div id="repo-list" class="space-y-1 mb-2"></div>
-          <div class="flex gap-1 mb-2">
+          <div id="spec-list" class="space-y-1"><div class="text-slate-600">none yet</div></div>
+          <div class="text-slate-500 uppercase tracking-wider text-[.65rem]">Repos</div>
+          <div id="repo-list" class="space-y-1"></div>
+          <div class="flex gap-1">
             <input id="repo-url" class="input flex-1 rounded px-2 py-1 text-[.7rem]" placeholder="https://github.com/…">
-            <button id="btn-clone" class="gold-btn rounded px-2 text-[.7rem]">clone</button>
+            <button id="btn-clone" type="button" class="gold-btn rounded px-2 text-[.7rem]">clone</button>
           </div>
-          <button id="btn-submit-pr" class="owner-only w-full rounded py-1.5 text-[.7rem] gold-border text-[var(--gold-bright)] hover:bg-yellow-900/20 flex items-center justify-center gap-1">🚀 Submit Pull Request</button>
+          <button id="btn-submit-pr" type="button" class="owner-only w-full rounded py-1.5 text-[.7rem] gold-border text-[var(--gold-bright)] hover:bg-yellow-900/20 flex items-center justify-center gap-1">🚀 Submit Pull Request</button>
         </div>
       </div>
     </div>
     <div class="p-3 border-t border-yellow-900/40 text-xs space-y-2">
-      <div class="relative">
-        <button id="btn-settings" class="w-full text-left text-slate-400 hover:text-[var(--gold)] flex justify-between items-center">
-          <span>⚙ Settings</span><span id="settings-caret" class="text-slate-600">▸</span></button>
-        <div id="settings-menu" class="hidden mt-2 space-y-2 rounded border border-yellow-900/40 bg-black/40 p-2">
-          <button id="btn-models" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">⚙ Models &amp; keys</button>
-          <button id="btn-corps" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">⚙ Agent Corps (Personas)</button>
-          <button id="btn-mcp" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">🔌 MCP connectors</button>
-          <button id="btn-passkey" class="w-full text-left text-slate-400 hover:text-[var(--gold)]">👆 Add passkey / biometric</button>
-          <p id="passkey-msg" class="text-[.65rem] text-slate-500"></p>
-          <div id="passkey-list" class="mt-1 space-y-1"></div>
-          <button id="btn-invite" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">👥 Invite developers</button>
-          <button id="btn-memory" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">🧠 Memory boards</button>
-          <div id="memory-list" class="space-y-1"></div>
-          <button id="btn-cost-dashboard" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">💰 Cost dashboard</button>
-          <button id="btn-feedback-inbox" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">📥 Feedback inbox</button>
-          <a href="/static/forge/terminal.html" class="block text-slate-400 hover:text-[var(--gold)]">💻 Terminal console</a>
-          <a href="/static/forge/swarm.html" class="block text-slate-400 hover:text-[var(--gold)]">🐵 Swarm view</a>
-          <a href="/swarm" class="block text-slate-400 hover:text-[var(--gold)]">🌿 Colony (Phase 1)</a>
-        </div>
-      </div>
-      <button id="btn-logout" class="w-full text-left text-slate-600 hover:text-slate-300">⏻ <span id="who"></span> · log out</button>
+      <button id="btn-settings" type="button" class="w-full text-left text-slate-400 hover:text-[var(--gold)]">⚙ Settings</button>
+      <button id="btn-logout" type="button" class="w-full text-left text-slate-600 hover:text-slate-300">⏻ <span id="who"></span> · log out</button>
     </div>
   </aside>
 
@@ -242,13 +236,13 @@
       <div id="landing-welcome" class="flex flex-col items-center justify-center h-full text-center px-6">
         <div class="text-5xl monkey mb-4">🐒</div>
         <h2 class="wordmark text-xl font-bold mb-2">CodeMonkeys</h2>
-        <p class="text-slate-500 text-sm max-w-md mb-6">Your agents. Any model. Any browser.<br>Start a new session or pick one from the sidebar.</p>
+        <p class="text-slate-500 text-sm max-w-md mb-6">Your agents. Any model. Any browser.<br>Use <b class="text-slate-400">+ New Session</b> or <b class="text-slate-400">Search Sessions</b> in the sidebar.</p>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-lg">
           <button id="landing-new-session" class="gold-btn rounded-lg py-3 text-sm font-bold flex items-center justify-center gap-2">
             <span>+</span><span>New Session</span>
           </button>
-          <button id="landing-models" class="gold-border rounded-lg py-3 text-sm text-slate-300 hover:text-[var(--gold-bright)] flex items-center justify-center gap-2">
-            <span>⚙</span><span>Configure Models</span>
+          <button id="landing-search-sessions" type="button" class="gold-border rounded-lg py-3 text-sm text-slate-300 hover:text-[var(--gold-bright)] flex items-center justify-center gap-2">
+            <span>🔍</span><span>Search Sessions</span>
           </button>
         </div>
         <p class="text-slate-600 text-xs mt-6">mode: <span id="landing-mode" class="text-[var(--gold)]">default</span></p>
@@ -276,6 +270,128 @@
   </main>
 </div>
 
+<!-- ============ NEW SESSION PICKER ============ -->
+<div id="modal-new-session" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+  <div class="panel gold-border rounded-lg p-5 w-full max-w-sm text-sm">
+    <div class="flex justify-between items-center mb-3">
+      <h2 class="wordmark font-bold">Start something new</h2>
+      <button id="ns-close" type="button" class="text-slate-400 hover:text-white">✕</button>
+    </div>
+    <p class="text-xs text-slate-500 mb-4">Pick how you want to work. You can always switch modes later.</p>
+    <div class="space-y-2">
+      <button id="ns-agent" type="button" class="settings-hub-card w-full">
+        🐵 Agent session
+        <span>Chat with an AI helper — you guide each step.</span>
+      </button>
+      <button id="ns-automation" type="button" class="settings-hub-card w-full">
+        ⚡ Automation
+        <span>Auto mode — the agent keeps working on its own until you stop it.</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SETTINGS HUB ============ -->
+<div id="modal-settings-hub" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+  <div class="panel gold-border rounded-lg p-5 w-full max-w-md text-sm">
+    <div class="flex justify-between items-center mb-2">
+      <h2 class="wordmark font-bold">Settings</h2>
+      <button id="settings-hub-close" type="button" class="text-slate-400 hover:text-white">✕</button>
+    </div>
+    <p class="text-xs text-slate-500 mb-4">Pick a topic. Each one opens simple tabs — flip through until you find what you need.</p>
+    <div class="settings-hub-grid">
+      <button type="button" data-settings-open="account" class="settings-hub-card">👤 Account<span>Passkeys &amp; sign-in</span></button>
+      <button type="button" data-settings-open="models" class="settings-hub-card owner-only">🤖 AI &amp; Models<span>Pick models &amp; keys</span></button>
+      <button type="button" data-settings-open="tools" class="settings-hub-card owner-only">🔌 Tools<span>Plugins &amp; memory</span></button>
+      <button type="button" data-settings-open="advanced" class="settings-hub-card owner-only">⚙ Advanced<span>Team, agents, spending</span></button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SETTINGS: ACCOUNT ============ -->
+<div id="modal-settings-account" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+  <div class="panel gold-border rounded-lg p-5 w-full max-w-lg max-h-[90vh] overflow-y-auto text-sm">
+    <div class="flex justify-between items-center mb-3">
+      <h2 class="wordmark font-bold">Account</h2>
+      <button type="button" data-settings-close="account" class="text-slate-400 hover:text-white">✕</button>
+    </div>
+    <div class="cm-tabs mb-3" data-tab-group="account">
+      <button type="button" class="cm-tab active" data-tab="security">Security</button>
+    </div>
+    <div id="account-panel-security" class="cm-tab-panel space-y-3 text-xs">
+      <p class="text-slate-400">Use a passkey to sign in with your fingerprint or face — no PIN typing needed.</p>
+      <button id="btn-passkey" type="button" class="gold-btn w-full rounded py-2 text-sm">👆 Add passkey / biometric</button>
+      <p id="passkey-msg" class="text-[.65rem] text-slate-500"></p>
+      <details id="passkey-manage" class="hidden border border-slate-800/80 rounded px-2 py-1.5">
+        <summary class="cursor-pointer text-[.65rem] text-slate-500 hover:text-slate-300 select-none">Manage saved passkeys…</summary>
+        <p class="text-[.6rem] text-slate-600 mt-1 mb-1">Removing a passkey means typing your PIN again. We ask twice because you asked us to.</p>
+        <div id="passkey-list" class="space-y-1"></div>
+      </details>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SETTINGS: TOOLS ============ -->
+<div id="modal-settings-tools" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+  <div class="panel gold-border rounded-lg p-5 w-full max-w-lg max-h-[90vh] overflow-y-auto text-sm">
+    <div class="flex justify-between items-center mb-3">
+      <h2 class="wordmark font-bold">Tools</h2>
+      <button type="button" data-settings-close="tools" class="text-slate-400 hover:text-white">✕</button>
+    </div>
+    <div class="cm-tabs mb-3" data-tab-group="tools">
+      <button type="button" class="cm-tab active" data-tab="plugins">Plugins</button>
+      <button type="button" class="cm-tab" data-tab="memory">Memory</button>
+    </div>
+    <div id="tools-panel-plugins" class="cm-tab-panel space-y-3 text-xs">
+      <p class="text-slate-400">Connect outside services (GitHub, Google Drive, etc.) so agents can use them.</p>
+      <button id="btn-mcp" type="button" class="gold-btn w-full rounded py-2">🔌 Manage MCP connectors</button>
+    </div>
+    <div id="tools-panel-memory" class="cm-tab-panel hidden space-y-3 text-xs">
+      <p class="text-slate-400">Memory boards store notes agents can read across sessions.</p>
+      <button id="btn-memory" type="button" class="gold-border w-full rounded py-2 text-[var(--gold-bright)] hover:bg-yellow-900/20">🧠 Refresh memory boards</button>
+      <div id="memory-list" class="space-y-1"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============ SETTINGS: ADVANCED (owner) ============ -->
+<div id="modal-settings-advanced" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+  <div class="panel gold-border rounded-lg p-5 w-full max-w-lg max-h-[90vh] overflow-y-auto text-sm">
+    <div class="flex justify-between items-center mb-3">
+      <h2 class="wordmark font-bold">Advanced</h2>
+      <button type="button" data-settings-close="advanced" class="text-slate-400 hover:text-white">✕</button>
+    </div>
+    <div class="cm-tabs mb-3" data-tab-group="advanced">
+      <button type="button" class="cm-tab active" data-tab="team">Team</button>
+      <button type="button" class="cm-tab" data-tab="agents">Agents</button>
+      <button type="button" class="cm-tab" data-tab="spending">Spending</button>
+      <button type="button" class="cm-tab" data-tab="more">More</button>
+    </div>
+    <div id="advanced-panel-team" class="cm-tab-panel space-y-3 text-xs">
+      <p class="text-slate-400">Invite friends to use your workspace. Only invite people you trust.</p>
+      <button id="btn-invite" type="button" class="gold-btn w-full rounded py-2">👥 Invite developers</button>
+    </div>
+    <div id="advanced-panel-agents" class="cm-tab-panel hidden space-y-3 text-xs">
+      <p class="text-slate-400">Edit agent personality files (Agent Corps).</p>
+      <button id="btn-corps" type="button" class="gold-btn w-full rounded py-2">⚙ Agent Corps (Personas)</button>
+    </div>
+    <div id="advanced-panel-spending" class="cm-tab-panel hidden space-y-3 text-xs">
+      <p class="text-slate-400">See how much you've spent on AI calls.</p>
+      <button id="btn-cost-dashboard" type="button" class="gold-btn w-full rounded py-2">💰 Cost dashboard</button>
+    </div>
+    <div id="advanced-panel-more" class="cm-tab-panel hidden space-y-3 text-xs">
+      <p class="text-slate-400">Extra views and feedback from users.</p>
+      <button id="btn-feedback-inbox" type="button" class="gold-border w-full rounded py-2 text-[var(--gold-bright)] hover:bg-yellow-900/20 mb-2">📥 Feedback inbox</button>
+      <a href="/static/forge/terminal.html" class="block gold-border rounded py-2 px-3 text-center text-slate-300 hover:text-[var(--gold-bright)] mb-2">💻 Terminal console</a>
+      <a href="/static/forge/swarm.html" class="block gold-border rounded py-2 px-3 text-center text-slate-300 hover:text-[var(--gold-bright)] mb-2">🐵 Swarm view</a>
+      <a href="/swarm" class="block gold-border rounded py-2 px-3 text-center text-slate-300 hover:text-[var(--gold-bright)]">🌿 Colony (Phase 1)</a>
+    </div>
+  </div>
+</div>
+
+<!-- Hidden bridge: models opened from hub (owner) -->
+<button id="btn-models" type="button" class="hidden" aria-hidden="true"></button>
+
 <!-- ============ MODELS MODAL ============ -->
 <div id="modal-models" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
   <div class="panel gold-border rounded-lg p-5 w-full max-w-2xl max-h-[90vh] overflow-y-auto text-sm">
@@ -289,6 +405,12 @@
       <span id="export-msg" class="text-xs text-slate-500"></span>
       <button id="modal-close" class="text-slate-400 hover:text-white ml-1">✕</button>
     </div>
+    <div class="cm-tabs mb-3" data-tab-group="models">
+      <button type="button" class="cm-tab active" data-tab="easy">Easy start</button>
+      <button type="button" class="cm-tab" data-tab="models">Models</button>
+      <button type="button" class="cm-tab" data-tab="power">Advanced</button>
+    </div>
+    <div id="models-panel-easy" class="cm-tab-panel">
     <div id="spend-sparkline-wrap" class="owner-only hidden mb-3 text-xs">
       <div class="flex items-end gap-0.5 h-8" id="spend-sparkline-bars" title="7-day spend"></div>
       <div id="spend-sparkline-label" class="text-slate-600 mt-0.5"></div>
@@ -311,6 +433,9 @@
       </div>
       <div id="route-preview" class="text-slate-500"></div>
     </div>
+    <p class="text-xs text-slate-500 mb-3">Tip: open the <b class="text-slate-400">Models</b> tab to pick a specific AI, or <b class="text-slate-400">Advanced</b> for power-user tools.</p>
+    </div>
+    <div id="models-panel-models" class="cm-tab-panel hidden">
     <div class="flex items-center gap-2 mb-1">
       <p class="text-xs text-slate-500 flex-1">One API key per provider — then pick any model from it. ★ = main provider (when Auto is off). ✓ = include in the cheapest-first cascade.</p>
       <input id="provider-search" type="text" class="input rounded px-2 py-0.5 text-xs w-28" placeholder="search models…" title="Filter providers by model name (global)">
@@ -327,6 +452,8 @@
       <button id="btn-expand-all" class="text-slate-500 hover:text-slate-300 text-xs border border-slate-700 rounded px-2 py-0.5" title="Expand all">▼▼</button>
     </div>
     <div id="provider-rows" class="space-y-1 mb-4 text-xs"></div>
+    </div>
+    <div id="models-panel-power" class="cm-tab-panel hidden">
     <div id="cost-calc-section" class="hidden border-t border-slate-800 pt-3 mb-3">
       <div class="flex items-center gap-3 mb-2">
         <span class="text-slate-400 font-semibold text-xs">Cost estimate</span>
@@ -394,6 +521,7 @@
         <button id="pv-save" class="gold-btn rounded py-1">Add provider</button>
         <p id="pv-msg" class="col-span-2 text-xs text-slate-400"></p>
       </div>
+    </div>
     </div>
   </div>
 </div>
@@ -536,7 +664,7 @@
 
 <!-- ============ FEEDBACK INBOX MODAL ============ -->
 <div id="modal-feedback" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-  <div class="panel gold-border rounded-lg p-5 w-full max-w-lg max-h-[90vh] overflow-y-auto text-sm">
+  <div class="panel gold-border rounded-lg p-5 w-full max-w-[min(96vw,1200px)] max-h-[90vh] overflow-y-auto text-sm">
     <div class="flex justify-between items-center mb-3">
       <h2 class="wordmark font-bold">Feedback Inbox</h2>
       <button id="fb-inbox-close" class="text-slate-400 hover:text-white">✕</button>
@@ -547,6 +675,7 @@
 
 <script src="/static/forge/omni-search.js"></script>
 <script src="/static/forge/app.js"></script>
+<script src="/static/forge/three-card-triage.js"></script>
 <script src="/static/forge/field-report.js"></script>
 <script src="/static/forge/feedback.js"></script>
 </body>
