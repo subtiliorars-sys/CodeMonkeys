@@ -7,8 +7,13 @@ const AgentsHub = {
   specs: [],
   fleetJobs: [],
   personas: [],
+  skills: [],
   selectedSid: null,
   selectedPersona: null,
+  selectedSkill: null,
+  hooksContent: "",
+  selectedFleetJobId: null,
+  fleetJobDetail: null,
   pollTimer: null,
   _fleetJobId: null,
 
@@ -72,12 +77,32 @@ const AgentsHub = {
         this.fleetJobs = fj.jobs || fj || [];
         if (!Array.isArray(this.fleetJobs)) this.fleetJobs = [];
       } catch (_) { this.fleetJobs = []; }
+      if (this.selectedFleetJobId) {
+        try {
+          this.fleetJobDetail = await this.api(`/api/fleet/jobs/${this.selectedFleetJobId}`);
+        } catch (_) { this.fleetJobDetail = null; }
+      }
     }
     if (this.tab === "personas" && window.state?.role === "Owner") {
       try {
         const c = await this.api("/api/corps/list");
         this.personas = c.files || [];
       } catch (_) { this.personas = []; }
+    }
+    if (this.tab === "skills" && window.state?.role === "Owner") {
+      try {
+        const s = await this.api("/api/agents/skills");
+        this.skills = s.skills || [];
+      } catch (_) { this.skills = []; }
+    }
+    if (this.tab === "hooks" && window.state?.role === "Owner") {
+      try {
+        const h = await this.api("/api/agents/hooks");
+        this.hooksContent = h.content || "";
+      } catch (_) { this.hooksContent = ""; }
+    }
+    if (quiet && (this.tab === "hooks" || this.tab === "personas" || this.tab === "skills")) {
+      return;
     }
     this._render();
   },
@@ -158,6 +183,75 @@ const AgentsHub = {
     } catch (e) { this._msg(e.message, true); }
   },
 
+  async loadHooks() {
+    try {
+      const h = await this.api("/api/agents/hooks");
+      this.hooksContent = h.content || "";
+      const ed = document.getElementById("ah-hooks-editor");
+      if (ed) ed.value = this.hooksContent;
+    } catch (e) { this._msg(e.message, true); }
+  },
+
+  async saveHooks() {
+    const content = document.getElementById("ah-hooks-editor")?.value || "";
+    try {
+      await this.api("/api/agents/hooks", "PUT", { content });
+      this.hooksContent = content;
+      this._msg("Hooks saved ✓");
+    } catch (e) { this._msg(e.message, true); }
+  },
+
+  async loadSkill(id) {
+    this.selectedSkill = id;
+    try {
+      const d = await this.api(`/api/agents/skills/${encodeURIComponent(id)}`);
+      document.getElementById("ah-skill-editor").value = d.content || "";
+      document.getElementById("ah-skill-name").textContent = id;
+      document.getElementById("ah-skill-save").classList.remove("hidden");
+    } catch (e) { this._msg(e.message, true); }
+  },
+
+  async saveSkill() {
+    const id = this.selectedSkill;
+    if (!id) return;
+    const content = document.getElementById("ah-skill-editor")?.value || "";
+    try {
+      await this.api(`/api/agents/skills/${encodeURIComponent(id)}`, "PUT", { content });
+      this._msg("Skill saved ✓");
+      this.refresh(true);
+    } catch (e) { this._msg(e.message, true); }
+  },
+
+  async newSkill() {
+    const id = (document.getElementById("ah-skill-new-id")?.value || "").trim().toLowerCase();
+    if (!id || !/^[a-z][a-z0-9_-]{0,31}$/.test(id)) {
+      this._msg("Skill id: lowercase letter then a-z, 0-9, _, -", true);
+      return;
+    }
+    const content = `# ${id}\n\nDescribe when to use this skill and what the agent should do.\n`;
+    try {
+      await this.api("/api/agents/skills", "POST", { id, content });
+      this.selectedSkill = id;
+      await this.refresh(true);
+      await this.loadSkill(id);
+      this._msg("Skill created ✓");
+    } catch (e) { this._msg(e.message, true); }
+  },
+
+  selectFleetJob(jobId) {
+    this.selectedFleetJobId = jobId;
+    this.fleetJobDetail = null;
+    this.refresh(true);
+  },
+
+  async approveFleetJob(digest, approved) {
+    if (!this.selectedFleetJobId) return;
+    try {
+      await this.api(`/api/fleet/jobs/${this.selectedFleetJobId}/approve`, "POST", { digest, approved });
+      await this.refresh(true);
+    } catch (e) { this._msg(e.message, true); }
+  },
+
   async runSpec(slug) {
     try {
       const d = await this.api(`/api/specs/${encodeURIComponent(slug)}/execute`, "POST", {});
@@ -178,6 +272,7 @@ const AgentsHub = {
       }
       const d = await this.api("/api/fleet/jobs", "POST", { platform, game, dry_run });
       this._fleetJobId = d.job_id;
+      this.selectedFleetJobId = d.job_id;
       this._msg(`Fleet job ${d.job_id} started`);
       this.refresh();
     } catch (e) { this._msg(e.message, true); }
@@ -245,6 +340,43 @@ const AgentsHub = {
       + `</div>`;
   },
 
+  _fleetStatusClass(status) {
+    const s = status || "unknown";
+    if (s === "running" || s === "pending") return "ah-fleet-run";
+    if (s === "waiting_approval" || s === "awaiting_approval") return "ah-fleet-wait";
+    if (s === "completed") return "ah-fleet-ok";
+    if (s === "failed" || s === "denied") return "ah-fleet-err";
+    return "ah-fleet-idle";
+  },
+
+  _renderFleetJobDetail() {
+    const j = this.fleetJobDetail;
+    if (!j) {
+      return `<p class="text-slate-600 text-[.65rem] mt-2">Select a job for live logs and approval prompts.</p>`;
+    }
+    const pending = j.pending_approval || j.pendingApproval;
+    let approval = "";
+    if (pending) {
+      approval = `<div class="ah-fleet-approval gold-border rounded p-2 mt-2 bg-yellow-900/10">`
+        + `<div class="text-[var(--gold-bright)] font-bold text-[.65rem] mb-1">Approval required</div>`
+        + `<div class="text-[.65rem] mb-1">${this.esc(pending.summary?.action || "action")}</div>`
+        + `<div class="text-slate-500 text-[.65rem] mb-2">digest: <code>${this.esc(pending.digest)}</code></div>`
+        + `<button type="button" class="gold-btn rounded px-2 py-1 text-[.65rem] mr-2" data-ah-fleet-yes="${this.esc(pending.digest)}">Approve</button>`
+        + `<button type="button" class="rounded px-2 py-1 text-[.65rem] bg-red-900/60" data-ah-fleet-no="${this.esc(pending.digest)}">Deny</button>`
+        + `</div>`;
+    }
+    const logs = (j.logs || []).join("\n") || "(no logs yet)";
+    return `<div class="ah-fleet-detail mt-3 gold-border rounded p-2 bg-black/20">`
+      + `<div class="flex flex-wrap gap-2 items-center text-[.65rem] mb-2">`
+      + `<strong class="text-slate-300">${this.esc(j.job_id || j.id || "?")}</strong>`
+      + `<span class="ah-fleet-badge ${this._fleetStatusClass(j.status)}">${this.esc(j.status || "?")}</span>`
+      + `<span class="text-slate-500">${this.esc(j.platform || "")} · ${this.esc(j.game || "")}</span>`
+      + `</div>`
+      + approval
+      + `<pre class="ah-fleet-logs">${this.esc(logs)}</pre>`
+      + `</div>`;
+  },
+
   _renderAutomations() {
     if (window.state?.role !== "Owner") {
       return `<p class="text-slate-500 text-xs">Automations (Fleet Store + saved plans) are owner-only.</p>`;
@@ -261,9 +393,11 @@ const AgentsHub = {
 
     const jobRows = (this.fleetJobs || []).slice(0, 12).map((j) => {
       const id = j.job_id || j.id || "?";
-      return `<div class="ah-auto-row text-[.7rem]">`
-        + `<span>${this.esc(id.slice(0, 8))}… · ${this.esc(j.status || "?")} · ${this.esc(j.platform || "")}</span>`
-        + `</div>`;
+      const active = id === this.selectedFleetJobId ? " ah-fleet-row-active" : "";
+      return `<button type="button" class="ah-auto-row ah-fleet-row${active} text-[.7rem] w-full text-left" data-ah-fleet-job="${this.esc(id)}">`
+        + `<span class="ah-fleet-badge ${this._fleetStatusClass(j.status)}">${this.esc(j.status || "?")}</span>`
+        + `<span>${this.esc(id.slice(0, 8))}… · ${this.esc(j.platform || "")} · ${this.esc(j.game || "")}</span>`
+        + `</button>`;
     }).join("");
 
     return `<div class="ah-auto-section">`
@@ -280,7 +414,8 @@ const AgentsHub = {
       + `<label class="flex items-center gap-1 text-slate-500 text-[.65rem]"><input type="checkbox" id="ah-fs-dry"> dry-run</label>`
       + `<button type="button" id="ah-fs-start" class="gold-btn rounded px-2 py-1 text-xs">Start</button>`
       + `</div>`
-      + (jobRows ? `<div class="mt-2 space-y-1">${jobRows}</div>` : "")
+      + (jobRows ? `<div class="mt-2 space-y-1">${jobRows}</div>` : `<p class="text-slate-600 text-xs mt-2">No fleet jobs yet.</p>`)
+      + this._renderFleetJobDetail()
       + `</div>`;
   },
 
@@ -321,22 +456,49 @@ const AgentsHub = {
   },
 
   _renderHooks() {
-    return `<div class="ah-rules">`
-      + `<p class="text-slate-400 text-xs mb-3">Cursor-style hooks fire on session events (preToolUse, subagentStart, etc.). CodeMonkeys corps hooks live in git-guards; IDE hooks are a separate Cursor Desktop feature.</p>`
-      + `<div class="ah-rule-cards">`
-      + `<div class="ah-rule-card"><strong>Secret scan</strong><span>Pre-commit — blocks credentials in commits</span></div>`
-      + `<div class="ah-rule-card"><strong>Brand lint</strong><span>Pre-push on public marketing paths</span></div>`
-      + `<div class="ah-rule-card"><strong>Approval gate</strong><span>Push/deploy/destructive bash pauses in UI</span></div>`
-      + `<div class="ah-rule-card"><strong>Debate-verify</strong><span>Auto-mode risky bash → 3-lens panel</span></div>`
+    if (window.state?.role !== "Owner") {
+      return `<p class="text-slate-500 text-xs">Hooks editor is owner-only.</p>`;
+    }
+    return `<div class="ah-hooks-layout">`
+      + `<p class="text-slate-400 text-xs mb-2">Cursor-compatible hook config stored at <code>corps/hooks.json</code>. Git guards in <code>.githooks/</code> still run on commit/push separately.</p>`
+      + `<div class="flex justify-end mb-2">`
+      + `<button type="button" id="ah-hooks-save" class="gold-btn rounded px-2 py-1 text-[.65rem]">Save hooks</button>`
       + `</div>`
-      + `<p class="text-slate-600 text-[.65rem] mt-3">CM-UI-W3 will surface editable hook config here when wired to a server endpoint.</p>`
-      + `</div>`;
+      + `<textarea id="ah-hooks-editor" class="ah-persona-editor ah-hooks-editor" spellcheck="false" placeholder='{"version": 1, "hooks": {}}'></textarea>`
+      + `<div class="ah-rule-cards mt-3">`
+      + `<div class="ah-rule-card"><strong>Secret scan</strong><span>Pre-commit — blocks credentials</span></div>`
+      + `<div class="ah-rule-card"><strong>Brand lint</strong><span>Pre-push on marketing paths</span></div>`
+      + `</div></div>`;
+  },
+
+  _renderSkills() {
+    if (window.state?.role !== "Owner") {
+      return `<p class="text-slate-500 text-xs">Skills editor is owner-only.</p>`;
+    }
+    const list = this.skills.map((s) =>
+      `<button type="button" class="ah-persona-pick${s.id === this.selectedSkill ? " active" : ""}" data-ah-skill="${this.esc(s.id)}" title="${this.esc(s.description || "")}">${this.esc(s.title || s.id)}</button>`
+    ).join("") || `<p class="text-slate-600 text-xs">No skills yet.</p>`;
+
+    return `<div class="ah-personas-layout">`
+      + `<div class="ah-persona-list">${list}`
+      + `<div class="mt-3 pt-2 border-t border-yellow-900/20">`
+      + `<input type="text" id="ah-skill-new-id" class="input w-full rounded px-2 py-1 text-[.65rem] mb-1" placeholder="new-skill-id">`
+      + `<button type="button" id="ah-skill-new" class="gold-border rounded px-2 py-1 text-[.65rem] w-full">+ New skill</button>`
+      + `</div></div>`
+      + `<div class="ah-persona-editor-wrap">`
+      + `<div class="flex justify-between items-center mb-2">`
+      + `<code id="ah-skill-name" class="text-yellow-500/90 text-xs">select a skill</code>`
+      + `<button type="button" id="ah-skill-save" class="gold-btn rounded px-2 py-1 text-[.65rem] hidden">Save</button>`
+      + `</div>`
+      + `<textarea id="ah-skill-editor" class="ah-persona-editor" spellcheck="false" placeholder="SKILL.md — when to use this skill and steps to follow…"></textarea>`
+      + `</div></div>`;
   },
 
   _renderMain() {
     switch (this.tab) {
       case "automations": return this._renderAutomations();
       case "personas": return this._renderPersonas();
+      case "skills": return this._renderSkills();
       case "rules": return this._renderRules();
       case "hooks": return this._renderHooks();
       default: return this._renderSessionDetail();
@@ -387,8 +549,29 @@ const AgentsHub = {
     document.querySelectorAll("[data-ah-persona]").forEach((b) => {
       b.onclick = () => this.loadPersona(b.dataset.ahPersona);
     });
+    document.querySelectorAll("[data-ah-skill]").forEach((b) => {
+      b.onclick = () => this.loadSkill(b.dataset.ahSkill);
+    });
+    document.querySelectorAll("[data-ah-fleet-job]").forEach((b) => {
+      b.onclick = () => this.selectFleetJob(b.dataset.ahFleetJob);
+    });
+    document.querySelectorAll("[data-ah-fleet-yes]").forEach((b) => {
+      b.onclick = () => this.approveFleetJob(b.dataset.ahFleetYes, true);
+    });
+    document.querySelectorAll("[data-ah-fleet-no]").forEach((b) => {
+      b.onclick = () => this.approveFleetJob(b.dataset.ahFleetNo, false);
+    });
     document.getElementById("ah-fs-start") && (document.getElementById("ah-fs-start").onclick = () => this.startFleetJob());
     document.getElementById("ah-persona-save") && (document.getElementById("ah-persona-save").onclick = () => this.savePersona());
+    document.getElementById("ah-hooks-save") && (document.getElementById("ah-hooks-save").onclick = () => this.saveHooks());
+    document.getElementById("ah-skill-save") && (document.getElementById("ah-skill-save").onclick = () => this.saveSkill());
+    document.getElementById("ah-skill-new") && (document.getElementById("ah-skill-new").onclick = () => this.newSkill());
+    if (this.tab === "hooks") {
+      const hooksEd = document.getElementById("ah-hooks-editor");
+      if (hooksEd) {
+        hooksEd.value = this.hooksContent || '{\n  "version": 1,\n  "hooks": {}\n}\n';
+      }
+    }
     document.getElementById("ah-persona-spawn") && (document.getElementById("ah-persona-spawn").onclick = () => {
       if (this.selectedPersona) this.spawnPersona(this.selectedPersona);
     });
@@ -431,6 +614,7 @@ const AgentsHub = {
       + `<button type="button" class="ah-tab active" data-tab="sessions">Session</button>`
       + `<button type="button" class="ah-tab owner-only" data-tab="automations">Automations</button>`
       + `<button type="button" class="ah-tab owner-only" data-tab="personas">Personas</button>`
+      + `<button type="button" class="ah-tab owner-only" data-tab="skills">Skills</button>`
       + `<button type="button" class="ah-tab" data-tab="rules">Rules</button>`
       + `<button type="button" class="ah-tab owner-only" data-tab="hooks">Hooks</button>`
       + `</nav>`

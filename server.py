@@ -168,6 +168,10 @@ SESSIONS_DIR = os.path.join(DATA_DIR, "sessions")
 WORKSPACE_DIR = os.environ.get("WORKSPACE_DIR", os.path.join(DATA_DIR, "workspace"))
 SECRET_FILE = os.path.join(DATA_DIR, "session_secret.key")
 CORPS_DIR = os.path.join(BASE_DIR, "corps", "agents")
+CORPS_SKILLS_DIR = os.path.join(BASE_DIR, "corps", "skills")
+CORPS_HOOKS_FILE = os.path.join(BASE_DIR, "corps", "hooks.json")
+_AGENTS_CONFIG_MAX_BYTES = 256_000
+_DEFAULT_HOOKS_DOC = {"version": 1, "hooks": {}}
 
 MCP_TOKENS_FILE = os.path.join(DATA_DIR, "mcp_tokens.json")
 VERTEX_USER_CREDS_DIR = os.path.join(DATA_DIR, "vertex_user")
@@ -8051,6 +8055,153 @@ def corps_write(req: PersonaSave, owner: str = Depends(verify_owner)):
         return {"ok": True}
     except Exception as e:
         raise HTTPException(500, f"Write error: {str(e)}")
+
+
+# ---- Agents Hub: hooks + skills (Cursor parity) ------------------------------
+
+_SKILL_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+
+
+def _safe_skill_dir(skill_id: str) -> str:
+    if not _SKILL_ID_RE.fullmatch(skill_id):
+        raise HTTPException(400, "Invalid skill id")
+    root = os.path.realpath(CORPS_SKILLS_DIR)
+    path = os.path.realpath(os.path.join(CORPS_SKILLS_DIR, skill_id))
+    if path != root and not path.startswith(root + os.sep):
+        raise HTTPException(400, "Invalid skill id")
+    return path
+
+
+def _skill_md_path(skill_id: str) -> str:
+    return os.path.join(_safe_skill_dir(skill_id), "SKILL.md")
+
+
+def _validate_hooks_doc(doc) -> dict:
+    if not isinstance(doc, dict):
+        raise HTTPException(400, "Hooks must be a JSON object")
+    if not isinstance(doc.get("version"), int):
+        raise HTTPException(400, "Hooks require integer version")
+    if not isinstance(doc.get("hooks"), dict):
+        raise HTTPException(400, "Hooks require hooks object")
+    return doc
+
+
+def _read_hooks_file() -> dict:
+    if not os.path.isfile(CORPS_HOOKS_FILE):
+        return dict(_DEFAULT_HOOKS_DOC)
+    with open(CORPS_HOOKS_FILE, "r", encoding="utf-8") as f:
+        return _validate_hooks_doc(json.load(f))
+
+
+def _parse_skill_meta(skill_path: str) -> dict:
+    title = os.path.basename(os.path.dirname(skill_path))
+    description = ""
+    try:
+        with open(skill_path, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+        for line in lines:
+            line = line.strip()
+            if line.startswith("# "):
+                title = line[2:].strip()
+                break
+        for line in lines:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                description = line[:160]
+                break
+    except OSError:
+        pass
+    return {"title": title, "description": description}
+
+
+def _list_skills() -> list:
+    if not os.path.isdir(CORPS_SKILLS_DIR):
+        return []
+    skills = []
+    for name in sorted(os.listdir(CORPS_SKILLS_DIR)):
+        if not _SKILL_ID_RE.fullmatch(name):
+            continue
+        skill_path = os.path.join(CORPS_SKILLS_DIR, name, "SKILL.md")
+        if os.path.isfile(skill_path):
+            skills.append({"id": name, **_parse_skill_meta(skill_path)})
+    return skills
+
+
+@app.get("/api/agents/hooks")
+def agents_hooks_read(owner: str = Depends(verify_owner)):
+    doc = _read_hooks_file()
+    return {
+        "content": json.dumps(doc, indent=2) + "\n",
+        "doc": doc,
+    }
+
+
+class HooksSave(BaseModel):
+    content: str
+
+
+@app.put("/api/agents/hooks")
+def agents_hooks_write(req: HooksSave, owner: str = Depends(verify_owner)):
+    if len(req.content.encode("utf-8")) > _AGENTS_CONFIG_MAX_BYTES:
+        raise HTTPException(400, "Hooks file too large")
+    try:
+        doc = _validate_hooks_doc(json.loads(req.content))
+    except json.JSONDecodeError as e:
+        raise HTTPException(400, f"Invalid JSON: {e}")
+    os.makedirs(os.path.dirname(CORPS_HOOKS_FILE), exist_ok=True)
+    with open(CORPS_HOOKS_FILE, "w", encoding="utf-8") as f:
+        json.dump(doc, f, indent=2)
+        f.write("\n")
+    return {"ok": True}
+
+
+@app.get("/api/agents/skills")
+def agents_skills_list(owner: str = Depends(verify_owner)):
+    return {"skills": _list_skills()}
+
+
+@app.get("/api/agents/skills/{skill_id}")
+def agents_skill_read(skill_id: str, owner: str = Depends(verify_owner)):
+    path = _skill_md_path(skill_id)
+    if not os.path.isfile(path):
+        raise HTTPException(404, "Skill not found")
+    with open(path, "r", encoding="utf-8") as f:
+        content = f.read()
+    return {"id": skill_id, "content": content, **_parse_skill_meta(path)}
+
+
+class SkillSave(BaseModel):
+    content: str
+
+
+class SkillCreate(SkillSave):
+    id: str
+
+
+@app.post("/api/agents/skills")
+def agents_skill_create(req: SkillCreate, owner: str = Depends(verify_owner)):
+    if len(req.content.encode("utf-8")) > _AGENTS_CONFIG_MAX_BYTES:
+        raise HTTPException(400, "Skill file too large")
+    path = _skill_md_path(req.id)
+    if os.path.isfile(path):
+        raise HTTPException(409, "Skill already exists")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(req.content)
+    return {"ok": True, "id": req.id}
+
+
+@app.put("/api/agents/skills/{skill_id}")
+def agents_skill_write(skill_id: str, req: SkillSave, owner: str = Depends(verify_owner)):
+    if len(req.content.encode("utf-8")) > _AGENTS_CONFIG_MAX_BYTES:
+        raise HTTPException(400, "Skill file too large")
+    path = _skill_md_path(skill_id)
+    if not os.path.isfile(path):
+        raise HTTPException(404, "Skill not found")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(req.content)
+    return {"ok": True}
+
 
 class TerminalExec(BaseModel):
     sid: str

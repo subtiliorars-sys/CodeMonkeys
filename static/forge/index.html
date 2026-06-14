@@ -206,6 +206,29 @@
     font-size: 0.75rem;
   }
   .ah-fleet-form { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-top: 0.5rem; }
+  .ah-fleet-row { cursor: pointer; border-radius: 0.25rem; padding: 0.35rem 0.5rem !important; }
+  .ah-fleet-row:hover, .ah-fleet-row-active { background: rgba(234,179,8,.08); }
+  .ah-fleet-badge {
+    display: inline-block;
+    font-size: 0.6rem;
+    padding: 0.1rem 0.35rem;
+    border-radius: 0.2rem;
+    margin-right: 0.35rem;
+    text-transform: lowercase;
+  }
+  .ah-fleet-run { background: rgba(57,211,83,.15); color: #86efac; }
+  .ah-fleet-wait { background: rgba(234,179,8,.2); color: #fde68a; }
+  .ah-fleet-ok { background: rgba(57,211,83,.1); color: #4ade80; }
+  .ah-fleet-err { background: rgba(239,68,68,.15); color: #fca5a5; }
+  .ah-fleet-idle { background: rgba(100,116,139,.2); color: #94a3b8; }
+  .ah-fleet-logs {
+    max-height: 10rem;
+    overflow-y: auto;
+    font-size: 0.65rem;
+    color: #94a3b8;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
   .ah-personas-layout { display: flex; gap: 1rem; min-height: 16rem; }
   .ah-persona-list { width: 10rem; shrink: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 0.15rem; }
   .ah-persona-pick {

@@ -9,6 +9,7 @@ vertex.env
 **/vertex-sa.json
 # editor / tooling
 .cursor/
+.claude/worktrees/
 # build artifact — vendored Tailwind is generated in the Docker image / CI (#3)
 static/forge/tailwind.css
 .claude/
