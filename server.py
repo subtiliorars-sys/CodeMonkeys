@@ -29,6 +29,7 @@ import re
 import secrets
 import select
 import shlex
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -208,6 +209,11 @@ TERMINAL_CMD_MAX_CHARS = 8000        # bound a single !cmd before any processing
 # N5: incremental model output streaming.  Default OFF so the non-streaming path
 # is byte-identical to pre-N5 when unset.  Set STREAM_ENABLED=1 to activate.
 STREAM_ENABLED = os.environ.get("STREAM_ENABLED", "").lower() in ("1", "true", "yes")
+# CM-W4: lint feedback after edits. Default ON; set LINT_AFTER_EDIT=0 to disable.
+LINT_AFTER_EDIT = os.environ.get("LINT_AFTER_EDIT", "1").strip().lower() not in (
+    "0", "false", "no", "off")
+LINT_TIMEOUT_S = 30
+LINT_OUTPUT_CAP = 4000
 # Fleet Deck feed (~/fleet/contracts/fleetdeck-codemonkeys.md): read-only ops
 # metadata for the local fleet dashboard. OFF until the owner sets the
 # FLEET_TOKEN Fly secret — unset/too-weak token = the route isn't registered
@@ -4145,6 +4151,141 @@ def t_bash(args, session=None):
 
 
 _PATCH_SIZE_CAP = 512 * 1024  # 512 KB — larger than any sane diff
+_PATCH_AB_PREFIX = re.compile(r"^[ab]/")
+
+
+def _patch_target_paths(patch: str) -> list:
+    """Parse workspace-relative target paths from a unified diff header block."""
+    paths = set()
+    for line in (patch or "").splitlines():
+        if line.startswith("--- ") or line.startswith("+++ "):
+            raw = line[4:].split("\t")[0].strip()
+            if raw == "/dev/null":
+                continue
+            clean = _PATCH_AB_PREFIX.sub("", raw)
+            if clean and not os.path.isabs(clean):
+                paths.add(clean)
+    return sorted(paths)
+
+
+def _lint_command(rel_path: str):
+    """Return (argv, linter_name) for *rel_path*, or None if unsupported."""
+    ext = os.path.splitext(rel_path)[1].lower()
+    if ext == ".py":
+        if shutil.which("ruff"):
+            return (["ruff", "check", "--no-cache", rel_path], "ruff")
+        return (["python3", "-m", "py_compile", rel_path], "py_compile")
+    if ext in (".ts", ".tsx", ".js", ".jsx", ".mts", ".cts"):
+        if shutil.which("tsc"):
+            return (["tsc", "--noEmit", "--skipLibCheck", rel_path], "tsc")
+    return None
+
+
+def _run_lint_one(rel_path: str, session=None) -> str:
+    """Run the best available linter for one file; return a note only on issues."""
+    try:
+        full = _jail(rel_path)
+    except ValueError:
+        return f"[lint] skipped {rel_path}: outside workspace"
+    if not os.path.isfile(full):
+        return ""
+    spec = _lint_command(rel_path)
+    if not spec:
+        return ""
+    cmd, label = spec
+    env = _subprocess_env()
+    try:
+        r = subprocess.run(cmd, cwd=WORKSPACE_DIR, env=env,
+                           capture_output=True, text=True, timeout=LINT_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        out = f"[lint:{label}] {rel_path}\n(timed out after {LINT_TIMEOUT_S}s)"
+        if session is not None:
+            emit(session, "lint", path=rel_path, linter=label, ok=False, detail=out[:600])
+        return out
+    except FileNotFoundError:
+        return ""
+    combined = ((r.stdout or "") + ("\n" + r.stderr if r.stderr else "")).strip()
+    if r.returncode == 0 and not combined:
+        if session is not None:
+            emit(session, "lint", path=rel_path, linter=label, ok=True,
+                 detail=f"[lint:{label}] {rel_path}: ok")
+        return ""
+    out = f"[lint:{label}] {rel_path}"
+    if combined:
+        out += "\n" + combined[:LINT_OUTPUT_CAP]
+    if r.returncode != 0:
+        out += f"\n[exit {r.returncode}]"
+    if session is not None:
+        emit(session, "lint", path=rel_path, linter=label, ok=(r.returncode == 0),
+             detail=out[:600])
+    return out
+
+
+def _lint_paths(paths, session=None) -> str:
+    notes = []
+    for p in paths:
+        note = _run_lint_one(p, session)
+        if note:
+            notes.append(note)
+    return "\n\n".join(notes)
+
+
+def t_run_lint(args, session=None):
+    """Explicit lint check for a file or directory (read-only)."""
+    path = (args.get("path") or "").strip() or "."
+    try:
+        full = _jail(path)
+    except ValueError:
+        return "ERROR: path outside workspace"
+    if os.path.isfile(full):
+        note = _run_lint_one(path, session)
+        if note:
+            return note
+        spec = _lint_command(path)
+        if spec:
+            return f"[lint:{spec[1]}] {path}: ok"
+        return f"[lint] {path}: no linter available for this file type"
+    if os.path.isdir(full):
+        if shutil.which("ruff"):
+            env = _subprocess_env()
+            try:
+                r = subprocess.run(["ruff", "check", "--no-cache", path],
+                                   cwd=WORKSPACE_DIR, env=env,
+                                   capture_output=True, text=True,
+                                   timeout=LINT_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                return f"[lint:ruff] {path}\n(timed out after {LINT_TIMEOUT_S}s)"
+            except FileNotFoundError:
+                pass
+            else:
+                combined = ((r.stdout or "") + ("\n" + r.stderr if r.stderr else "")).strip()
+                if r.returncode == 0 and not combined:
+                    if session is not None:
+                        emit(session, "lint", path=path, linter="ruff", ok=True,
+                             detail=f"[lint:ruff] {path}: ok")
+                    return f"[lint:ruff] {path}: ok"
+                out = f"[lint:ruff] {path}"
+                if combined:
+                    out += "\n" + combined[:LINT_OUTPUT_CAP]
+                if r.returncode != 0:
+                    out += f"\n[exit {r.returncode}]"
+                if session is not None:
+                    emit(session, "lint", path=path, linter="ruff",
+                         ok=(r.returncode == 0), detail=out[:600])
+                return out
+        py_files = []
+        for root, _, files in os.walk(full):
+            for name in files:
+                if name.endswith(".py"):
+                    py_files.append(os.path.relpath(os.path.join(root, name),
+                                                    WORKSPACE_DIR))
+        if not py_files:
+            return f"[lint] {path}: no lintable files found"
+        note = _lint_paths(py_files[:50], session)
+        if note:
+            return note
+        return f"[lint] {path}: ok ({min(len(py_files), 50)} python file(s))"
+    return f"ERROR: not found: {path}"
 
 
 def t_apply_patch(args):
@@ -4162,19 +4303,17 @@ def t_apply_patch(args):
         return f"ERROR: patch exceeds size cap ({_PATCH_SIZE_CAP} bytes)", ""
 
     # --- Parse target paths from --- / +++ headers ---
-    # Standard unified diff header lines look like:
-    #   --- a/path/to/file   or   --- /dev/null
-    #   +++ b/path/to/file   or   +++ /dev/null
-    # We strip the a/ / b/ prefixes; /dev/null means new/deleted file (skip jail).
-    _ab_prefix = re.compile(r"^[ab]/")
-    target_paths = set()
-    for line in patch.splitlines():
-        if line.startswith("--- ") or line.startswith("+++ "):
-            raw = line[4:].split("\t")[0].strip()  # strip optional timestamp
-            if raw == "/dev/null":
-                continue
-            clean = _ab_prefix.sub("", raw)
-            target_paths.add(clean)
+    target_paths = set(_patch_target_paths(patch))
+    if not target_paths:
+        # Fallback: parse headers directly (keeps legacy error text paths).
+        _ab_prefix = _PATCH_AB_PREFIX
+        for line in patch.splitlines():
+            if line.startswith("--- ") or line.startswith("+++ "):
+                raw = line[4:].split("\t")[0].strip()
+                if raw == "/dev/null":
+                    continue
+                clean = _ab_prefix.sub("", raw)
+                target_paths.add(clean)
 
     if not target_paths:
         return "ERROR: no target file paths found in patch headers", ""
@@ -4566,6 +4705,16 @@ TOOL_SCHEMAS = {
                         "patch": {"type": "string",
                                   "description": "A complete unified diff string (git format)."}},
                         "required": ["patch"]}},
+    "run_lint": {"name": "run_lint",
+                 "description":
+                     "Run the best available linter on a file or directory (read-only). "
+                     "Uses ruff (or py_compile fallback) for Python and tsc --noEmit for "
+                     "TypeScript/JavaScript when installed. Prefer this after edits to verify "
+                     "changes before moving on.",
+                 "parameters": {"type": "object", "properties": {
+                     "path": {"type": "string",
+                              "description": "Workspace-relative file or directory; defaults to '.'"}},
+                     "required": []}},
 }
 
 # Daystrom frontmatter tools -> our runtime tools
@@ -4974,6 +5123,8 @@ def make_executor(session, allowed, agent_label=None, depth=0):
             if name == "blackboard_write":
                 r = t_blackboard_write(args)
                 return r, not r.startswith("ERROR")
+            if name == "run_lint":
+                return t_run_lint(args, session=session), True
             return f"ERROR: unknown tool {name}", False
         except Exception as e:  # tool errors go back to the model, not the user
             return f"ERROR: {type(e).__name__}: {e}", False
@@ -5215,6 +5366,16 @@ def agent_loop(session, provider, system, history, tool_names, max_turns,
             emit(session, "tool_result", **_emit_kw)
             history.append({"role": "tool", "tool_call_id": tc["id"],
                             "name": tc["name"], "content": result})
+            # CM-W4: inject lint diagnostics after successful file edits.
+            if ok and LINT_AFTER_EDIT:
+                lint_note = ""
+                if tc["name"] in ("write_file", "edit_file"):
+                    lint_note = _run_lint_one(tc["args"].get("path", ""), session)
+                elif tc["name"] == "apply_patch":
+                    lint_note = _lint_paths(_patch_target_paths(
+                        tc["args"].get("patch", "")), session)
+                if lint_note:
+                    history[-1]["content"] = history[-1]["content"] + "\n\n" + lint_note
             # N9: tool-error-repeat guard — track identical failing calls to
             # nudge the model then abort if it keeps burning turns on the same error.
             _fail_counts = session.get("_tool_fail_counts")
@@ -5366,7 +5527,7 @@ MODE_GUIDANCE = {
 }
 PLAN_TOOLS = ["read_file", "list_dir", "glob_files", "grep", "spawn_agent",
               "save_spec", "blackboard_read"]
-FULL_TOOLS = ["read_file", "write_file", "edit_file", "apply_patch", "list_dir",
+FULL_TOOLS = ["read_file", "write_file", "edit_file", "apply_patch", "run_lint", "list_dir",
               "glob_files", "grep", "bash", "spawn_agent",
               "blackboard_read", "blackboard_write"]
 
