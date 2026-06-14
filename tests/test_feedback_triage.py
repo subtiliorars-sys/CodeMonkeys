@@ -1,4 +1,4 @@
-"""CM-W5 three-card feedback triage: heuristic proposals + owner-only routes."""
+"""CM-W6 feedback triage: heuristic proposals + owner-only routes."""
 import json
 import os
 import sys
