@@ -76,6 +76,7 @@ function showMain() {
     el.classList.toggle("hidden", state.role !== "Owner"));
   refreshSessions(); refreshSpecs(); refreshRepos(); listPasskeys(); loadVertexMemberPanel();
   if (state.role === "Owner") checkEncryptionBanner();
+  else checkMemberAccess();
   if (!state.sid) showLanding();
   MobileDrawer.init();
   if (typeof PushAlerts !== "undefined") PushAlerts.initAfterLogin();
@@ -113,6 +114,14 @@ async function checkEncryptionBanner() {
     // Non-critical — swallow errors silently (e.g. auth failure on non-owner)
   }
 }
+// Member access banner: warn up front when a member has no usable model.
+async function checkMemberAccess() {
+  try {
+    const d = await api("/api/me");
+    $("member-access-banner").classList.toggle("hidden", !!d.can_run);
+  } catch (_) { /* non-critical */ }
+}
+$("member-access-close").onclick = () => $("member-access-banner").classList.add("hidden");
 $("enc-banner-close").onclick = () => $("enc-banner").classList.add("hidden");
 $("budget-alert-close").onclick = () => $("budget-alert").classList.add("hidden");
 function clearStoredSession() {
@@ -320,8 +329,34 @@ async function openCostDashboard() {
 
 /* ---------------- invite developers (Owner) ---------------- */
 
-$("btn-invite").onclick = () => { $("modal-invite").classList.remove("hidden"); loadUsers(); };
+$("btn-invite").onclick = () => { $("modal-invite").classList.remove("hidden"); loadUsers(); loadShareKeys(); };
 $("invite-close").onclick = () => $("modal-invite").classList.add("hidden");
+
+/* ---------------- share my API credits (Owner) ---------------- */
+async function loadShareKeys() {
+  const tog = $("share-keys-toggle");
+  if (!tog) return;
+  try {
+    const d = await api("/api/models");
+    tog.checked = !!d.share_owner_keys;
+    syncShareKeysLabel();
+  } catch (_) { /* non-owner / offline — leave as-is */ }
+}
+function syncShareKeysLabel() {
+  const tog = $("share-keys-toggle");
+  const lbl = $("share-keys-state");
+  if (tog && lbl) {
+    lbl.textContent = tog.checked ? "ON — members spend your credits" : "OFF — members can't use your keys";
+    lbl.className = "text-[.65rem] " + (tog.checked ? "text-green-400/80" : "text-slate-500");
+  }
+}
+$("share-keys-toggle")?.addEventListener("change", async (e) => {
+  const on = e.target.checked;
+  try {
+    await api("/api/models/settings", "POST", { share_owner_keys: on });
+    syncShareKeysLabel();
+  } catch (err) { alert(err.message); e.target.checked = !on; syncShareKeysLabel(); }
+});
 
 $("inv-create").onclick = async () => {
   try {
@@ -359,12 +394,34 @@ async function loadUsers() {
           <button data-u="${esc(u.username)}" class="user-vertex-provision gold-btn rounded px-1.5 py-0.5 text-[.65rem]"
             title="Create GCP service account + Vertex role + JSON key">⚡ key</button>
           <span class="user-vertex-status text-[.6rem] text-slate-500">${esc(vertexLabel(u))}</span>`}
-      ${u.role === "Owner" ? "" : `<button data-u="${esc(u.username)}" class="user-del text-red-500/70 hover:text-red-400">remove</button>`}
+      ${u.role === "Owner" ? "" : `<span class="flex items-center gap-2 ml-auto">
+          <button data-u="${esc(u.username)}" class="user-rename text-slate-400 hover:text-slate-200" title="Change this username">rename</button>
+          <button data-u="${esc(u.username)}" class="user-resetmfa text-sky-400/80 hover:text-sky-300" title="Reset their authenticator (lost phone)">reset 2FA</button>
+          <button data-u="${esc(u.username)}" class="user-del text-red-500/70 hover:text-red-400" title="Delete this account">remove</button>
+        </span>`}
     </div>`).join("");
   document.querySelectorAll(".user-del").forEach((b) => (b.onclick = async () => {
-    if (confirm(`Remove ${b.dataset.u}?`)) {
-      await api(`/api/users/${encodeURIComponent(b.dataset.u)}`, "DELETE"); loadUsers();
+    if (confirm(`Remove ${b.dataset.u}? This permanently erases the account and blocks reuse of the name.`)) {
+      try { await api(`/api/users/${encodeURIComponent(b.dataset.u)}`, "DELETE"); }
+      catch (e) { alert(e.message); }
+      loadUsers();
     }
+  }));
+  document.querySelectorAll(".user-rename").forEach((b) => (b.onclick = async () => {
+    const next = prompt(`New username for "${b.dataset.u}":`, b.dataset.u);
+    if (!next || next.trim() === b.dataset.u) return;
+    try {
+      await api(`/api/users/${encodeURIComponent(b.dataset.u)}/rename`, "POST", { new_username: next.trim() });
+    } catch (e) { alert(e.message); }
+    loadUsers();
+  }));
+  document.querySelectorAll(".user-resetmfa").forEach((b) => (b.onclick = async () => {
+    if (!confirm(`Reset ${b.dataset.u}'s 2FA? They'll sign in with just their username next time, then set up a fresh authenticator.`)) return;
+    try {
+      const r = await api(`/api/users/${encodeURIComponent(b.dataset.u)}/reset-mfa`, "POST");
+      alert(r.message || "2FA reset.");
+    } catch (e) { alert(e.message); }
+    loadUsers();
   }));
   document.querySelectorAll(".user-vertex").forEach((sel) => (sel.onchange = async () => {
     const u = sel.dataset.u;

@@ -34,6 +34,26 @@ Daystrom agent corps in `corps/`. Full overview: `README.md` +
   (fleet feed), `NOTIFY_WEBHOOK_URL` (ntfy), webhook + TERMINAL gates. Tailwind
   phase-2 CDN removal is live — eyeball the vendored CSS render.
 
+## Admin & credit-sharing rehab (2026-06-14, branch `claude/sandbox-ux-admin-system-4jnwlz`)
+Owner control surface filled in + a credit-sharing master switch:
+- **Reset a Member's 2FA** — `POST /api/users/{u}/reset-mfa` (Owner-only): clears
+  TOTP + every passkey, flags `must_reset` so the next login is username-only and
+  re-routes through first-time authenticator setup; clears the login throttle so a
+  prior lockout can't block recovery. Refuses Owners/self (use `reset_access.py`).
+- **Rename a Member** — `POST /api/users/{u}/rename` (Owner-only): regex + collision
+  + M-7 tombstone guards; migrates the record, login-throttle counter, transient
+  WebAuthn challenge, and on-disk Vertex BYO/provisioned cred files.
+- **Share my API credits** — global `share_owner_keys` toggle (model config, default
+  **OFF / fail-closed**). Enforced at the single chokepoint `_callable_provider`: a
+  Member may spend the Owner's non-Vertex keys only while it's ON; Owner + internal
+  contexts always pass. Vertex keeps its own per-user gate. Toggle in ⚙ People panel;
+  `/api/models` GET + `/api/models/settings` carry it; `/api/me` exposes
+  `keys_shared`/`can_run` so a Member sees a clear "ask the owner" banner up front.
+- UI: People panel gains the toggle + per-member rename / reset-2FA / remove actions,
+  all mobile-friendly; member access banner on no usable model. Tests in
+  `tests/test_admin_user_mgmt.py` (12). Suite green (pre-existing root-only readyz
+  artifact aside). **Needs an S-4 red-team pass before deploy** (auth/money surface).
+
 ## Shipped so far (v0.1)
 - Auth: 4-digit+ PIN (PBKDF2) + mandatory TOTP; HMAC tokens; fail-closed.
 - WebAuthn passkey/biometric login (login + sidebar "Add passkey"). *No

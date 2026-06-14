@@ -425,6 +425,16 @@
     </div>
     <p class="text-xs text-slate-500 mb-3">Mint a username for your dev — they log in once with that name only, then scan an authenticator. Invited devs share this workspace, the GitHub token, and can run commands — invite only people you trust.</p>
     <p class="text-xs text-slate-500 mb-3">Use the <strong class="text-slate-400">Vertex</strong> dropdown per user to grant your GCP credits: <em>automatic</em> (no setup) or <em>paste key</em>. Or click <strong class="text-slate-400">⚡ key</strong> to create a GCP service account + JSON in one click (shown once for your PA).</p>
+    <div class="gold-border rounded p-3 mb-3 bg-black/20">
+      <label class="flex items-center justify-between gap-3 cursor-pointer">
+        <span class="text-xs">
+          <span class="text-slate-200 font-semibold">🍌 Share my API credits</span>
+          <span id="share-keys-state" class="block text-[.65rem] text-slate-500">OFF — members can't use your keys</span>
+        </span>
+        <input id="share-keys-toggle" type="checkbox" class="h-5 w-9 shrink-0 accent-[var(--gold-bright)] cursor-pointer">
+      </label>
+      <p class="text-[.65rem] text-slate-600 mt-2">When ON, invited members run sessions on <em>your</em> model API keys (Anthropic/OpenAI/OpenRouter/etc.) and spend your credits. Vertex is granted separately per‑user above. Flip OFF anytime to cut members off instantly.</p>
+    </div>
     <div class="flex gap-2 mb-3">
       <input id="inv-user" class="input flex-1 rounded px-2 py-1 text-xs" placeholder="username (optional — auto if blank)">
       <button id="inv-create" class="gold-btn rounded px-3 text-xs">Create invite</button>
@@ -555,6 +565,11 @@
     <div id="enc-banner" class="hidden owner-only px-4 py-2 text-xs bg-yellow-900/30 border-b border-yellow-700/50 text-yellow-300 flex items-center gap-2">
       <span id="enc-banner-msg"></span>
       <button id="enc-banner-close" class="ml-auto text-yellow-500 hover:text-yellow-200">✕</button>
+    </div>
+    <!-- member access banner: shown when a member has no usable model (owner hasn't shared keys / no Vertex) -->
+    <div id="member-access-banner" class="hidden px-4 py-2 text-xs bg-sky-900/30 border-b border-sky-700/50 text-sky-200 flex items-center gap-2">
+      <span>🐒 No models available yet — ask the owner to share their API credits or grant you Vertex before starting a run.</span>
+      <button id="member-access-close" class="ml-auto text-sky-400 hover:text-sky-100">✕</button>
     </div>
     <div id="stream" class="flex-1 overflow-y-auto px-4 py-3 space-y-2 text-sm">
       <!-- Empty-state landing: shown only when no session is active -->

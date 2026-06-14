@@ -47,6 +47,27 @@ keep that radius away from everything else.
   never lock the account out.
 - Lockout recovery only via `fly ssh console` (`scripts/reset_access.py`)
 
+## Owner admin & credit sharing
+
+- **Member access to the Owner's API credits is fail-closed.** A global
+  `share_owner_keys` flag (Owner-only `/api/models/settings`, default **OFF**)
+  decides whether invited Members may spend the Owner's non-Vertex provider keys.
+  It is enforced at one chokepoint — `_callable_provider(p, username)` — through
+  which *all* provider selection flows (`main_provider`/`provider_for_tier`/
+  `_usable`/failover). The Owner and internal/system contexts (`username=None`)
+  always pass; a Member passes only while the switch is ON. Vertex is unaffected
+  (it keeps its own per-user `vertex_access` gate). Flipping the switch OFF cuts
+  Members off on their next model call (no cached bypass). This is a spend/credit
+  control (governance S-7), not a substitute for the per-endpoint role gates.
+- **Owner-only Member admin.** `reset-mfa` and `rename` (and `DELETE`) are
+  `verify_owner`-gated and refuse acting on an Owner or the caller's own account.
+  `reset-mfa` clears the TOTP secret **and** all passkeys and forces
+  `must_reset` (re-enrollment via the trusted first-login path) — a lost
+  authenticator is recovered by the Owner without exposing secret material.
+  `rename` is M-7 tombstone-guarded (no rename onto an erased id) and migrates
+  every per-user store so a rename never strands a throttle counter or strips a
+  granted Vertex credential.
+
 ## Sandboxing & limits
 
 - File tools are path-jailed to the workspace (realpath prefix check)

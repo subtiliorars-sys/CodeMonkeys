@@ -1388,12 +1388,23 @@ def login(req: LoginRequest, request: Request = None):
 def me(username: str = Depends(verify_token)):
     u = load_users()[username]
     mode = _user_vertex_access_mode(username)
+    is_owner = u["role"] == "Owner"
+    keys_shared = is_owner or _share_owner_keys_enabled()
+    # Can this account actually start a run? True if any provider is callable for
+    # them (shared owner keys and/or their own Vertex grant). Lets the UI warn a
+    # Member up front instead of failing silently at dispatch.
+    try:
+        can_run = main_provider(load_models(), username=username) is not None
+    except Exception:
+        can_run = is_owner
     return {
         "username": username,
         "role": u["role"],
         "must_reset": bool(u.get("must_reset")),
         "vertex_access": mode,
         "vertex_ready": _user_can_use_vertex(username),
+        "keys_shared": keys_shared,
+        "can_run": can_run,
     }
 
 
@@ -1559,6 +1570,103 @@ def me_vertex_clear(username: str = Depends(verify_user)):
         raise HTTPException(403, "Your account is not set up for bring-your-own Vertex credentials")
     _clear_user_vertex_credentials(username)
     return {"ok": True, "ready": False}
+
+
+# ----------------------------------------- Owner admin: reset 2FA / rename a member
+
+@app.post("/api/users/{uname}/reset-mfa")
+def users_reset_mfa(uname: str, owner: str = Depends(verify_owner)):
+    """Owner-only: reset a Member's second factor (lost authenticator/phone).
+
+    Clears the TOTP secret AND every registered passkey, then flags the account
+    `must_reset` so the Member's next login is username-only and routes back
+    through first-time setup to re-enroll an authenticator — the same trusted
+    path a fresh invite uses. The login throttle is cleared so a lockout from
+    failed codes doesn't block the recovery. Owner accounts self-recover via
+    `scripts/reset_access.py`, so this refuses Owners (and your own account)."""
+    if uname == owner:
+        raise HTTPException(400, "Reset your own 2FA from the sidebar, or via scripts/reset_access.py")
+    with _USERS_LOCK:
+        users = load_users()
+        user = users.get(uname)
+        if not user:
+            raise HTTPException(404, "No such user")
+        if user.get("role") == "Owner":
+            raise HTTPException(400, "Can't reset an Owner's 2FA here — use scripts/reset_access.py")
+        user["mfa_secret"] = ""
+        user.pop("webauthn_credentials", None)
+        user["must_reset"] = True
+        users[uname] = user
+        save_users(users)
+    _login_clear(uname)            # don't let a pre-reset lockout block recovery
+    return {"ok": True, "username": uname,
+            "message": "Member will log in with username only, then re-scan an authenticator."}
+
+
+class RenameRequest(BaseModel):
+    new_username: str = ""
+
+
+def _migrate_vertex_user_files(old: str, new: str) -> None:
+    """Move a Member's on-disk Vertex BYO/provisioned credential files to the new
+    name so a rename never silently strips their granted access. Best-effort:
+    a failure logs and leaves the source in place (the record still moves)."""
+    safe_old, safe_new = _safe_vertex_username(old), _safe_vertex_username(new)
+    if safe_old == safe_new:
+        return
+    base_old = _user_vertex_creds_store(old)
+    base_new = _user_vertex_creds_store(new)
+    for src, dst in ((base_old, base_new), (base_old + ".sa.json", base_new + ".sa.json")):
+        try:
+            if os.path.isfile(src):
+                os.makedirs(VERTEX_USER_CREDS_DIR, mode=0o700, exist_ok=True)
+                os.replace(src, dst)
+        except OSError as e:
+            _log.warning("vertex rename migrate failed %r->%r (%s): %s", old, new, src, e)
+    with _VERTEX_TOKEN_LOCK:
+        _VERTEX_TOKEN_CACHE.pop(f"byo:{safe_old}", None)
+        _VERTEX_TOKEN_CACHE.pop(f"byo:{safe_new}", None)
+
+
+@app.post("/api/users/{uname}/rename")
+def users_rename(uname: str, req: RenameRequest, owner: str = Depends(verify_owner)):
+    """Owner-only: rename a Member. Validates the new id, refuses collisions and
+    tombstoned (erased) ids, and carries every derived per-user store across:
+    the record, the login-throttle counter, the transient WebAuthn challenge, and
+    the on-disk Vertex credential files. Owner/self renames are out of scope."""
+    new_name = (req.new_username or "").strip()
+    if uname == owner:
+        raise HTTPException(400, "Rename your own Owner account via scripts/reset_access.py")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{2,32}", new_name):
+        raise HTTPException(400, "Bad username (2–32 chars: letters, digits, _ . -)")
+    with _USERS_LOCK:
+        users = load_users()
+        user = users.get(uname)
+        if not user:
+            raise HTTPException(404, "No such user")
+        if user.get("role") == "Owner":
+            raise HTTPException(400, "Can't rename an Owner here")
+        if new_name == uname:
+            raise HTTPException(400, "That's already the username")
+        if new_name in users:
+            raise HTTPException(409, "Username already taken")
+        if _is_erased(new_name):                  # M-7 tombstone guard
+            raise HTTPException(403, "That username was erased and cannot be reused")
+        users[new_name] = user
+        del users[uname]
+        save_users(users)
+    # Migrate derived per-user stores (outside the users lock, like delete does).
+    with _LOGIN_LOCK:
+        moved = _login_fails.pop(uname, None)
+        if moved is not None:
+            _login_fails[new_name] = moved
+        _login_persist()
+    st = _webauthn_states.pop(uname, None)
+    if st is not None:
+        _webauthn_states[new_name] = st
+    _webauthn_states.pop(f"login_{uname}", None)
+    _migrate_vertex_user_files(uname, new_name)
+    return {"ok": True, "old_username": uname, "username": new_name}
 
 
 # ---------------------------------------------------------------- M-7 erasure
@@ -2514,6 +2622,31 @@ def _resolve(prov, pid=None, username=None):
             "vertex_username": username}
 
 
+def _share_owner_keys_enabled() -> bool:
+    """Owner-controlled master switch: may invited Members spend the Owner's own
+    model API credits (the non-Vertex provider keys) when they run sessions?
+    Stored on the model config; default OFF (fail-closed) — Members get nothing
+    until the Owner explicitly grants it. Vertex has its own per-user gate."""
+    try:
+        return bool(load_models().get("share_owner_keys", False))
+    except Exception:
+        return False
+
+
+def _member_can_use_owner_keys(username: str | None) -> bool:
+    """True if *username* may use the Owner's shared (non-Vertex) provider keys.
+
+    None/empty == an internal/system context (no member attribution) → allowed,
+    preserving prior behavior for non-session callers. The Owner is always
+    allowed. A Member is allowed only while the Owner has flipped the share
+    switch on. This is the single gate the credit-sharing toggle rides."""
+    if not username:
+        return True
+    if load_users().get(username, {}).get("role") == "Owner":
+        return True
+    return _share_owner_keys_enabled()
+
+
 def _callable_provider(p, username=None):
     """The chat layer can actually call this entry: has a key, and openai-kind
     needs a base_url — blank would hit `requests.post("/chat/completions")`
@@ -2522,7 +2655,11 @@ def _callable_provider(p, username=None):
         return _user_can_use_vertex(username)
     if not p.get("key"):
         return False
-    return p.get("kind") != "openai" or bool(str(p.get("base_url") or "").strip())
+    if not (p.get("kind") != "openai" or bool(str(p.get("base_url") or "").strip())):
+        return False
+    # Non-Vertex providers spend the Owner's API key. A Member may only do so
+    # while the Owner's credit-sharing switch is on (Vertex stays separate).
+    return _member_can_use_owner_keys(username)
 
 
 def _find_free_provider(cfg, username=None):
@@ -2612,7 +2749,8 @@ class SelectModel(BaseModel):
 
 
 class ModelSettings(BaseModel):
-    auto_cheapest: bool
+    auto_cheapest: bool | None = None
+    share_owner_keys: bool | None = None   # let Members spend the Owner's keys
 
 
 @app.get("/api/models")
@@ -2621,6 +2759,7 @@ def models_get(_: str = Depends(verify_owner)):
     return {
         "selected": cfg.get("selected", "auto"),
         "auto_cheapest": cfg.get("auto_cheapest", True),
+        "share_owner_keys": bool(cfg.get("share_owner_keys", False)),
         "providers": [
             {"id": pid, "label": p.get("label", pid), "kind": p["kind"],
              "base_url": p.get("base_url", ""), "model": p.get("model", ""),
@@ -2747,9 +2886,13 @@ def models_select(req: SelectModel, _: str = Depends(verify_owner)):
 @app.post("/api/models/settings")
 def models_settings(req: ModelSettings, _: str = Depends(verify_owner)):
     cfg = load_models()
-    cfg["auto_cheapest"] = req.auto_cheapest
+    if req.auto_cheapest is not None:
+        cfg["auto_cheapest"] = bool(req.auto_cheapest)
+    if req.share_owner_keys is not None:
+        cfg["share_owner_keys"] = bool(req.share_owner_keys)
     save_models(cfg)
-    return {"ok": True}
+    return {"ok": True, "auto_cheapest": cfg.get("auto_cheapest", True),
+            "share_owner_keys": bool(cfg.get("share_owner_keys", False))}
 
 
 _OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
