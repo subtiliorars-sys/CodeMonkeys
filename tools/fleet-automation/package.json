@@ -1,0 +1,29 @@
+{
+  "name": "fleet-automation",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Secure multi-platform store automation (Itch, Steamworks, Game Jolt) with zero-trust gates",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "dev": "tsx src/main.ts",
+    "preflight": "tsx src/security/preflight.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test dist/governance/medallion-loop.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "keytar": "^7.9.0",
+    "playwright": "^1.49.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

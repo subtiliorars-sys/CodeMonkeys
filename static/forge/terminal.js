@@ -224,7 +224,14 @@ function renderEvent(e) {
     }
     case "terminal_exec": break;              // local echo already covers it
     case "terminal_exec_result": break;       // rendered from the POST response
+    case "provider_wait":
+      line("  🐒🍌 Monkeys are lining up the next model…", "t-dim");
+      break;
     case "error": {
+      if (/Model call failed.*rotating to/i.test(e.message || "")) {
+        line("  🐒🍌 Monkeys are lining up the next model…", "t-dim");
+        break;
+      }
       state.streamDiv = null;
       line(`✗ ${e.message}`, "t-err");
       setMonkeyState("error", "Error encountered.");

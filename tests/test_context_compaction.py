@@ -364,8 +364,8 @@ def test_agent_loop_triggers_compaction(monkeypatch):
         return {"text": "done", "tool_calls": [], "in_tokens": 1, "out_tokens": 1}
 
     monkeypatch.setattr(server, "call_model", _call_model)
-    monkeypatch.setattr(server, "_pricier_provider", lambda cfg, p: None)
-    monkeypatch.setattr(server, "main_provider", lambda cfg: ZERO_COST_PROVIDER)
+    monkeypatch.setattr(server, "_pricier_provider", lambda cfg, p, username=None: None)
+    monkeypatch.setattr(server, "main_provider", lambda cfg, username=None: ZERO_COST_PROVIDER)
 
     s = _make_session()
     # Seed history with many turns so span is definitely non-empty

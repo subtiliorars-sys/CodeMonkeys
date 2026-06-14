@@ -36,7 +36,7 @@ def test_readyz_all_green(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(server, "_FERNET_AVAILABLE", True)
     monkeypatch.setattr(server, "CM_MASTER_KEY", "")  # unset → crypto_ok N/A = True
-    monkeypatch.setattr(server, "_usable", lambda cfg: [("p1", {"key": "k"})])
+    monkeypatch.setattr(server, "_usable", lambda cfg, username=None: [("p1", {"key": "k"})])
     monkeypatch.setattr(server, "load_models", lambda: {"providers": {}})
 
     r = client.get("/readyz")
@@ -62,7 +62,7 @@ def test_readyz_data_not_writable(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "DATA_DIR", str(no_write))
     monkeypatch.setattr(server, "_FERNET_AVAILABLE", True)
     monkeypatch.setattr(server, "CM_MASTER_KEY", "")
-    monkeypatch.setattr(server, "_usable", lambda cfg: [("p1", {"key": "k"})])
+    monkeypatch.setattr(server, "_usable", lambda cfg, username=None: [("p1", {"key": "k"})])
     monkeypatch.setattr(server, "load_models", lambda: {"providers": {}})
 
     r = client.get("/readyz")
@@ -81,7 +81,7 @@ def test_readyz_crypto_mismatch(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(server, "CM_MASTER_KEY", "some-high-entropy-master-key-32b!")
     monkeypatch.setattr(server, "_FERNET_AVAILABLE", False)
-    monkeypatch.setattr(server, "_usable", lambda cfg: [("p1", {"key": "k"})])
+    monkeypatch.setattr(server, "_usable", lambda cfg, username=None: [("p1", {"key": "k"})])
     monkeypatch.setattr(server, "load_models", lambda: {"providers": {}})
 
     r = client.get("/readyz")
@@ -96,7 +96,7 @@ def test_readyz_crypto_ok_when_key_unset(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(server, "CM_MASTER_KEY", "")
     monkeypatch.setattr(server, "_FERNET_AVAILABLE", False)  # irrelevant when key unset
-    monkeypatch.setattr(server, "_usable", lambda cfg: [("p1", {"key": "k"})])
+    monkeypatch.setattr(server, "_usable", lambda cfg, username=None: [("p1", {"key": "k"})])
     monkeypatch.setattr(server, "load_models", lambda: {"providers": {}})
 
     r = client.get("/readyz")
@@ -113,7 +113,7 @@ def test_readyz_no_provider_still_200(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(server, "CM_MASTER_KEY", "")
     monkeypatch.setattr(server, "_FERNET_AVAILABLE", True)
-    monkeypatch.setattr(server, "_usable", lambda cfg: [])       # no providers
+    monkeypatch.setattr(server, "_usable", lambda cfg, username=None: [])       # no providers
     monkeypatch.setattr(server, "load_models", lambda: {"providers": {}})
 
     r = client.get("/readyz")
@@ -153,7 +153,7 @@ def test_readyz_no_secrets_in_body(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(server, "CM_MASTER_KEY", secret_key)
     monkeypatch.setattr(server, "_FERNET_AVAILABLE", True)
-    monkeypatch.setattr(server, "_usable", lambda cfg: [("p1", {"key": "sk-12345"})])
+    monkeypatch.setattr(server, "_usable", lambda cfg, username=None: [("p1", {"key": "sk-12345"})])
     monkeypatch.setattr(server, "load_models", lambda: {"providers": {}})
 
     r = client.get("/readyz")
@@ -177,7 +177,7 @@ def test_readyz_has_standard_fields(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "DATA_DIR", str(tmp_path))
     monkeypatch.setattr(server, "CM_MASTER_KEY", "")
     monkeypatch.setattr(server, "_FERNET_AVAILABLE", True)
-    monkeypatch.setattr(server, "_usable", lambda cfg: [("p1", {"key": "k"})])
+    monkeypatch.setattr(server, "_usable", lambda cfg, username=None: [("p1", {"key": "k"})])
     monkeypatch.setattr(server, "load_models", lambda: {"providers": {}})
 
     r = client.get("/readyz")

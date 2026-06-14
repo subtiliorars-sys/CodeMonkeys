@@ -14,7 +14,17 @@ import sys
 
 import pyotp
 
-USERS_FILE = os.environ.get("USERS_FILE", "/data/users.json")
+def _default_users_file() -> str:
+    if os.environ.get("USERS_FILE"):
+        return os.environ["USERS_FILE"]
+    fly = "/data/users.json"
+    if os.path.isfile(fly):
+        return fly
+    local = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "users.json")
+    return local if os.path.isfile(local) else fly
+
+
+USERS_FILE = _default_users_file()
 
 
 def load():

@@ -51,7 +51,7 @@ def _clean(monkeypatch):
     monkeypatch.setattr(server, "SESSIONS", {})
     # Silence model lookup — no provider configured in test env
     monkeypatch.setattr(server, "load_models", lambda: {"providers": {}})
-    monkeypatch.setattr(server, "main_provider", lambda cfg: None)
+    monkeypatch.setattr(server, "main_provider", lambda cfg, username=None: None)
     monkeypatch.setattr(server, "daily_total_usd", lambda: 0.0)
     yield
 
@@ -94,13 +94,13 @@ def test_stats_has_model_key(monkeypatch):
 
 def test_model_label_from_provider(monkeypatch):
     monkeypatch.setattr(server, "main_provider",
-                        lambda cfg: {"model": "claude-sonnet-4-6"})
+                        lambda cfg, username=None: {"model": "claude-sonnet-4-6"})
     r = client.get("/api/swarm/state")
     assert r.json()["stats"]["model"] == "claude-sonnet-4-6"
 
 
 def test_model_empty_when_no_provider(monkeypatch):
-    monkeypatch.setattr(server, "main_provider", lambda cfg: None)
+    monkeypatch.setattr(server, "main_provider", lambda cfg, username=None: None)
     r = client.get("/api/swarm/state")
     assert r.json()["stats"]["model"] == ""
 

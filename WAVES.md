@@ -12,6 +12,23 @@ Read `docs/STATE.md` + `docs/IDEATION.md` before each wave. Never merge your own
 
 *(none)*
 
+## Parallel track — Forge UI / Cursor parity (manual)
+
+**Branch:** `work/frontend-polish` · deploy: owner runs `fly deploy` (not automation PR).  
+**Verify:** `pytest` + spot-check Forge at `/`.
+
+| Wave | Status | Scope |
+|------|--------|--------|
+| CM-UI-W1 | ✅ done | Provider rotation → playful wait banner (no error spam) |
+| CM-UI-W2 | ✅ done | Agents hub — sessions, automations, personas, rules (`agents-hub.js`) |
+| CM-UI-W3 | `done` | Hooks + Skills tabs + API; live fleet job detail in Automations |
+
+**Coordination:** Automation waves CM-W2/W3 may touch `server.py` (N8 compaction, N12 catalog).
+UI track stays in `static/forge/*` unless explicitly merged. If an open `automation/wave-*`
+PR exists, finish or pause before overlapping server changes.
+
+See `OFFICE_HOURS.md` for the 5-min PR checklist.
+
 ## Blocked / owner-gated (queue only)
 - OAuth app registration, webhook secrets, terminal activation
 - `fly deploy` / production config changes

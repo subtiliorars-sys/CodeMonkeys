@@ -2,12 +2,56 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
+<meta name="theme-color" content="#d4af37">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/static/forge/icons/icon-192.png">
 <title>CodeMonkeys</title>
 <!-- Vendored Tailwind (Wave 4 #3 phase 2), built into the image at
      /static/forge/tailwind.css. Owner confirmed it renders correctly in prod,
      so the runtime Tailwind CDN tag is gone and CSP script-src is 'self'. -->
 <link rel="stylesheet" href="/static/forge/tailwind.css">
+<style id="cm-mobile-overrides">
+  /* After Tailwind — dynamic viewport must win over h-screen / h-full */
+  @media (max-width: 767px) {
+    body.h-screen,
+    #view-login.h-full,
+    #view-setup.h-full,
+    #view-main.h-full {
+      height: var(--cm-vvh, 100dvh) !important;
+      max-height: var(--cm-vvh, 100dvh) !important;
+    }
+    #view-main > main,
+    #wb-body,
+    #panel-chat {
+      min-height: 0 !important;
+    }
+    html.cm-kb-active #landing-welcome { display: none !important; }
+    html.cm-kb-active #enc-banner,
+    html.cm-kb-active #budget-alert { display: none !important; }
+    html.cm-kb-active #stream { flex: 1 1 auto !important; min-height: 0 !important; }
+    #fb-fab {
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 11rem) !important;
+      right: 0.75rem !important;
+    }
+    html.cm-kb-active #fb-fab {
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 0.75rem) !important;
+      left: 0.75rem !important;
+      right: auto !important;
+    }
+    #steady-ground-btn {
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 6.5rem) !important;
+    }
+    html.cm-kb-active #steady-ground-btn {
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 4.25rem) !important;
+      left: 0.75rem !important;
+      right: auto !important;
+    }
+  }
+</style>
 <style>
   :root {
     --gold: #d4af37; --gold-bright: #f0c75e; --gold-dark: #a67c12;
@@ -35,6 +79,189 @@
   .ev-tool.open .diff-block { display: block; }
   .diff-add { color: #4ade80; } .diff-del { color: #f87171; } .diff-hunk { color: #60a5fa; }
   .ev-err { background: rgba(239,68,68,.12); border-left: 3px solid #ef4444; }
+  .provider-wait {
+    background: rgba(234,179,8,.08);
+    border: 1px dashed rgba(234,179,8,.35);
+    border-radius: 0.5rem;
+    padding: 1rem 1.25rem;
+    text-align: center;
+    color: var(--gold-bright, #fbbf24);
+  }
+  .provider-wait-monkeys {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    font-size: 2rem;
+    line-height: 1;
+    margin-bottom: 0.5rem;
+    min-height: 2.5rem;
+  }
+  .provider-wait-monkeys .pw-monkey { display: inline-block; }
+  .provider-wait-monkeys .pw-banana { display: inline-block; font-size: 1.35rem; }
+  .provider-wait-spinner {
+    width: 1.25rem;
+    height: 1.25rem;
+    margin: 0 auto 0.65rem;
+    border: 2px solid rgba(234,179,8,.25);
+    border-top-color: rgba(234,179,8,.9);
+    border-radius: 50%;
+    animation: pw-spin 0.8s linear infinite;
+  }
+  .provider-wait-joke {
+    font-size: 0.85rem;
+    color: #fde68a;
+    line-height: 1.45;
+    max-width: 28rem;
+    margin: 0 auto;
+  }
+  .provider-wait-sub {
+    font-size: 0.7rem;
+    color: rgba(148,163,184,.85);
+    margin-top: 0.45rem;
+  }
+  @keyframes pw-spin { to { transform: rotate(360deg); } }
+  @keyframes pw-dance-l {
+    0%, 100% { transform: translateY(0) rotate(-8deg); }
+    50% { transform: translateY(-6px) rotate(8deg); }
+  }
+  @keyframes pw-dance-r {
+    0%, 100% { transform: translateY(0) rotate(8deg); }
+    50% { transform: translateY(-6px) rotate(-8deg); }
+  }
+  @keyframes pw-toss {
+    0% { transform: translate(-14px, 4px) rotate(-30deg); opacity: 0.4; }
+    45% { transform: translate(0, -10px) rotate(15deg); opacity: 1; }
+    100% { transform: translate(14px, 4px) rotate(40deg); opacity: 0.4; }
+  }
+  .pw-monkey-left { animation: pw-dance-l 0.55s ease-in-out infinite; }
+  .pw-monkey-right { animation: pw-dance-r 0.55s ease-in-out infinite 0.12s; }
+  .pw-banana { animation: pw-toss 0.9s ease-in-out infinite; }
+
+  /* ---- Agents Hub (Cursor-style Agents Window) ---- */
+  body.agents-hub-open { overflow: hidden; }
+  .ah-backdrop { background: rgba(0,0,0,.82); padding: 0; }
+  .ah-shell { background: var(--panel, #0f0f0f); }
+  .ah-header { background: rgba(0,0,0,.35); }
+  .ah-sidebar { background: rgba(0,0,0,.25); }
+  .ah-tab {
+    padding: 0.35rem 0.75rem;
+    border-radius: 0.35rem 0.35rem 0 0;
+    color: var(--muted, #64748b);
+    border-bottom: 2px solid transparent;
+  }
+  .ah-tab.active {
+    color: var(--gold-bright, #fde68a);
+    border-bottom-color: var(--gold, #ca8a04);
+    background: rgba(234,179,8,.06);
+  }
+  .ah-session-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.35rem 0.5rem;
+    width: 100%;
+    text-align: left;
+    padding: 0.5rem 0.6rem;
+    margin: 0.15rem 0.35rem;
+    border-radius: 0.35rem;
+    border: 1px solid transparent;
+    font-size: 0.7rem;
+    color: #cbd5e1;
+  }
+  .ah-session-row:hover { background: rgba(234,179,8,.08); border-color: rgba(234,179,8,.15); }
+  .ah-session-active { background: rgba(234,179,8,.12); border-color: rgba(234,179,8,.35); }
+  .ah-session-title { flex: 1 1 100%; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ah-session-meta { font-size: 0.6rem; color: #64748b; }
+  .ah-group-label {
+    font-size: 0.55rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #475569;
+    padding: 0.5rem 0.75rem 0.15rem;
+  }
+  .ah-dot { width: 0.45rem; height: 0.45rem; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+  .ah-dot-run { background: #22c55e; box-shadow: 0 0 6px rgba(34,197,94,.6); }
+  .ah-dot-wait { background: #eab308; animation: pw-spin 1.2s linear infinite; border-radius: 2px; width: 0.5rem; height: 0.5rem; }
+  .ah-dot-warn { background: #f97316; }
+  .ah-dot-idle { background: #475569; }
+  .ah-detail-title { font-size: 1rem; font-weight: 700; margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; }
+  .ah-detail-grid {
+    display: grid;
+    grid-template-columns: 5rem 1fr;
+    gap: 0.35rem 0.75rem;
+    font-size: 0.75rem;
+    margin-bottom: 1rem;
+  }
+  .ah-detail-grid dt { color: #64748b; }
+  .ah-detail-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+  .ah-section-title { font-size: 0.7rem; font-weight: 700; color: var(--gold-bright, #fde68a); text-transform: uppercase; letter-spacing: 0.04em; }
+  .ah-auto-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.5rem 0;
+    border-bottom: 1px solid rgba(234,179,8,.08);
+    font-size: 0.75rem;
+  }
+  .ah-fleet-form { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-top: 0.5rem; }
+  .ah-fleet-row { cursor: pointer; border-radius: 0.25rem; padding: 0.35rem 0.5rem !important; }
+  .ah-fleet-row:hover, .ah-fleet-row-active { background: rgba(234,179,8,.08); }
+  .ah-fleet-badge {
+    display: inline-block;
+    font-size: 0.6rem;
+    padding: 0.1rem 0.35rem;
+    border-radius: 0.2rem;
+    margin-right: 0.35rem;
+    text-transform: lowercase;
+  }
+  .ah-fleet-run { background: rgba(57,211,83,.15); color: #86efac; }
+  .ah-fleet-wait { background: rgba(234,179,8,.2); color: #fde68a; }
+  .ah-fleet-ok { background: rgba(57,211,83,.1); color: #4ade80; }
+  .ah-fleet-err { background: rgba(239,68,68,.15); color: #fca5a5; }
+  .ah-fleet-idle { background: rgba(100,116,139,.2); color: #94a3b8; }
+  .ah-fleet-logs {
+    max-height: 10rem;
+    overflow-y: auto;
+    font-size: 0.65rem;
+    color: #94a3b8;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .ah-personas-layout { display: flex; gap: 1rem; min-height: 16rem; }
+  .ah-persona-list { width: 10rem; shrink: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 0.15rem; }
+  .ah-persona-pick {
+    text-align: left;
+    font-size: 0.65rem;
+    padding: 0.35rem 0.5rem;
+    border-radius: 0.25rem;
+    color: #94a3b8;
+  }
+  .ah-persona-pick:hover, .ah-persona-pick.active { background: rgba(234,179,8,.12); color: #fde68a; }
+  .ah-persona-editor-wrap { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .ah-persona-editor {
+    flex: 1;
+    min-height: 12rem;
+    background: rgba(0,0,0,.4);
+    border: 1px solid rgba(234,179,8,.2);
+    border-radius: 0.35rem;
+    padding: 0.75rem;
+    font-family: ui-monospace, monospace;
+    font-size: 0.7rem;
+    color: #cbd5e1;
+    resize: vertical;
+  }
+  .ah-rule-cards { display: grid; gap: 0.5rem; }
+  .ah-rule-card {
+    padding: 0.65rem 0.75rem;
+    border: 1px solid rgba(234,179,8,.15);
+    border-radius: 0.35rem;
+    background: rgba(0,0,0,.25);
+    font-size: 0.7rem;
+  }
+  .ah-rule-card strong { display: block; color: #fde68a; margin-bottom: 0.15rem; }
+  .ah-rule-card span { color: #64748b; }
   .ev-cost { color: #475569; font-size: .68rem; text-align: right; }
   .ev-agent { color: var(--gold-bright); font-size: .8rem; }
   .ev-approval { border: 2px solid var(--gold); background: rgba(212,175,55,.08);
@@ -51,6 +278,68 @@
   .monkey { image-rendering: pixelated; filter: drop-shadow(0 0 8px rgba(212,175,55,.5)); }
   ::-webkit-scrollbar { width: 8px; } ::-webkit-scrollbar-thumb { background: #2b2415; border-radius: 4px; }
   #composer.drop-active { outline: 2px dashed var(--gold); outline-offset: -4px; background: rgba(212,175,55,.06); }
+
+  /* Mobile drawer console (≤767px) */
+  #btn-mobile-menu { display: none; }
+  #sidebar-overlay { display: none; }
+  @media (max-width: 767px) {
+    /* Shrink with on-screen keyboard instead of letting it cover the composer */
+    html { height: -webkit-fill-available; }
+    body.h-screen,
+    #view-login.h-full,
+    #view-setup.h-full,
+    #view-main.h-full {
+      height: var(--cm-vvh, 100dvh);
+      max-height: var(--cm-vvh, 100dvh);
+    }
+    #panel-chat { min-height: 0; }
+    #msg { scroll-margin-bottom: 0.75rem; }
+    html.cm-kb-active #stream { -webkit-overflow-scrolling: touch; }
+    #btn-mobile-menu { display: inline-flex; align-items: center; justify-content: center; min-width: 44px; min-height: 44px; }
+    #view-main { position: relative; }
+    #sidebar {
+      position: fixed; top: 0; left: 0; bottom: 0; z-index: 50;
+      width: min(85vw, 280px);
+      transform: translateX(-100%);
+      transition: transform .22s ease;
+      box-shadow: 4px 0 24px rgba(0,0,0,.45);
+    }
+    #sidebar.drawer-open { transform: translateX(0); }
+    #sidebar-overlay.visible { display: block; position: fixed; inset: 0; z-index: 45; background: rgba(0,0,0,.62); }
+    #hdr-status { display: none; }
+    #composer > .flex.items-center.gap-2.mb-1 { flex-wrap: wrap; gap: .35rem; }
+    #composer > .flex.gap-2.items-end { flex-wrap: wrap; align-items: stretch; }
+    #composer #msg { flex: 1 1 100%; min-height: 4.5rem; }
+    #composer #btn-send, #composer #btn-stop { min-height: 44px; flex: 1; }
+    #composer #btn-attach, #composer #btn-mic, #composer #btn-gremlin-raid { min-height: 44px; min-width: 44px; }
+    .mode-btn { min-height: 36px; padding: .35rem .6rem; }
+    .session-item, #btn-new-session, #btn-sidebar-advanced, #btn-settings, #btn-logout { min-height: 44px; }
+    .fixed.inset-0.flex.items-center.justify-center.z-50 { align-items: stretch; padding: 0; }
+    .fixed.inset-0.flex.items-center.justify-center.z-50 > .panel,
+    .fixed.inset-0.flex.items-center.justify-center.z-50 > div.panel {
+      max-width: none; width: 100%; max-height: none; height: 100%;
+      border-radius: 0; border-left: none; border-right: none;
+    }
+    #wb-toolbar, #panel-terminal { display: none !important; }
+    #panel-fleet:not(.mobile-force) { display: none !important; }
+  }
+  /* Mobile-lite route (/m) — chat + sessions + approvals only */
+  html.cm-lite #btn-sidebar-advanced,
+  html.cm-lite #sidebar-advanced,
+  html.cm-lite #btn-gremlin-raid,
+  html.cm-lite #landing-models,
+  html.cm-lite #landing-gremlins,
+  html.cm-lite #btn-gremlins,
+  html.cm-lite #btn-desk-hub,
+  html.cm-lite #btn-corps,
+  html.cm-lite #btn-mcp,
+  html.cm-lite #btn-memory,
+  html.cm-lite #btn-cost-dashboard,
+  html.cm-lite #btn-feedback-inbox,
+  html.cm-lite #btn-invite,
+  html.cm-lite #btn-fleet-store,
+  html.cm-lite #btn-export-transcript,
+  html.cm-lite #btn-copy-transcript { display: none !important; }
 </style>
 <body class="scanlines h-screen overflow-hidden">
 
@@ -136,6 +425,7 @@
       <button id="invite-close" class="text-slate-400 hover:text-white">✕</button>
     </div>
     <p class="text-xs text-slate-500 mb-3">Mint a starter login, share it with your dev, and they'll set their own PIN + authenticator on first sign-in. Heads up: invited devs share this workspace, the GitHub token, and can run commands — invite only people you trust.</p>
+    <p class="text-xs text-slate-500 mb-3">Use the <strong class="text-slate-400">Vertex</strong> dropdown per user to grant your GCP credits: <em>automatic</em> (no setup) or <em>paste key</em>. Or click <strong class="text-slate-400">⚡ key</strong> to create a GCP service account + JSON in one click (shown once for your PA).</p>
     <div class="flex gap-2 mb-3">
       <input id="inv-user" class="input flex-1 rounded px-2 py-1 text-xs" placeholder="username (optional — auto if blank)">
       <button id="inv-create" class="gold-btn rounded px-3 text-xs">Create invite</button>
@@ -151,10 +441,29 @@
   </div>
 </div>
 
+<!-- ============ VERTEX KEY HANDOFF (Owner, one-time) ============ -->
+<div id="modal-vertex-key" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+  <div class="panel gold-border rounded-lg p-5 w-full max-w-lg max-h-[90vh] overflow-y-auto text-sm">
+    <div class="flex justify-between items-center mb-3">
+      <h2 class="wordmark font-bold">Vertex key — copy once</h2>
+      <button id="vertex-key-close" class="text-slate-400 hover:text-white">✕</button>
+    </div>
+    <p class="text-xs text-slate-500 mb-3">GCP service account created for this member. The key is already installed server-side — they can run sessions immediately. Copy the JSON below if your PA needs to archive it or hand it off for local setup.</p>
+    <p class="text-xs mb-1">username: <code id="vk-u" class="bg-black/50 px-1 rounded"></code></p>
+    <p class="text-xs mb-2">service account: <code id="vk-email" class="bg-black/50 px-1 rounded text-[.65rem] break-all"></code></p>
+    <textarea id="vk-json" readonly class="input rounded w-full px-2 py-1 text-[.65rem] h-32 font-mono mb-2"></textarea>
+    <div class="flex gap-2">
+      <button id="vk-copy" class="gold-btn rounded px-3 py-1 text-xs">Copy JSON</button>
+      <button id="vk-done" class="text-slate-400 hover:text-white text-xs">Done</button>
+    </div>
+  </div>
+</div>
+
 <!-- ============ MAIN ============ -->
 <div id="view-main" class="hidden h-full flex">
+  <div id="sidebar-overlay" class="hidden" aria-hidden="true"></div>
   <!-- sidebar -->
-  <aside class="w-60 shrink-0 panel border-r border-yellow-900/40 flex flex-col">
+  <aside id="sidebar" class="w-60 shrink-0 panel border-r border-yellow-900/40 flex flex-col">
     <div class="p-3 border-b border-yellow-900/40 flex items-center gap-2">
       <span class="monkey">🐒</span><span class="wordmark font-bold">CodeMonkeys</span>
     </div>
@@ -192,10 +501,24 @@
         <button id="btn-settings" class="w-full text-left text-slate-400 hover:text-[var(--gold)] flex justify-between items-center">
           <span>⚙ Settings</span><span id="settings-caret" class="text-slate-600">▸</span></button>
         <div id="settings-menu" class="hidden mt-2 space-y-2 rounded border border-yellow-900/40 bg-black/40 p-2">
+          <button id="btn-desk-hub" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">🖥 Cursor Desk</button>
+          <button id="btn-agents-hub-settings" class="w-full text-left text-slate-400 hover:text-[var(--gold)]">🤖 Agents &amp; Automations</button>
+          <button id="btn-gremlins" class="w-full text-left text-slate-400 hover:text-[var(--gold)]">👹 Code Gremlins</button>
           <button id="btn-models" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">⚙ Models &amp; keys</button>
-          <button id="btn-corps" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">⚙ Agent Corps (Personas)</button>
           <button id="btn-mcp" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">🔌 MCP connectors</button>
           <button id="btn-passkey" class="w-full text-left text-slate-400 hover:text-[var(--gold)]">👆 Add passkey / biometric</button>
+          <div id="vertex-member-panel" class="hidden rounded border border-green-900/30 bg-green-950/20 p-2 space-y-2">
+            <div class="text-[.65rem] text-green-400/90 font-bold">☁ GCP Vertex credits</div>
+            <p id="vertex-member-msg" class="text-[.65rem] text-slate-500"></p>
+            <textarea id="vertex-sa-paste" class="input rounded w-full px-2 py-1 text-[.65rem] h-16 hidden"
+              placeholder='Paste service account JSON from your PA…'></textarea>
+            <div id="vertex-member-actions" class="flex gap-2 hidden">
+              <button id="btn-vertex-save" class="gold-btn rounded px-2 py-0.5 text-[.65rem]">Save JSON</button>
+              <button id="btn-vertex-clear" class="text-red-400/80 text-[.65rem] hover:text-red-300">Clear</button>
+            </div>
+          </div>
+          <button id="btn-push-alerts" class="w-full text-left text-slate-400 hover:text-[var(--gold)]">🔔 Approval push alerts (off)</button>
+          <p id="push-msg" class="text-[.65rem] text-slate-500"></p>
           <p id="passkey-msg" class="text-[.65rem] text-slate-500"></p>
           <div id="passkey-list" class="mt-1 space-y-1"></div>
           <button id="btn-invite" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">👥 Invite developers</button>
@@ -215,6 +538,7 @@
   <!-- main pane -->
   <main class="flex-1 flex flex-col min-w-0">
     <header class="px-4 py-2 border-b border-yellow-900/40 flex items-center gap-3 text-xs">
+      <button id="btn-mobile-menu" type="button" class="gold-border rounded px-2 py-1 text-base text-[var(--gold)] shrink-0" aria-label="Open sessions menu" aria-expanded="false" aria-controls="sidebar">☰</button>
       <span id="hdr-dot" class="dot idle"></span>
       <span id="hdr-title" class="text-slate-300 font-bold">no session</span>
       <span id="hdr-status" class="text-slate-500"></span>
@@ -222,12 +546,9 @@
       <button id="btn-copy-transcript" class="hidden text-slate-500 hover:text-slate-300 text-[.65rem] border border-slate-800 rounded px-1.5 py-0.5" title="Copy session as Markdown to clipboard">⎘ copy</button>
       <button id="btn-export-transcript" class="hidden text-slate-500 hover:text-slate-300 text-[.65rem] border border-slate-800 rounded px-1.5 py-0.5" title="Download session as Markdown file">⎘ md</button>
       <span id="hdr-spend" class="text-[var(--gold)]"></span>
+      <button id="btn-agents-hub" type="button" class="gold-border rounded px-2 py-1 text-[.65rem] text-[var(--gold)] hover:bg-yellow-900/20 hidden" title="Agents &amp; automations (Ctrl+Shift+A)">🤖 Agents</button>
     </header>
-    <!-- session budget progress bar -->
-    <div id="budget-bar-wrap" class="hidden owner-only h-1 bg-slate-800/60">
-      <div id="budget-bar-fill" class="h-full bg-green-500 transition-all" style="width:0%" title=""></div>
-    </div>
-    <!-- budget alert banner -->
+    <!-- budget alert banner (only when session budget nears cap) -->
     <div id="budget-alert" class="hidden owner-only px-4 py-1 text-xs bg-red-900/30 border-b border-red-700/50 text-red-300 flex items-center gap-2">
       <span id="budget-alert-msg"></span>
       <button id="budget-alert-close" class="ml-auto text-red-500 hover:text-red-200">✕</button>
@@ -250,7 +571,11 @@
           <button id="landing-models" class="gold-border rounded-lg py-3 text-sm text-slate-300 hover:text-[var(--gold-bright)] flex items-center justify-center gap-2">
             <span>⚙</span><span>Configure Models</span>
           </button>
+          <button id="landing-gremlins" class="gold-border rounded-lg py-3 text-sm text-slate-300 hover:text-red-300/90 col-span-full sm:col-span-2 flex items-center justify-center gap-2 border-red-900/40">
+            <span>👹</span><span>Code Gremlins — roast your code before it ships</span>
+          </button>
         </div>
+        <p id="gremlins-toast" class="hidden text-red-400/80 text-xs mt-3"></p>
         <p class="text-slate-600 text-xs mt-6">mode: <span id="landing-mode" class="text-[var(--gold)]">default</span></p>
       </div>
     </div>
@@ -267,6 +592,7 @@
         <button id="btn-attach" title="Attach files" class="gold-border rounded px-2 py-2 text-sm hover:bg-yellow-900/20">📎</button>
         <input id="file-input" type="file" multiple class="hidden">
         <button id="btn-mic" title="Voice input" class="gold-border rounded px-2 py-2 text-sm hover:bg-yellow-900/20">🎤</button>
+        <button id="btn-gremlin-raid" title="Unleash Code Gremlins on this session" class="gold-border rounded px-2 py-2 text-sm hover:bg-red-900/30 text-red-300/90">👹</button>
         <textarea id="msg" rows="2" class="input flex-1 rounded px-3 py-2 text-sm resize-none"
           placeholder="Tell the monkeys what to build… (Enter to send, Shift+Enter for newline. Paste or drag-drop images/files here.)"></textarea>
         <button id="btn-stop" class="hidden rounded px-3 py-2 text-sm bg-red-900/60 hover:bg-red-800">■</button>
@@ -534,6 +860,31 @@
   </div>
 </div>
 
+<!-- ============ CODE GREMLINS MODAL ============ -->
+<div id="modal-gremlins" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+  <div class="panel gold-border rounded-lg p-5 w-full max-w-lg max-h-[90vh] overflow-y-auto text-sm border-red-900/30">
+    <div class="flex justify-between items-center mb-3">
+      <h2 class="wordmark font-bold text-red-300/90">👹 Code Gremlins</h2>
+      <button id="gremlins-close" class="text-slate-400 hover:text-white">✕</button>
+    </div>
+    <p class="text-slate-400 text-xs leading-relaxed mb-4">
+      The feral red team of CodeMonkeys. Gremlins <strong class="text-slate-300">insult your code with evidence</strong>,
+      hunt waste and complexity, stress hot paths, and suggest simpler routes — then hand fixes back to the monkeys.
+      For auth, secrets, and data isolation, they escalate to formal <span class="text-yellow-500/80">red-team</span>.
+    </p>
+    <ul class="text-[.72rem] text-slate-500 space-y-2 mb-4 list-disc pl-4">
+      <li>Roast board with file:line citations — not vague vibes</li>
+      <li>Load / stress notes (local benchmarks, scaled fixtures)</li>
+      <li>&ldquo;Do it this way instead&rdquo; when you over-built</li>
+    </ul>
+    <div class="flex flex-col sm:flex-row gap-2 mb-3">
+      <button id="gremlins-unleash-session" class="gold-btn rounded-lg py-2 px-4 text-xs flex-1">Unleash on this session</button>
+      <button id="gremlins-unleash-workspace" class="gold-border rounded-lg py-2 px-4 text-xs text-slate-300 hover:text-red-200 flex-1">Raid whole workspace</button>
+    </div>
+    <p class="text-[.65rem] text-slate-600">Prefills the composer with a spawn prompt — review and Send. Agent: <code class="text-yellow-600/80">corps/agents/code-gremlins.md</code></p>
+  </div>
+</div>
+
 <!-- ============ FEEDBACK INBOX MODAL ============ -->
 <div id="modal-feedback" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
   <div class="panel gold-border rounded-lg p-5 w-full max-w-lg max-h-[90vh] overflow-y-auto text-sm">
@@ -545,7 +896,13 @@
   </div>
 </div>
 
+<script src="/static/forge/agents-hub.js"></script>
 <script src="/static/forge/omni-search.js"></script>
+<script src="/static/forge/fleet-store.js"></script>
+<script src="/static/forge/workbench.js"></script>
+<script src="/static/forge/cursor-desk.js"></script>
+<script src="/static/forge/gremlins.js"></script>
+<script src="/static/forge/push.js"></script>
 <script src="/static/forge/app.js"></script>
 <script src="/static/forge/field-report.js"></script>
 <script src="/static/forge/feedback.js"></script>

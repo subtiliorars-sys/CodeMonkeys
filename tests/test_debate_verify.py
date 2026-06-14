@@ -37,7 +37,7 @@ def _resp(text):
 def provider_ok(monkeypatch):
     monkeypatch.setattr(server, "load_models", lambda: {})
     monkeypatch.setattr(server, "_verifier_providers",
-                        lambda cfg: [dict(_PROVIDER) for _ in server._DEBATE_LENSES])
+                        lambda cfg, username=None: [dict(_PROVIDER) for _ in server._DEBATE_LENSES])
 
 
 def _script_verdicts(monkeypatch, verdicts):
@@ -92,7 +92,7 @@ def test_garbled_verdict_counts_as_refute(provider_ok, monkeypatch):
 
 def test_no_provider_fails_closed(monkeypatch):
     monkeypatch.setattr(server, "load_models", lambda: {})
-    monkeypatch.setattr(server, "_verifier_providers", lambda cfg: [])
+    monkeypatch.setattr(server, "_verifier_providers", lambda cfg, username=None: [])
     allowed, summary = server._debate_verify(_session(), "git push")
     assert not allowed
     assert "blocked" in summary
