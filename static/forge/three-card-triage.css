@@ -1,0 +1,116 @@
+/* Canonical three-card triage UI — keep in sync across all consumers.
+   See agent-corps/ui/three-card-triage/README.md */
+
+:root {
+  --triage-accent: #F7792C;
+  --triage-bg: #070707;
+  --triage-card: #111111;
+  --triage-inset: #181818;
+  --triage-edge: #242424;
+  --triage-text: #ececec;
+  --triage-muted: #9a9a9a;
+  --triage-faint: #5a5a5a;
+  --triage-up: #34d399;
+  --triage-down: #f87171;
+  --triage-radius: 8px;
+}
+
+.triage-wrap { max-width: min(96vw, 1800px); margin-inline: auto; }
+.triage-item {
+  margin-bottom: 28px;
+  padding: 24px 28px;
+  border: 1px solid var(--triage-edge);
+  border-radius: var(--triage-radius);
+  background: var(--triage-inset);
+  color: var(--triage-text);
+}
+.triage-item.archived { opacity: 0.88; background: rgba(0,0,0,0.25); }
+.triage-title { font-size: 1.35rem; font-weight: 700; margin: 0 0 8px; line-height: 1.3; }
+.triage-meta { font-size: 13px; color: var(--triage-faint); word-break: break-word; }
+.triage-body {
+  margin: 12px 0 0;
+  padding: 16px 20px;
+  background: var(--triage-card);
+  border: 1px solid var(--triage-edge);
+  border-radius: var(--triage-radius);
+  font-size: 14px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  max-height: 360px;
+  overflow: auto;
+}
+.triage-section-label {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--triage-accent);
+  margin: 18px 0 10px;
+}
+
+.fb-proposals {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin: 14px 0 18px;
+}
+@media (max-width: 900px) {
+  .fb-proposals { grid-template-columns: 1fr; }
+}
+.fb-proposal-card {
+  background: var(--triage-card);
+  border: 2px solid var(--triage-edge);
+  border-radius: var(--triage-radius);
+  padding: 16px 18px;
+  min-height: 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.fb-proposal-card.on { border-color: var(--triage-accent); box-shadow: 0 0 0 1px rgba(247, 121, 44, 0.35); }
+.fb-proposal-card.recommended { border-color: rgba(247, 121, 44, 0.55); }
+.fb-proposal-card.empty { border-style: dashed; opacity: 0.65; cursor: default; }
+.fb-proposal-head { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.fb-proposal-label { font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--triage-muted); }
+.fb-proposal-badge {
+  font-size: 10px; font-weight: 800; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 999px;
+  background: rgba(247, 121, 44, 0.18); color: var(--triage-accent);
+}
+.fb-proposal-text { font-size: 14px; line-height: 1.55; flex: 1; white-space: pre-wrap; color: var(--triage-text); }
+.fb-proposal-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: auto; }
+.fb-proposal-actions .triage-btn { font-size: 12px; padding: 6px 12px; border-radius: var(--triage-radius); cursor: pointer; font-family: inherit; border: 1px solid var(--triage-edge); background: var(--triage-inset); color: var(--triage-text); }
+.fb-proposal-actions .triage-btn:hover { border-color: var(--triage-accent); }
+.fb-proposal-actions .triage-btn-go { background: var(--triage-accent); color: #000; border-color: var(--triage-accent); font-weight: 700; }
+.fb-proposal-actions .triage-btn-no { color: var(--triage-down); }
+.fb-proposal-actions .fb-card-approve { flex: 1 1 100%; margin-top: 4px; padding: 10px 14px; font-size: 13px; }
+
+.fb-accept-preview {
+  margin: 12px 0 10px; padding: 12px 14px; border-radius: var(--triage-radius);
+  border: 1px solid rgba(247, 121, 44, 0.35); background: rgba(247, 121, 44, 0.08);
+}
+.fb-accept-preview .label { font-size: 10px; font-weight: 700; text-transform: uppercase; color: var(--triage-accent); margin-bottom: 6px; }
+.fb-accept-preview .text { font-size: 14px; line-height: 1.45; white-space: pre-wrap; color: var(--triage-text); }
+.fb-accept-preview .meta { font-size: 10px; color: var(--triage-muted); margin-top: 8px; }
+.fb-custom-solution {
+  width: 100%; min-height: 80px; margin: 10px 0; font-size: 14px; resize: vertical;
+  background: var(--triage-card); border: 1px solid var(--triage-edge); color: var(--triage-text);
+  border-radius: var(--triage-radius); padding: 10px 12px;
+}
+.fb-note-input {
+  width: 100%; margin-bottom: 10px; font-size: 14px; padding: 10px 12px;
+  background: var(--triage-card); border: 1px solid var(--triage-edge); color: var(--triage-text);
+  border-radius: var(--triage-radius);
+}
+.fb-toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 14px; }
+.fb-toolbar .triage-btn { font-size: 12px; padding: 8px 14px; border-radius: var(--triage-radius); cursor: pointer; font-family: inherit; border: 1px solid var(--triage-edge); background: var(--triage-inset); color: var(--triage-text); }
+.fb-toolbar .triage-btn-go { background: var(--triage-accent); color: #000; border-color: var(--triage-accent); font-weight: 700; }
+.fb-toolbar .triage-btn-no { color: var(--triage-down); }
+
+@media (min-width: 1400px) {
+  .triage-body { max-height: 480px; font-size: 15px; }
+  .fb-proposal-text { font-size: 15px; }
+  .fb-proposal-card { min-height: 220px; padding: 18px 20px; }
+}

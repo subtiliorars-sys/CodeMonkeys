@@ -67,6 +67,7 @@ const OmniSearch = {
       { id: "btn-invite", label: "👥 Settings: Invite Developers", cat: "Setting" },
       { id: "btn-cost-dashboard", label: "💰 Cost Dashboard", cat: "View" },
       { id: "btn-feedback-inbox", label: "📥 Feedback Inbox", cat: "View" },
+      { id: "btn-search-sessions", label: "🔍 Search Sessions", cat: "Action" },
       { id: "btn-new-session", label: "+ New Session", cat: "Action" },
     ];
 

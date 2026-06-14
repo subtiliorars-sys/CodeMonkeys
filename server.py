@@ -997,6 +997,39 @@ def _load_feedback_statuses():
         pass
     return {}
 
+
+def _save_feedback_statuses(statuses: dict) -> None:
+    if len(statuses) > FEEDBACK_STATUS_MAX:
+        oldest = sorted(statuses.keys())[0]
+        statuses.pop(oldest)
+    try:
+        os.makedirs(os.path.dirname(FEEDBACK_STATUS_FILE), exist_ok=True)
+        with open(FEEDBACK_STATUS_FILE, "w", encoding="utf-8") as f:
+            json.dump(statuses, f)
+    except Exception:
+        raise HTTPException(status_code=500, detail="Could not save status.")
+
+
+def _find_feedback_report(rid: str):
+    for path in (FEEDBACK_FILE, FEEDBACK_FILE + ".1"):
+        try:
+            if not os.path.exists(path):
+                continue
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    if str(rec.get("id") or "") == rid:
+                        return rec
+        except Exception:
+            continue
+    return None
+
 def _feedback_rate_ok(user: str) -> bool:
     now = time.time()
     hits = [t for t in _feedback_hits.get(user, []) if now - t < FEEDBACK_RATE_WINDOW]
@@ -7951,15 +7984,7 @@ def set_feedback_status(req: FeedbackStatusRequest, user: str = Depends(verify_o
         raise HTTPException(status_code=400, detail="Invalid id.")
     statuses = _load_feedback_statuses()
     statuses[req.id] = {"status": req.status, "note": (req.note or "")[:500]}
-    if len(statuses) > FEEDBACK_STATUS_MAX:
-        oldest = sorted(statuses.keys())[0]
-        statuses.pop(oldest)
-    try:
-        os.makedirs(os.path.dirname(FEEDBACK_STATUS_FILE), exist_ok=True)
-        with open(FEEDBACK_STATUS_FILE, "w", encoding="utf-8") as f:
-            json.dump(statuses, f)
-    except Exception:
-        raise HTTPException(status_code=500, detail="Could not save status.")
+    _save_feedback_statuses(statuses)
     return {"status": "ok"}
 
 @app.get("/api/feedback/shot/{name}")
@@ -7970,6 +7995,20 @@ def get_feedback_shot(name: str, user: str = Depends(verify_owner)):
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Not found")
     return FileResponse(path)
+
+
+from feedback_triage import merge_report_with_meta, ensure_proposals, register_feedback_triage_routes
+
+register_feedback_triage_routes(
+    app,
+    verify_owner=verify_owner,
+    load_statuses=_load_feedback_statuses,
+    save_statuses=_save_feedback_statuses,
+    find_report=_find_feedback_report,
+    valid_statuses=FEEDBACK_STATUSES,
+    llm_fn=None,
+    accept_status="planned",
+)
 
 
 # ---- GitHub PR Bridge --------------------------------------------------------
