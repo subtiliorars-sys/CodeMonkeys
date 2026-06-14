@@ -1706,6 +1706,9 @@ def load_models():
                 repaired = True
         if repaired:
             _write_enc_file(MODELS_FILE, cfg)
+        for p in cfg["providers"].values():
+            if "catalog" not in p:
+                _ensure_catalog_entries(p)
         return cfg
 
 
@@ -1716,15 +1719,81 @@ def save_models(cfg):
     _bust_secret_cache()      # newly-added API keys must be redactable immediately
 
 
+def _validate_cost(value: float, label: str) -> float:
+    """N12 / N2 guard: costs must be finite and non-negative."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        raise HTTPException(422, f"{label} must be a number")
+    if not math.isfinite(v) or v < 0:
+        raise HTTPException(422, f"{label} must be a finite number >= 0")
+    return v
+
+
+def _catalog_lookup(prov: dict, mid: str) -> dict | None:
+    for e in prov.get("catalog", []):
+        if e.get("id") == mid:
+            return e
+    return None
+
+
+def _upsert_catalog_entry(prov: dict, mid: str, in_cost: float, out_cost: float,
+                          *, manual: bool = False, name: str | None = None):
+    """Add or update a per-model catalog entry on *prov* (mutates in place)."""
+    catalog = prov.setdefault("catalog", [])
+    for e in catalog:
+        if e.get("id") == mid:
+            e["in"] = in_cost
+            e["out"] = out_cost
+            if manual:
+                e["manual"] = True
+            if name:
+                e["name"] = name
+            return
+    entry = {"id": mid, "in": in_cost, "out": out_cost}
+    if manual:
+        entry["manual"] = True
+    if name:
+        entry["name"] = name
+    catalog.append(entry)
+
+
+def _ensure_catalog_entries(prov: dict):
+    """Fill missing catalog rows for models already in the provider list."""
+    catalog = prov.setdefault("catalog", [])
+    by_id = {e["id"] for e in catalog if e.get("id")}
+    in_cost, out_cost = prov.get("in", 0), prov.get("out", 0)
+    for mid in prov.get("models", []):
+        if mid and mid not in by_id:
+            catalog.append({"id": mid, "in": in_cost, "out": out_cost})
+            by_id.add(mid)
+
+
+def _catalog_for_api(prov: dict) -> dict:
+    return {e["id"]: {"in": e["in"], "out": e["out"],
+                      "manual": bool(e.get("manual")),
+                      "name": e.get("name", e["id"])}
+            for e in prov.get("catalog", []) if e.get("id")}
+
+
 def _resolve(prov, pid=None):
     """Provider entry -> dict the chat layer consumes.
 
     *pid* is threaded through so cooldown helpers can bench by provider-id.
+    Per-model catalog costs override provider defaults when the active model
+    has a catalog entry (N12).
     """
+    model = prov.get("model", "")
+    in_cost = prov.get("in", 0)
+    out_cost = prov.get("out", 0)
+    entry = _catalog_lookup(prov, model)
+    if entry:
+        in_cost = entry.get("in", in_cost)
+        out_cost = entry.get("out", out_cost)
     return {"pid": pid, "name": prov.get("label", "?"), "kind": prov.get("kind", ""),
-            "base_url": prov.get("base_url", ""), "model": prov.get("model", ""),
+            "base_url": prov.get("base_url", ""), "model": model,
             "api_key": prov.get("key", ""),
-            "input_cost_per_m": prov.get("in", 0), "output_cost_per_m": prov.get("out", 0),
+            "input_cost_per_m": in_cost, "output_cost_per_m": out_cost,
             "context_window": prov.get("context_window", COMPACT_CONTEXT_WINDOW_DEFAULT)}
 
 
@@ -1839,8 +1908,7 @@ def models_get(_: str = Depends(verify_owner)):
              "models": p.get("models", []), "has_key": bool(p.get("key")),
              "key_hint": ("…" + p["key"][-4:]) if p.get("key") else "",
              "in": p.get("in", 0), "out": p.get("out", 0), "auto": p.get("auto", False),
-             "catalog": {e["id"]: {"in": e["in"], "out": e["out"]}
-                         for e in p.get("catalog", [])},
+             "catalog": _catalog_for_api(p),
              "catalog_refreshed_at": p.get("catalog_refreshed_at"),
              "last_error": p.get("last_error"),
              "last_error_at": p.get("last_error_at"),
@@ -1856,13 +1924,15 @@ def models_upsert(req: ProviderUpsert, _: str = Depends(verify_owner)):
     if req.kind == "openai" and not req.base_url.strip():
         raise HTTPException(400, "base_url is required for OpenAI-compatible providers "
                                  "(e.g. https://openrouter.ai/api/v1)")
+    in_cost = _validate_cost(req.input_cost_per_m, "input_cost_per_m")
+    out_cost = _validate_cost(req.output_cost_per_m, "output_cost_per_m")
     cfg = load_models()
     prov = cfg["providers"].get(req.id, {})
     prov.update({
         "label": req.label or prov.get("label", req.id), "kind": req.kind,
         "base_url": req.base_url, "model": req.model or prov.get("model", ""),
         "models": req.models or prov.get("models", []),
-        "in": req.input_cost_per_m, "out": req.output_cost_per_m, "auto": req.auto,
+        "in": in_cost, "out": out_cost, "auto": req.auto,
         "notes": req.notes or prov.get("notes", ""),
     })
     if req.key:                    # blank key = keep existing
@@ -1888,7 +1958,38 @@ def models_delete(pid: str, _: str = Depends(verify_owner)):
     return {"ok": True}
 
 
-@app.delete("/api/models/{pid}/models/{mid}")
+class ModelCatalogUpdate(BaseModel):
+    input_cost_per_m: float = 0.0
+    output_cost_per_m: float = 0.0
+    name: str = ""
+
+
+@app.put("/api/models/{pid}/models/{mid:path}")
+def model_entry_upsert(pid: str, mid: str, req: ModelCatalogUpdate,
+                       _: str = Depends(verify_owner)):
+    """Add or update a model with per-model catalog costs (manual=true).
+
+    Never touches key or selected provider.
+    """
+    if not mid.strip():
+        raise HTTPException(400, "model id required")
+    in_cost = _validate_cost(req.input_cost_per_m, "input_cost_per_m")
+    out_cost = _validate_cost(req.output_cost_per_m, "output_cost_per_m")
+    cfg = load_models()
+    prov = cfg["providers"].get(pid)
+    if not prov:
+        raise HTTPException(404, f"Provider '{pid}' not found")
+    models = prov.setdefault("models", [])
+    if mid not in models:
+        models.append(mid)
+    _upsert_catalog_entry(prov, mid, in_cost, out_cost,
+                          manual=True, name=req.name or None)
+    cfg["providers"][pid] = prov
+    save_models(cfg)
+    return {"ok": True}
+
+
+@app.delete("/api/models/{pid}/models/{mid:path}")
 def model_entry_delete(pid: str, mid: str, _: str = Depends(verify_owner)):
     """Remove a single model entry from a provider's models list.
 
@@ -1903,6 +2004,7 @@ def model_entry_delete(pid: str, mid: str, _: str = Depends(verify_owner)):
     if mid not in models:
         raise HTTPException(404, f"Model '{mid}' not in provider '{pid}'")
     prov["models"] = [m for m in models if m != mid]
+    prov["catalog"] = [e for e in prov.get("catalog", []) if e.get("id") != mid]
     if prov.get("model") == mid:
         prov["model"] = prov["models"][0] if prov["models"] else ""
     cfg["providers"][pid] = prov
@@ -1965,6 +2067,8 @@ def models_openrouter_refresh(_: str = Depends(verify_owner)):
         cfg["providers"]["openrouter"] = prov
         save_models(cfg)
         raise HTTPException(502, f"OpenRouter fetch failed: {exc}") from exc
+    old_by_id = {e["id"]: e for e in prov.get("catalog", []) if e.get("id")}
+    fetched_ids: set[str] = set()
     catalog = []
     for m in data.get("data", []):
         mid = m.get("id", "")
@@ -1978,7 +2082,16 @@ def models_openrouter_refresh(_: str = Depends(verify_owner)):
             continue
         if not (math.isfinite(p_in) and math.isfinite(p_out) and p_in >= 0 and p_out >= 0):
             continue
-        catalog.append({"id": mid, "name": m.get("name", mid), "in": p_in, "out": p_out})
+        fetched_ids.add(mid)
+        old = old_by_id.get(mid)
+        if old and old.get("manual"):
+            catalog.append(old)
+        else:
+            catalog.append({"id": mid, "name": m.get("name", mid),
+                            "in": p_in, "out": p_out})
+    for mid, old in old_by_id.items():
+        if mid not in fetched_ids and old.get("manual"):
+            catalog.append(old)
     prov["catalog"] = catalog
     prov["catalog_refreshed_at"] = int(time.time())
     prov.pop("last_error", None)

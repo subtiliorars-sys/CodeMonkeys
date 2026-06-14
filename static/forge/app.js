@@ -1131,7 +1131,7 @@ async function loadProviders() {
           const pillTag = mc
             ? (mc.in === 0 && mc.out === 0
                 ? `<span class="text-green-400 text-[.6rem]">⚡</span>`
-                : `<span class="text-slate-500 text-[.6rem]">$${mc.out}/M</span>`)
+                : `<span class="text-slate-500 text-[.6rem] pv-cost-label" data-pid="${esc(p.id)}" data-mid="${esc(m)}" title="Double-click to edit costs">$${mc.in}/${mc.out}/M${mc.manual ? " ✎" : ""}</span>`)
             : "";
           const fav = _isFav(m);
           return `<span class="inline-flex items-center gap-0.5 bg-slate-800 rounded px-1 text-xs text-slate-400">`
@@ -1149,6 +1149,10 @@ async function loadProviders() {
           : ""}
         <input type="text" class="pv-addmodel input rounded px-1 py-0.5 text-xs w-44" data-id="${esc(p.id)}"
           placeholder="+ add model id…" ${Object.keys(cat).length > 0 ? `list="dl-${esc(p.id)}"` : ""}>
+        <input type="number" min="0" step="0.01" class="pv-addmodel-in input rounded px-1 py-0.5 text-xs w-14" data-id="${esc(p.id)}"
+          placeholder="in/M" title="Input cost USD per 1M tokens" value="${p.in}">
+        <input type="number" min="0" step="0.01" class="pv-addmodel-out input rounded px-1 py-0.5 text-xs w-14" data-id="${esc(p.id)}"
+          placeholder="out/M" title="Output cost USD per 1M tokens" value="${p.out}">
         <button class="pv-addmodel-btn text-slate-500 hover:text-[var(--gold)] text-xs border border-slate-700 rounded px-2 py-0.5" data-id="${esc(p.id)}">add</button>
         <span class="pv-addmodel-msg text-xs text-slate-600" data-id="${esc(p.id)}"></span>
       </div>
@@ -1258,27 +1262,42 @@ async function loadProviders() {
       loadProviders();
     } catch (e) { alert(e.message); }
   }));
-  // inline add-model handler
+  // inline add-model handler (N12: per-model catalog costs via PUT)
   document.querySelectorAll(".pv-addmodel-btn").forEach((btn) => (btn.onclick = async () => {
     const id = btn.dataset.id;
     const input = document.querySelector(`.pv-addmodel[data-id="${id}"]`);
     const msg = document.querySelector(`.pv-addmodel-msg[data-id="${id}"]`);
+    const inEl = document.querySelector(`.pv-addmodel-in[data-id="${id}"]`);
+    const outEl = document.querySelector(`.pv-addmodel-out[data-id="${id}"]`);
     const newModel = input.value.trim();
     if (!newModel) return;
-    const prov = d.providers.find((x) => x.id === id);
-    if (!prov) return;
-    const updatedModels = [...new Set([...(prov.models || []), newModel])];
+    const inCost = parseFloat(inEl?.value) || 0;
+    const outCost = parseFloat(outEl?.value) || 0;
     try {
-      await api("/api/models", "POST", {
-        id, label: prov.label, kind: prov.kind, base_url: prov.base_url,
-        model: prov.model, models: updatedModels,
-        input_cost_per_m: prov.in, output_cost_per_m: prov.out, auto: prov.auto,
+      await api(`/api/models/${encodeURIComponent(id)}/models/${encodeURIComponent(newModel)}`, "PUT", {
+        input_cost_per_m: inCost, output_cost_per_m: outCost,
       });
       input.value = "";
       msg.textContent = "✓";
       setTimeout(() => { msg.textContent = ""; }, 2000);
       loadProviders();
     } catch (e) { msg.textContent = e.message; }
+  }));
+  // inline cost edit: double-click pill cost label
+  document.querySelectorAll(".pv-cost-label").forEach((lbl) => (lbl.ondblclick = async () => {
+    const { pid, mid } = lbl.dataset;
+    const prov = d.providers.find((x) => x.id === pid);
+    const mc = (prov?.catalog || {})[mid] || {};
+    const newIn = prompt(`Input cost USD/1M for ${mid}:`, String(mc.in ?? prov?.in ?? 0));
+    if (newIn === null) return;
+    const newOut = prompt(`Output cost USD/1M for ${mid}:`, String(mc.out ?? prov?.out ?? 0));
+    if (newOut === null) return;
+    try {
+      await api(`/api/models/${encodeURIComponent(pid)}/models/${encodeURIComponent(mid)}`, "PUT", {
+        input_cost_per_m: parseFloat(newIn) || 0, output_cost_per_m: parseFloat(newOut) || 0,
+      });
+      loadProviders();
+    } catch (e) { alert(e.message); }
   }));
   document.querySelectorAll(".pv-addmodel").forEach((el) => (el.onkeydown = (e) => {
     if (e.key === "Enter") document.querySelector(`.pv-addmodel-btn[data-id="${el.dataset.id}"]`).click();

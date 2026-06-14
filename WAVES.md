@@ -10,10 +10,7 @@ Read `docs/STATE.md` + `docs/IDEATION.md` before each wave. Never merge your own
 
 ## Active queue
 
-### Wave CM-W3 — N12 Model catalog refresh
-**Status:** `pending`  
-**Spec:** `docs/IDEATION.md` N12  
-**Branch:** `automation/wave-cm-w3-model-catalog`
+*(none — pick up next queued item from `docs/IDEATION.md` when CM-W3 merges)*
 
 ## Blocked / owner-gated (queue only)
 - OAuth app registration, webhook secrets, terminal activation
@@ -21,6 +18,13 @@ Read `docs/STATE.md` + `docs/IDEATION.md` before each wave. Never merge your own
 - SECURITY.md substantive changes
 
 ## Completed
+
+### Wave CM-W3 — N12 Model catalog refresh ✅
+**Branch:** `automation/wave-cm-w3-model-catalog`  
+**Shipped:** Per-model catalog costs via `PUT /api/models/{pid}/models/{mid}`
+(manual flag preserved on OpenRouter refresh); cost validation (finite ≥ 0);
+`_resolve` uses catalog costs for call_cost; forge UI add-model in/out inputs +
+double-click cost edit; refresh merge keeps manual/pinned entries.
 
 ### Wave CM-W2 — N8 Context auto-compaction ✅
 **Branch:** `automation/wave-cm-w2-compaction`  
