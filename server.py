@@ -2,7 +2,7 @@
 """CodeMonkeys — self-hosted, multi-provider AI coding console.
 
 Single-file FastAPI backend:
-  - Auth: username + PIN (PBKDF2) + mandatory per-user TOTP, HMAC session tokens
+  - Auth: username + mandatory per-user TOTP, HMAC session tokens
   - Models: any OpenAI-compatible endpoint (Gemini, OpenRouter, DeepSeek, ...)
             plus native Anthropic — configured at runtime, keys on /data
   - Agent loop: Claude Code-style tool loop, workspace-jailed
@@ -1108,7 +1108,7 @@ def verify_user(username: str = Depends(verify_token)):
     """Any active (non-pending) account — Owner or invited Member."""
     user = load_users().get(username, {})
     if user.get("must_reset"):
-        raise HTTPException(403, "Finish first-time setup (new PIN + authenticator) first")
+        raise HTTPException(403, "Finish first-time setup (authenticator) first")
     if user.get("role") not in ("Owner", "Member"):
         raise HTTPException(403, "Not authorized")
     return username
@@ -1138,14 +1138,11 @@ def _client_ip(request: Request) -> str:
 
 class RegisterRequest(BaseModel):
     username: str
-    pin: str
-    mfa_code: str = ""
 
 
 class LoginRequest(BaseModel):
     username: str
-    pin: str
-    mfa_code: str
+    mfa_code: str = ""
 
 
 @app.get("/api/registration-status")
@@ -1159,8 +1156,6 @@ def register(req: RegisterRequest):
     username = req.username.strip()
     if not re.fullmatch(r"[A-Za-z0-9_.-]{2,32}", username):
         raise HTTPException(400, "Bad username")
-    if len(req.pin) < 4:
-        raise HTTPException(400, "PIN must be at least 4 digits")
     with _USERS_LOCK:
         if _is_erased(username):                  # M-7 tombstone guard (in-lock: races erasure)
             raise HTTPException(403, "This account was erased and cannot be re-registered")
@@ -1170,11 +1165,8 @@ def register(req: RegisterRequest):
         if users and not OPEN_ENROLLMENT:
             raise HTTPException(403, "Enrollment closed")
         role = "Owner" if not users else "Member"
-        salt = secrets.token_hex(16)
         mfa_secret = pyotp.random_base32()
         users[username] = {
-            "pin_hash": hash_pin(req.pin, salt),
-            "salt": salt,
             "role": role,
             "mfa_secret": mfa_secret,
             "created": int(time.time()),
@@ -1374,20 +1366,18 @@ def login(req: LoginRequest, request: Request = None):
                             headers={"Retry-After": str(locked)})
     users = load_users()
     user = users.get(uname)
-    if not user or not hmac.compare_digest(
-        user["pin_hash"], hash_pin(req.pin, user["salt"])
-    ):
+    if not user:
         _login_register_failure(uname, ip)
-        raise HTTPException(401, "Bad credentials")
-    # Invited accounts log in with the starter PIN only (no authenticator yet),
-    # then are forced through first-time setup. This branch is MFA-less, so the
-    # throttle is its ONLY brute-force barrier — deliberately do NOT clear the
-    # counter here (a correct guess still gets in, but a lucky near-miss run does
-    # not get its window wiped). The counter is cleared after /api/account/setup.
+        raise HTTPException(401, "Unknown username")
+    # Invited accounts: username only until they finish setup (scan authenticator).
     if user.get("must_reset"):
         return {"token": make_token(uname), "username": uname,
                 "role": user["role"], "must_reset": True}
-    if not pyotp.TOTP(user["mfa_secret"]).verify(req.mfa_code, valid_window=1):
+    secret = user.get("mfa_secret") or ""
+    if not secret:
+        _login_register_failure(uname, ip)
+        raise HTTPException(401, "Authenticator not set up — contact the owner")
+    if not pyotp.TOTP(secret).verify(req.mfa_code, valid_window=1):
         _login_register_failure(uname, ip)
         raise HTTPException(401, "Bad MFA code")
     _login_note_success(uname, ip)
@@ -1409,34 +1399,31 @@ def me(username: str = Depends(verify_token)):
 
 # ------------------------------------------------- invitations (Owner -> dev)
 
-def _gen_starter_pin():
-    return "".join(secrets.choice("0123456789") for _ in range(6))
-
-
 class InviteRequest(BaseModel):
     username: str = ""             # optional; auto-generated if blank
+
+
+def _gen_invite_username(req_username: str) -> str:
+    return req_username.strip() or ("dev-" + secrets.token_hex(3))
 
 
 @app.post("/api/invite")
 def invite(req: InviteRequest, _: str = Depends(verify_owner)):
     with _USERS_LOCK:
         users = load_users()
-        uname = req.username.strip() or ("dev-" + secrets.token_hex(3))
+        uname = _gen_invite_username(req.username)
         if not re.fullmatch(r"[A-Za-z0-9_.-]{2,32}", uname):
             raise HTTPException(400, "Bad username")
         if uname in users:
             raise HTTPException(409, "Username already exists")
         if _is_erased(uname):                     # M-7 tombstone guard
             raise HTTPException(403, "That username was erased and cannot be reused")
-        pin = _gen_starter_pin()
-        salt = secrets.token_hex(16)
         users[uname] = {
-            "pin_hash": hash_pin(pin, salt), "salt": salt, "role": "Member",
+            "role": "Member",
             "mfa_secret": "", "must_reset": True, "created": int(time.time()),
         }
         save_users(users)
-    # the starter PIN is returned ONCE, in cleartext, for the owner to hand over
-    return {"username": uname, "starter_pin": pin}
+    return {"username": uname}
 
 
 @app.get("/api/users")
@@ -1709,15 +1696,11 @@ def erasures_list(_: str = Depends(verify_owner)):
 
 class FirstSetup(BaseModel):
     new_username: str = ""        # optional rename
-    new_pin: str
 
 
 @app.post("/api/account/setup")
 def account_setup(req: FirstSetup, username: str = Depends(verify_token)):
-    """First-login flow for an invited account: set a new PIN (and optional new
-    username), get a fresh authenticator secret to scan."""
-    if len(req.new_pin) < 4:
-        raise HTTPException(400, "PIN must be at least 4 digits")
+    """First-login flow for an invited account: optional rename, then scan authenticator."""
     with _USERS_LOCK:
         users = load_users()
         user = users.get(username)
@@ -1735,11 +1718,10 @@ def account_setup(req: FirstSetup, username: str = Depends(verify_token)):
             users[new_name] = user
             del users[username]
             target = new_name
-        salt = secrets.token_hex(16)
         mfa_secret = pyotp.random_base32()
-        user["salt"] = salt
-        user["pin_hash"] = hash_pin(req.new_pin, salt)
         user["mfa_secret"] = mfa_secret
+        user.pop("pin_hash", None)
+        user.pop("salt", None)
         user["must_reset"] = False
         users[target] = user
         save_users(users)

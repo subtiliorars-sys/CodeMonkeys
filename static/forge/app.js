@@ -22,15 +22,26 @@ const MODE_HINTS = {
   auto: "full autonomy — runs everything, no approval prompts",
 };
 
+const PUBLIC_API = new Set([
+  "/api/login", "/api/register", "/api/registration-status",
+  "/api/webauthn/login/begin", "/api/webauthn/login/complete",
+  "/api/webauthn/register/begin", "/api/webauthn/register/complete",
+]);
+
 async function api(path, method = "GET", body = null) {
+  const isPublic = PUBLIC_API.has(path);
   const r = await fetch(path, {
     method,
     headers: { "Content-Type": "application/json",
-               ...(state.token ? { Authorization: "Bearer " + state.token } : {}) },
+               ...(!isPublic && state.token ? { Authorization: "Bearer " + state.token } : {}) },
     body: body ? JSON.stringify(body) : null,
   });
-  if (r.status === 401) { logout(); throw new Error("Session expired — log in again"); }
   const data = await r.json().catch(() => ({}));
+  if (r.status === 401) {
+    if (isPublic) throw new Error(data.detail || "Authentication failed");
+    logout();
+    throw new Error("Session expired — log in again");
+  }
   if (!r.ok) throw new Error(data.detail || r.statusText);
   return data;
 }
@@ -104,9 +115,17 @@ async function checkEncryptionBanner() {
 }
 $("enc-banner-close").onclick = () => $("enc-banner").classList.add("hidden");
 $("budget-alert-close").onclick = () => $("budget-alert").classList.add("hidden");
-function logout() {
+function clearStoredSession() {
   ["cm_token", "cm_username", "cm_role"].forEach((k) => localStorage.removeItem(k));
-  state.token = ""; stopPolling(); showLogin();
+  state.token = "";
+  state.username = "";
+  state.role = "";
+}
+
+function logout() {
+  clearStoredSession();
+  stopPolling();
+  showLogin();
 }
 
 function saveAuth(d) {
@@ -128,8 +147,7 @@ $("lg-submit").onclick = async () => {
   $("lg-msg").textContent = "";
   try {
     if (state.registering) {
-      const d = await api("/api/register", "POST",
-        { username: $("lg-user").value, pin: $("lg-pin").value });
+      const d = await api("/api/register", "POST", { username: $("lg-user").value.trim() });
       saveAuth(d);
       $("lg-uri").textContent = d.mfa_otpauth_uri;
       // QR rendered locally by the server (data URI); never sent to a CDN.
@@ -138,7 +156,8 @@ $("lg-submit").onclick = async () => {
       $("lg-mfa-setup").classList.remove("hidden");
     } else {
       const d = await api("/api/login", "POST", {
-        username: $("lg-user").value, pin: $("lg-pin").value, mfa_code: $("lg-mfa").value,
+        username: $("lg-user").value.trim(),
+        mfa_code: $("lg-mfa").value.trim(),
       });
       saveAuth(d);
       if (d.must_reset) showSetup(); else showMain();
@@ -146,18 +165,19 @@ $("lg-submit").onclick = async () => {
   } catch (e) { $("lg-msg").textContent = e.message; }
 };
 $("lg-continue").onclick = () => showMain();
+$("lg-clear-session")?.addEventListener("click", () => {
+  clearStoredSession();
+  location.reload();
+});
 $("btn-logout").onclick = logout;
 
 /* ---------------- first-time setup (invited dev) ---------------- */
 
 $("su-submit").onclick = async () => {
   $("su-msg").textContent = "";
-  const pin = $("su-pin").value, pin2 = $("su-pin2").value;
-  if (pin.length < 4) { $("su-msg").textContent = "PIN must be at least 4 digits."; return; }
-  if (pin !== pin2) { $("su-msg").textContent = "PINs don't match."; return; }
   try {
     const d = await api("/api/account/setup", "POST",
-      { new_username: $("su-user").value.trim(), new_pin: pin });
+      { new_username: $("su-user").value.trim() });
     saveAuth(d);
     $("su-uri").textContent = d.mfa_otpauth_uri;
     // QR rendered locally by the server (data URI); never sent to a CDN.
@@ -307,7 +327,6 @@ $("inv-create").onclick = async () => {
   try {
     const d = await api("/api/invite", "POST", { username: $("inv-user").value.trim() });
     $("inv-u").textContent = d.username;
-    $("inv-p").textContent = d.starter_pin;
     $("inv-result").classList.remove("hidden");
     $("inv-user").value = "";
     loadUsers();

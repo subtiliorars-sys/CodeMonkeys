@@ -58,7 +58,7 @@ def test_secret_value_does_not_appear_verbatim_in_data_uri():
 def test_register_response_includes_local_qr(monkeypatch):
     _reset_users()
     monkeypatch.setattr(server, "OPEN_ENROLLMENT", False)
-    out = server.register(server.RegisterRequest(username="owner1", pin="4321"))
+    out = server.register(server.RegisterRequest(username="owner1"))
     try:
         assert out["mfa_otpauth_uri"].startswith("otpauth://")
         # when segno is present the response carries a local data-URI QR

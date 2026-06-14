@@ -374,16 +374,16 @@
     <div class="text-center mb-6">
       <div class="text-4xl monkey mb-2">🐒</div>
       <h1 class="wordmark text-2xl font-bold">CodeMonkeys</h1>
-      <p class="text-xs text-slate-500 mt-1">your agents. any model. any browser.</p>
+      <p class="text-xs text-slate-500 mt-1">Username + authenticator only — no PIN.</p>
     </div>
     <div class="space-y-3">
       <input id="lg-user" class="input w-full rounded px-3 py-2 text-sm" placeholder="username" autocomplete="username">
-      <input id="lg-pin" type="password" class="input w-full rounded px-3 py-2 text-sm" placeholder="PIN (min 4 digits)" inputmode="numeric">
-      <input id="lg-mfa" class="input w-full rounded px-3 py-2 text-sm" placeholder="6-digit authenticator code" inputmode="numeric">
+      <input id="lg-mfa" class="input w-full rounded px-3 py-2 text-sm" placeholder="6-digit authenticator code" inputmode="numeric" autocomplete="one-time-code">
       <button id="lg-submit" class="gold-btn w-full rounded py-2 text-sm">Log in</button>
       <button id="lg-bio" class="w-full rounded py-2 text-sm gold-border text-[var(--gold-bright)] hover:bg-yellow-900/20">👆 Sign in with biometrics / passkey</button>
       <button id="lg-toggle" class="w-full text-xs text-slate-400 hover:text-slate-200">First time? Register the Owner account</button>
       <p id="lg-msg" class="text-xs text-red-400 min-h-[1rem]"></p>
+      <button id="lg-clear-session" type="button" class="w-full text-xs text-slate-500 hover:text-slate-300 mt-1">Stuck? Clear saved session &amp; reload</button>
     </div>
     <div id="lg-mfa-setup" class="hidden mt-4 border-t border-slate-800 pt-4 text-xs text-slate-300">
       <p class="text-yellow-300 font-bold mb-2">⚠ Scan this into your authenticator app NOW — you cannot log in without it.</p>
@@ -400,13 +400,11 @@
     <div class="text-center mb-5">
       <div class="text-3xl monkey mb-2">🐒</div>
       <h1 class="wordmark text-xl font-bold">Welcome — set up your account</h1>
-      <p class="text-xs text-slate-500 mt-1">Choose your own login, then add an authenticator.</p>
+      <p class="text-xs text-slate-500 mt-1">Optional rename, then scan your authenticator.</p>
     </div>
     <div id="setup-step1" class="space-y-3">
       <input id="su-user" class="input w-full rounded px-3 py-2 text-sm" placeholder="new username (optional — blank keeps current)">
-      <input id="su-pin" type="password" class="input w-full rounded px-3 py-2 text-sm" placeholder="new PIN (min 4 digits)" inputmode="numeric">
-      <input id="su-pin2" type="password" class="input w-full rounded px-3 py-2 text-sm" placeholder="confirm PIN" inputmode="numeric">
-      <button id="su-submit" class="gold-btn w-full rounded py-2 text-sm">Continue</button>
+      <button id="su-submit" class="gold-btn w-full rounded py-2 text-sm">Set up authenticator</button>
       <p id="su-msg" class="text-xs text-red-400 min-h-[1rem]"></p>
     </div>
     <div id="setup-step2" class="hidden text-xs text-slate-300">
@@ -425,17 +423,16 @@
       <h2 class="wordmark font-bold">Invite developers</h2>
       <button id="invite-close" class="text-slate-400 hover:text-white">✕</button>
     </div>
-    <p class="text-xs text-slate-500 mb-3">Mint a starter login, share it with your dev, and they'll set their own PIN + authenticator on first sign-in. Heads up: invited devs share this workspace, the GitHub token, and can run commands — invite only people you trust.</p>
+    <p class="text-xs text-slate-500 mb-3">Mint a username for your dev — they log in once with that name only, then scan an authenticator. Invited devs share this workspace, the GitHub token, and can run commands — invite only people you trust.</p>
     <p class="text-xs text-slate-500 mb-3">Use the <strong class="text-slate-400">Vertex</strong> dropdown per user to grant your GCP credits: <em>automatic</em> (no setup) or <em>paste key</em>. Or click <strong class="text-slate-400">⚡ key</strong> to create a GCP service account + JSON in one click (shown once for your PA).</p>
     <div class="flex gap-2 mb-3">
       <input id="inv-user" class="input flex-1 rounded px-2 py-1 text-xs" placeholder="username (optional — auto if blank)">
       <button id="inv-create" class="gold-btn rounded px-3 text-xs">Create invite</button>
     </div>
     <div id="inv-result" class="hidden gold-border rounded p-3 mb-3 text-xs bg-yellow-900/10">
-      <p class="text-[var(--gold-bright)] font-bold mb-1">Share these once — the PIN won't be shown again:</p>
+      <p class="text-[var(--gold-bright)] font-bold mb-1">Share this username once:</p>
       <p>username: <code id="inv-u" class="bg-black/50 px-1 rounded"></code></p>
-      <p>starter PIN: <code id="inv-p" class="bg-black/50 px-1 rounded"></code></p>
-      <p class="text-slate-500 mt-1">They log in at this site, then set their own credentials.</p>
+      <p class="text-slate-500 mt-1">They log in with that username (no MFA yet), then set up their authenticator.</p>
     </div>
     <div class="text-slate-500 uppercase tracking-wider text-[.65rem] mb-1">People</div>
     <div id="user-rows" class="space-y-1 text-xs"></div>
