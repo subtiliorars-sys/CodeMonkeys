@@ -10,7 +10,7 @@ Read `docs/STATE.md` + `docs/IDEATION.md` before each wave. Never merge your own
 
 ## Active queue
 
-*(none — pick up next queued item from `docs/IDEATION.md` when CM-W3 merges)*
+*(none)*
 
 ## Blocked / owner-gated (queue only)
 - OAuth app registration, webhook secrets, terminal activation
@@ -18,6 +18,12 @@ Read `docs/STATE.md` + `docs/IDEATION.md` before each wave. Never merge your own
 - SECURITY.md substantive changes
 
 ## Completed
+
+### Wave CM-W4 — Lint feedback loop ✅
+**Branch:** `automation/wave-cm-w4-lint-feedback`  
+**Shipped:** Auto-inject lint diagnostics after `write_file`/`edit_file`/`apply_patch`
+(`LINT_AFTER_EDIT=1` default); `run_lint` tool (ruff → py_compile fallback for Python,
+`tsc --noEmit` when installed); `lint` session events + forge UI rendering.
 
 ### Wave CM-W3 — N12 Model catalog refresh ✅
 **Branch:** `automation/wave-cm-w3-model-catalog`  
