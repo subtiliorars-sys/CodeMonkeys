@@ -583,10 +583,16 @@ def _load_json(path, default):
 
 
 def _save_json(path, data):
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp, path)
+    tmp = path + ".tmp." + secrets.token_hex(8)
+    try:
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, path)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
 
 
 # ----------------------------------------------------------------- N2 daily spend cap
