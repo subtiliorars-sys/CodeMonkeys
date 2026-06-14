@@ -7,10 +7,11 @@
   "paypal": "https://paypal.me/DanielRead413",
   "pwyw_suggested_usd": 3,
   "public_pages": {
-    "support": "https://subtiliorars-sys.github.io/PixelSports/support/",
-    "pa_guide": "https://subtiliorars-sys.github.io/PixelSports/pa-guide/",
-    "kickstarter_preview": "https://subtiliorars-sys.github.io/PixelSports/kickstarter-preview/",
-    "note": "GitHub Pages — enable once in PixelSports repo Settings → Pages → GitHub Actions"
+    "landing": "https://subtiliorars-sys.github.io/PixelSports---Preview/launch/",
+    "support": "https://subtiliorars-sys.github.io/PixelSports---Preview/launch/support/",
+    "pa_guide": "https://subtiliorars-sys.github.io/PixelSports---Preview/launch/pa-guide/",
+    "kickstarter_preview": "https://subtiliorars-sys.github.io/PixelSports---Preview/launch/kickstarter-preview/",
+    "ea_handoff": "projects/shared/fleet-revenue/EA_HANDOFF.md"
   },
   "games": [
     {

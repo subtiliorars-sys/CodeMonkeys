@@ -1,10 +1,9 @@
-# Personal Assistant Guide — JimmyTheHat Revenue & Crowdfunding Launch
+# Personal Assistant / Executive Assistant Guide — JimmyTheHat Revenue Launch
 
-> **🌐 Interactive website (send this link to your PA):**  
-> **https://subtiliorars-sys.github.io/PixelSports/pa-guide/**  
-> (Requires GitHub Pages enabled once — repo Settings → Pages → Source: **GitHub Actions**.  
-> itch HTML subpaths like `/pa-guide/` **404 outside the game iframe**; use GitHub Pages or open  
-> `projects/claude/PixelSports/public/pa-guide/index.html` locally.)
+> **🌐 Send your EA this link (start here):**  
+> **https://subtiliorars-sys.github.io/PixelSports---Preview/launch/pa-guide/**  
+> **All pages:** https://subtiliorars-sys.github.io/PixelSports---Preview/launch/  
+> **Email template:** `projects/shared/fleet-revenue/EA_HANDOFF.md`
 
 **For:** Daniel’s personal assistant  
 **From:** Dev team (copy is pre-written; you are clicking through platforms)  
