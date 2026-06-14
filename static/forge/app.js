@@ -648,6 +648,11 @@ function renderEvent(e) {
       div.innerHTML = trHtml;
       div.onclick = () => div.classList.toggle("open"); break;
     }
+    case "lint":
+      div.className = "ev-tool px-3" + (e.ok ? " text-slate-500" : " text-amber-400");
+      div.innerHTML = `${agentTag(e)}lint ${esc(e.linter || "")} · ${esc(e.path || "")} `
+        + `<span class="detail">${esc(e.detail || "")}</span>`;
+      break;
     case "agent_start":
       div.className = "ev-agent px-3 py-1";
       div.innerHTML = `🐒 deployed <b>${esc(e.agent)}</b> <span class="text-slate-500">[${esc(e.tier)} · ${esc(e.model)}]</span> — ${esc(e.task)}`;
