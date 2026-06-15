@@ -5674,6 +5674,46 @@ def new_session(title="", repo="", budget_usd=None, username=None):
     return SESSIONS[sid]
 
 
+def _is_owner_user(username: str) -> bool:
+    return load_users().get(username, {}).get("role") == "Owner"
+
+
+def _first_owner_username() -> str | None:
+    for uname, meta in load_users().items():
+        if meta.get("role") == "Owner":
+            return uname
+    return None
+
+
+def _session_visible(session: dict, caller: str) -> bool:
+    """Read access: session owner, or Owner role (support read-only view)."""
+    owner = session.get("username")
+    if owner is None:
+        return _is_owner_user(caller)
+    if owner == caller:
+        return True
+    return _is_owner_user(caller)
+
+
+def _session_writable(session: dict, caller: str) -> bool:
+    """Mutate access: only the session owner. Legacy (username=None) → Owner only."""
+    owner = session.get("username")
+    if owner is None:
+        return _is_owner_user(caller)
+    return owner == caller
+
+
+def _get_session(sid: str, caller: str, *, write: bool = False) -> dict:
+    s = SESSIONS.get(sid)
+    if not s:
+        raise HTTPException(404, "No such session")
+    if not _session_visible(s, caller):
+        raise HTTPException(404, "No such session")
+    if write and not _session_writable(s, caller):
+        raise HTTPException(403, "Not your session")
+    return s
+
+
 _N6_INTERRUPTED_STATUSES = ("running", "waiting_approval")
 
 
@@ -6776,13 +6816,20 @@ def session_create(req: SessionCreate, username: str = Depends(verify_user)):
 
 
 @app.get("/api/sessions")
-def session_list(_: str = Depends(verify_user)):
-    return {"sessions": sorted([
-        {"id": s["id"], "title": s["title"], "repo": s["repo"],
-         "created": s["created"], "status": s["status"],
-         "spent_usd": round(s["spent_usd"], 4),
-         "budget_usd": round(session_budget(s), 4)}
-        for s in SESSIONS.values()], key=lambda x: -x["created"])}
+def session_list(username: str = Depends(verify_user)):
+    is_owner = _is_owner_user(username)
+    rows = []
+    for s in SESSIONS.values():
+        if not _session_visible(s, username):
+            continue
+        row = {"id": s["id"], "title": s["title"], "repo": s["repo"],
+               "created": s["created"], "status": s["status"],
+               "spent_usd": round(s["spent_usd"], 4),
+               "budget_usd": round(session_budget(s), 4)}
+        if is_owner and s.get("username") and s.get("username") != username:
+            row["read_only"] = True
+        rows.append(row)
+    return {"sessions": sorted(rows, key=lambda x: -x["created"])}
 
 
 class KBUpsert(BaseModel):
@@ -7303,11 +7350,9 @@ def _render_transcript_md(s) -> str:
 
 
 @app.get("/api/sessions/{sid}/export")
-def session_export(sid: str, format: str = "md", _: str = Depends(verify_user)):
+def session_export(sid: str, format: str = "md", username: str = Depends(verify_user)):
     """Download a session transcript as Markdown (default) or JSON."""
-    s = SESSIONS.get(sid)
-    if not s:
-        raise HTTPException(404, "No such session")
+    s = _get_session(sid, username)
     if format == "json":
         with s["lock"]:
             payload = {
@@ -7327,12 +7372,10 @@ def session_export(sid: str, format: str = "md", _: str = Depends(verify_user)):
 
 
 @app.get("/api/sessions/{sid}/digest")
-def session_digest(sid: str, format: str = "json", _: str = Depends(verify_user)):
+def session_digest(sid: str, format: str = "json", username: str = Depends(verify_user)):
     """Wave 4 #6 — deterministic theme-token digest of a session (tier-1
     working memory). format=json (structured tokens) or md (readable)."""
-    s = SESSIONS.get(sid)
-    if not s:
-        raise HTTPException(404, "No such session")
+    s = _get_session(sid, username)
     if format == "md":
         return PlainTextResponse(_digest_markdown(s), media_type="text/markdown")
     with s["lock"]:
@@ -7530,9 +7573,7 @@ def _save_uploads(sid: str, files, *args, username: Optional[str] = None, **kwar
 
 @app.post("/api/sessions/{sid}/message")
 def session_message(sid: str, req: MessageRequest, username: str = Depends(verify_user)):
-    s = SESSIONS.get(sid)
-    if not s:
-        raise HTTPException(404, "No such session")
+    s = _get_session(sid, username, write=True)
     # Check-and-claim atomically: the worker thread only flips status to
     # "running" once it gets scheduled, so two rapid-fire duplicate POSTs
     # (double-click / double-Enter / client retry) could BOTH pass a bare
@@ -7549,8 +7590,6 @@ def session_message(sid: str, req: MessageRequest, username: str = Depends(verif
         # auto mode skips the human approval gate — Owner only (injection hardening).
         # Members requesting auto silently fall back to default so the API stays
         # forward-compatible without leaking role information.
-        s["username"] = username
-        _persist_index()
         user_role = load_users().get(username, {}).get("role")
         allowed_modes = ("plan", "default", "auto") if user_role == "Owner" else ("plan", "default")
         s["mode"] = req.mode if req.mode in allowed_modes else "default"
@@ -7670,7 +7709,7 @@ async def webhook_github(request: Request,
         while len(_webhook_seen) > WEBHOOK_SEEN_MAX:   # bounded FIFO
             _webhook_seen.pop(next(iter(_webhook_seen)))
         _active_webhook_runs += 1
-    s = new_session(title=title)
+    s = new_session(title=title, username=_first_owner_username())
     s["mode"] = "auto"        # unattended; risky commands still hit debate-verify
 
     def _run_and_release():
@@ -7686,10 +7725,8 @@ async def webhook_github(request: Request,
 
 
 @app.get("/api/sessions/{sid}/events")
-def session_events(sid: str, after: int = -1, _: str = Depends(verify_user)):
-    s = SESSIONS.get(sid)
-    if not s:
-        raise HTTPException(404, "No such session")
+def session_events(sid: str, after: int = -1, username: str = Depends(verify_user)):
+    s = _get_session(sid, username)
     with s["lock"]:
         events = [e for e in s["events"] if e["i"] > after]
         nxt = s["events"][-1]["i"] if s["events"] else -1
@@ -7698,10 +7735,8 @@ def session_events(sid: str, after: int = -1, _: str = Depends(verify_user)):
 
 
 @app.post("/api/sessions/{sid}/approve")
-def session_approve(sid: str, req: ApproveRequest, _: str = Depends(verify_user)):
-    s = SESSIONS.get(sid)
-    if not s:
-        raise HTTPException(404, "No such session")
+def session_approve(sid: str, req: ApproveRequest, username: str = Depends(verify_user)):
+    s = _get_session(sid, username, write=True)
     a = s["approvals"].get(req.approval_id)
     if not a:
         raise HTTPException(404, "No such approval (it may have timed out)")
@@ -7712,10 +7747,8 @@ def session_approve(sid: str, req: ApproveRequest, _: str = Depends(verify_user)
 
 
 @app.post("/api/sessions/{sid}/stop")
-def session_stop(sid: str, _: str = Depends(verify_user)):
-    s = SESSIONS.get(sid)
-    if not s:
-        raise HTTPException(404, "No such session")
+def session_stop(sid: str, username: str = Depends(verify_user)):
+    s = _get_session(sid, username, write=True)
     s["stop_flag"].set()
     # release any pending approvals as denied
     for a in list(s["approvals"].values()):
@@ -7736,9 +7769,7 @@ def session_resume(sid: str, username: str = Depends(verify_user)):
     plan), or default if the persisted mode would be auto and the user isn't
     Owner.
     """
-    s = SESSIONS.get(sid)
-    if not s:
-        raise HTTPException(404, "No such session")
+    s = _get_session(sid, username, write=True)
     with s["lock"]:
         if s["status"] not in ("interrupted", "idle"):
             raise HTTPException(409, "Session is busy")
@@ -7765,10 +7796,8 @@ def session_resume(sid: str, username: str = Depends(verify_user)):
 
 
 @app.delete("/api/sessions/{sid}")
-def session_delete(sid: str, _: str = Depends(verify_user)):
-    s = SESSIONS.get(sid)
-    if not s:
-        raise HTTPException(404, "No such session")
+def session_delete(sid: str, username: str = Depends(verify_user)):
+    s = _get_session(sid, username, write=True)
     if s["status"] not in ("idle", "interrupted"):
         raise HTTPException(409, "Stop the session before deleting it")
     with _SESSIONS_LOCK:
@@ -7799,11 +7828,9 @@ class FeedbackStatusRequest(BaseModel):
 
 
 @app.patch("/api/sessions/{sid}")
-def session_rename(sid: str, req: SessionRename, _: str = Depends(verify_user)):
+def session_rename(sid: str, req: SessionRename, username: str = Depends(verify_user)):
     """Update the session title (in-memory + index)."""
-    s = SESSIONS.get(sid)
-    if not s:
-        raise HTTPException(404, "No such session")
+    s = _get_session(sid, username, write=True)
     title = req.title.strip()[:120]
     if not title:
         raise HTTPException(400, "Title cannot be empty")

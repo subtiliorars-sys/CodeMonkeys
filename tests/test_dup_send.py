@@ -112,7 +112,7 @@ def test_message_claims_status_synchronously(auth_client, monkeypatch):
     status to 'running', a second duplicate POST also passed and spawned a
     second real model run. The endpoint must claim BEFORE returning."""
     monkeypatch.setattr(server.threading, "Thread", _InertThread)
-    s = server.new_session(title="dup-a")
+    s = server.new_session(title="dup-a", username="u")
     r = auth_client.post(f"/api/sessions/{s['id']}/message", json={"text": "hi"})
     assert r.status_code == 200
     assert s["status"] == "running"            # claimed synchronously
@@ -123,7 +123,7 @@ def test_message_claims_status_synchronously(auth_client, monkeypatch):
 
 
 def test_message_on_busy_session_is_409(auth_client):
-    s = server.new_session(title="dup-b")
+    s = server.new_session(title="dup-b", username="u")
     s["status"] = "running"
     r = auth_client.post(f"/api/sessions/{s['id']}/message", json={"text": "x"})
     assert r.status_code == 409
@@ -134,7 +134,7 @@ def test_failed_accept_releases_the_claim(auth_client, monkeypatch):
     back to idle — otherwise the session 409s forever (bricked)."""
     monkeypatch.setattr(server, "_save_uploads",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("disk")))
-    s = server.new_session(title="dup-c")
+    s = server.new_session(title="dup-c", username="u")
     r = auth_client.post(f"/api/sessions/{s['id']}/message", json={"text": "x"})
     assert r.status_code == 500
     assert s["status"] == "idle"               # not bricked
@@ -143,7 +143,7 @@ def test_failed_accept_releases_the_claim(auth_client, monkeypatch):
 def test_user_event_emitted_once_per_post(auth_client, monkeypatch):
     """One accepted POST = exactly one 'user' event in the stream."""
     monkeypatch.setattr(server.threading, "Thread", _InertThread)
-    s = server.new_session(title="dup-d")
+    s = server.new_session(title="dup-d", username="u")
     auth_client.post(f"/api/sessions/{s['id']}/message", json={"text": "only-once"})
     user_events = [e for e in s["events"]
                    if e["type"] == "user" and "only-once" in e.get("text", "")]

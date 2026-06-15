@@ -57,7 +57,7 @@ def test_digest_markdown_renders():
 
 
 def test_digest_endpoint_json_and_md():
-    s = server.new_session(title="dg")
+    s = server.new_session(title="dg", username="u")
     s["history"] = _history()
     sid = s["id"]
     server.app.dependency_overrides[server.verify_user] = lambda: "u"
