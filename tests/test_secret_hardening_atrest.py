@@ -363,7 +363,7 @@ def test_cm_master_key_module_constant_is_string():
 # (3) Auto-mode Owner-only via session_message
 # ---------------------------------------------------------------------------
 
-def _make_session():
+def _make_session(username="testowner"):
     """Create a fresh in-memory session for testing (no disk I/O)."""
     return {
         "id": "test-session-automode",
@@ -380,6 +380,7 @@ def _make_session():
         "stop_flag": threading.Event(),
         "approvals": {},
         "lock": threading.Lock(),
+        "username": username,
     }
 
 
@@ -421,7 +422,7 @@ def test_auto_mode_member_blocked(monkeypatch):
     """Member requesting auto must silently fall back to default — not 403."""
     from fastapi.testclient import TestClient
 
-    sess = _make_session()
+    sess = _make_session("testmember")
     sess["status"] = "idle"
     monkeypatch.setitem(server.SESSIONS, sess["id"], sess)
 
@@ -454,7 +455,7 @@ def test_plan_mode_member_allowed(monkeypatch):
     """plan mode must remain available to Member (not over-restricted)."""
     from fastapi.testclient import TestClient
 
-    sess = _make_session()
+    sess = _make_session("testmember2")
     monkeypatch.setitem(server.SESSIONS, sess["id"], sess)
 
     users = {"testmember2": {"role": "Member", "must_reset": False}}

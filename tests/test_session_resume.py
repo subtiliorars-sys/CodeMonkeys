@@ -60,7 +60,7 @@ def client():
 
 def test_index_persists_status_and_mode():
     """_persist_index must write status + mode so restore can read them."""
-    s = server.new_session(title="idx-test")
+    s = server.new_session(username="u", title="idx-test")
     s["status"] = "running"
     s["mode"] = "plan"
     server._persist_index()
@@ -72,7 +72,7 @@ def test_index_persists_status_and_mode():
 
 def test_index_persists_idle_sessions_too():
     """Normal idle sessions must also record status."""
-    s = server.new_session(title="idx-idle")
+    s = server.new_session(username="u", title="idx-idle")
     server._persist_index()
     idx = server._load_json(server._session_index_path(), {})
     assert idx[s["id"]]["status"] == "idle"
@@ -161,7 +161,7 @@ def test_restore_running_reruns_persist_index():
 def test_resume_auth_required():
     """Resume must be auth-gated; no override → 401/403."""
     client_no_auth = TestClient(server.app, raise_server_exceptions=False)
-    s = server.new_session(title="auth-gate")
+    s = server.new_session(title="auth-gate", username="u")
     s["status"] = "interrupted"
     r = client_no_auth.post(f"/api/sessions/{s['id']}/resume")
     assert r.status_code in (401, 403)
@@ -175,14 +175,14 @@ def test_resume_404_on_unknown_session(client):
 def test_resume_409_when_already_running(client, monkeypatch):
     """Resume must return 409 if the session is already running."""
     monkeypatch.setattr(server.threading, "Thread", _InertThread)
-    s = server.new_session(title="busy")
+    s = server.new_session(username="u", title="busy")
     s["status"] = "running"
     r = client.post(f"/api/sessions/{s['id']}/resume")
     assert r.status_code == 409
 
 
 def test_resume_409_when_waiting_approval(client):
-    s = server.new_session(title="busy-wa")
+    s = server.new_session(username="u", title="busy-wa")
     s["status"] = "waiting_approval"
     r = client.post(f"/api/sessions/{s['id']}/resume")
     assert r.status_code == 409
@@ -200,7 +200,7 @@ def test_resume_on_interrupted_launches_thread(client, monkeypatch):
             launched.append(self._args)
 
     monkeypatch.setattr(server.threading, "Thread", _CapThread)
-    s = server.new_session(title="resume-ok")
+    s = server.new_session(username="u", title="resume-ok")
     s["status"] = "interrupted"
     r = client.post(f"/api/sessions/{s['id']}/resume")
     assert r.status_code == 200
@@ -211,7 +211,7 @@ def test_resume_on_interrupted_launches_thread(client, monkeypatch):
 def test_resume_on_idle_also_allowed(client, monkeypatch):
     """Resume is also valid from idle — user wants to continue a finished run."""
     monkeypatch.setattr(server.threading, "Thread", _InertThread)
-    s = server.new_session(title="resume-idle")
+    s = server.new_session(username="u", title="resume-idle")
     # status already idle from new_session
     r = client.post(f"/api/sessions/{s['id']}/resume")
     assert r.status_code == 200
@@ -228,7 +228,7 @@ def test_resume_nudge_is_last_user_text(client, monkeypatch):
             nudges.append(self._args[1])   # args = (session, text)
 
     monkeypatch.setattr(server.threading, "Thread", _CapThread)
-    s = server.new_session(title="nudge-test")
+    s = server.new_session(username="u", title="nudge-test")
     s["status"] = "interrupted"
     s["history"] = [{"role": "user", "text": "build the thing"}]
     client.post(f"/api/sessions/{s['id']}/resume")
@@ -246,7 +246,7 @@ def test_resume_nudge_fallback_when_no_history(client, monkeypatch):
             nudges.append(self._args[1])
 
     monkeypatch.setattr(server.threading, "Thread", _CapThread)
-    s = server.new_session(title="nudge-empty")
+    s = server.new_session(username="u", title="nudge-empty")
     s["status"] = "interrupted"
     s["history"] = []
     client.post(f"/api/sessions/{s['id']}/resume")
@@ -258,7 +258,7 @@ def test_resume_stays_default_mode_for_non_owner(client, monkeypatch):
     monkeypatch.setattr(server.threading, "Thread", _InertThread)
     # Non-owner user (dependency override already returns "u")
     monkeypatch.setattr(server, "load_users", lambda: {"u": {"role": "Member"}})
-    s = server.new_session(title="auto-guard")
+    s = server.new_session(username="u", title="auto-guard")
     s["status"] = "interrupted"
     s["mode"] = "auto"
     client.post(f"/api/sessions/{s['id']}/resume")
@@ -269,7 +269,7 @@ def test_resume_keeps_auto_for_owner(client, monkeypatch):
     """Owner resumes an auto session — mode must not be downgraded."""
     monkeypatch.setattr(server.threading, "Thread", _InertThread)
     monkeypatch.setattr(server, "load_users", lambda: {"u": {"role": "Owner"}})
-    s = server.new_session(title="auto-owner")
+    s = server.new_session(username="u", title="auto-owner")
     s["status"] = "interrupted"
     s["mode"] = "auto"
     client.post(f"/api/sessions/{s['id']}/resume")
@@ -294,7 +294,7 @@ def test_run_persists_running_status(monkeypatch):
     monkeypatch.setattr(server, "call_model", _fake_call)
     monkeypatch.setattr(server, "_pricier_provider", lambda cfg, p, username=None: None)
 
-    s = server.new_session(title="persist-run")
+    s = server.new_session(username="u", title="persist-run")
     server.run_session_message(s, "go")
 
     # At least one persist call must have seen "running" for this session
@@ -318,7 +318,7 @@ def test_run_persists_idle_status_on_finish(monkeypatch):
     monkeypatch.setattr(server, "call_model", _fake_call)
     monkeypatch.setattr(server, "_pricier_provider", lambda cfg, p, username=None: None)
 
-    s = server.new_session(title="persist-idle")
+    s = server.new_session(username="u", title="persist-idle")
     server.run_session_message(s, "go")
 
     assert final_status.get(s["id"]) == "idle"
@@ -329,7 +329,7 @@ def test_run_persists_idle_status_on_finish(monkeypatch):
 def test_normal_idle_session_sends_message_ok(client, monkeypatch):
     """Regular message send on an idle session must still work (regression)."""
     monkeypatch.setattr(server.threading, "Thread", _InertThread)
-    s = server.new_session(title="normal-send")
+    s = server.new_session(username="u", title="normal-send")
     r = client.post(f"/api/sessions/{s['id']}/message", json={"text": "hello"})
     assert r.status_code == 200
 
@@ -337,7 +337,7 @@ def test_normal_idle_session_sends_message_ok(client, monkeypatch):
 def test_message_on_interrupted_is_accepted(client, monkeypatch):
     """Sending a new message to an interrupted session unblocks it normally."""
     monkeypatch.setattr(server.threading, "Thread", _InertThread)
-    s = server.new_session(title="msg-interrupted")
+    s = server.new_session(username="u", title="msg-interrupted")
     s["status"] = "interrupted"
     r = client.post(f"/api/sessions/{s['id']}/message", json={"text": "try again"})
     assert r.status_code == 200

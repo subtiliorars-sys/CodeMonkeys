@@ -10,7 +10,9 @@ Read `docs/STATE.md` + `docs/IDEATION.md` before each wave. Never merge your own
 
 ## Active queue
 
-*(none)*
+| Wave | Status | Scope |
+|------|--------|--------|
+| CM-W7 | pending | S6 Layer 1 — session→user binding (API access gates + forge `read_only` badge) |
 
 ## Parallel track — Forge UI / Cursor parity (manual)
 
@@ -33,6 +35,7 @@ See `OFFICE_HOURS.md` for the 5-min PR checklist.
 - OAuth app registration, webhook secrets, terminal activation
 - `fly deploy` / production config changes
 - SECURITY.md substantive changes
+- S6 Layers 2–4 (workspace jail, per-user secrets, shell sandbox) — owner decision
 
 ## Completed
 
