@@ -583,10 +583,16 @@ def _load_json(path, default):
 
 
 def _save_json(path, data):
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp, path)
+    tmp = path + ".tmp." + secrets.token_hex(8)
+    try:
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, path)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
 
 
 # ----------------------------------------------------------------- N2 daily spend cap
@@ -7949,14 +7955,19 @@ def list_feedback(user: str = Depends(verify_owner)):
         except Exception: pass
     records.sort(key=lambda r: r.get("ts", ""), reverse=True)
     statuses = _load_feedback_statuses()
-    for r in records:
-        sid = r.get("id")
-        if sid and sid in statuses:
-            r["status"] = statuses[sid].get("status", "new")
-            r["status_note"] = statuses[sid].get("note", "")
-        else:
-            r["status"] = "new"
-    return {"reports": records[:200]}
+    dirty = False
+    out = []
+    for r in records[:200]:
+        rid = str(r.get("id") or "")
+        meta = dict(statuses.get(rid) or {"status": "new"})
+        if not any(str(p).strip() for p in (meta.get("proposals") or [])):
+            meta = ensure_proposals(r, meta, llm_fn=None)
+            statuses[rid] = meta
+            dirty = True
+        out.append(merge_report_with_meta(r, meta))
+    if dirty:
+        _save_feedback_statuses(statuses)
+    return {"reports": out}
 
 @app.post("/api/feedback/status")
 def set_feedback_status(req: FeedbackStatusRequest, user: str = Depends(verify_owner)):
