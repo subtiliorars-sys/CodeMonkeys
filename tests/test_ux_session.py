@@ -37,13 +37,13 @@ def test_clamp_budget_rules():
 
 
 def test_session_budget_falls_back_to_global():
-    s = server.new_session(title="a")            # no override
+    s = server.new_session(title="a", username="u")            # no override
     assert server.session_budget(s) == server.SESSION_BUDGET_USD
     del server.SESSIONS[s["id"]]
 
 
 def test_session_budget_uses_override():
-    s = server.new_session(title="b", budget_usd=3.0)
+    s = server.new_session(title="b", budget_usd=3.0, username="u")
     assert server.session_budget(s) == 3.0
     del server.SESSIONS[s["id"]]
 
@@ -67,7 +67,7 @@ def test_create_endpoint_rejects_bad_budget_to_global(as_user):
 # ---- W9 transcript export ----------------------------------------------------
 
 def _seed_session():
-    s = server.new_session(title="export-me", repo="acme")
+    s = server.new_session(title="export-me", repo="acme", username="u")
     s["history"] = [
         {"role": "user", "text": "fix the bug"},
         {"role": "assistant", "text": "looking",
