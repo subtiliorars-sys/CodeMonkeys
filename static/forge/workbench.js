@@ -14,10 +14,8 @@ const Workbench = {
       bar.id = "wb-toolbar";
       bar.className = "px-4 py-1 border-b border-yellow-900/30 flex gap-2 text-[.65rem]";
       bar.innerHTML =
-        '<button id="wb-toggle-agents" class="gold-border rounded px-2 py-0.5 text-slate-400 hover:text-[var(--gold)]">🤖 Agents</button>' +
-        '<button id="wb-toggle-fleet" class="gold-border rounded px-2 py-0.5 text-slate-400 hover:text-[var(--gold)] hidden" title="Use Agents hub → Automations">🛒 Store</button>' +
         '<button id="wb-toggle-term" class="gold-border rounded px-2 py-0.5 text-slate-400 hover:text-[var(--gold)]">⌨ Terminal</button>' +
-        '<span class="text-slate-600 flex-1 text-right">drag terminal top edge to resize</span>';
+        '<span class="text-slate-600 flex-1 text-right hidden lg:inline">drag terminal edge to resize</span>';
       header.after(bar);
     }
 
@@ -59,11 +57,7 @@ const Workbench = {
       this.bindResize();
     }
 
-    document.getElementById("wb-toggle-fleet")?.addEventListener("click", () => this.toggleFleet());
     document.getElementById("wb-toggle-term")?.addEventListener("click", () => this.toggleTerminal());
-    document.getElementById("wb-toggle-agents")?.addEventListener("click", () => {
-      if (window.AgentsHub) AgentsHub.open("automations");
-    });
 
     this.applyMobileLayout();
     window.addEventListener("resize", () => this.applyMobileLayout());

@@ -35,7 +35,7 @@
     html.cm-kb-active #budget-alert { display: none !important; }
     html.cm-kb-active #stream { flex: 1 1 auto !important; min-height: 0 !important; }
     #fb-fab {
-      bottom: calc(env(safe-area-inset-bottom, 0px) + 11rem) !important;
+      bottom: calc(env(safe-area-inset-bottom, 0px) + 5rem) !important;
       right: 0.75rem !important;
     }
     html.cm-kb-active #fb-fab {
@@ -502,6 +502,7 @@
           <button id="btn-desk-hub" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">🖥 Cursor Desk</button>
           <button id="btn-agents-hub-settings" class="w-full text-left text-slate-400 hover:text-[var(--gold)]">🤖 Agents &amp; Automations</button>
           <button id="btn-gremlins" class="w-full text-left text-slate-400 hover:text-[var(--gold)]">👹 Code Gremlins</button>
+          <button id="btn-corps" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">🎭 Agent Corps</button>
           <button id="btn-models" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">⚙ Models &amp; keys</button>
           <button id="btn-mcp" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">🔌 MCP connectors</button>
           <button id="btn-passkey" class="w-full text-left text-slate-400 hover:text-[var(--gold)]">👆 Add passkey / biometric</button>
@@ -901,8 +902,10 @@
 <script src="/static/forge/cursor-desk.js"></script>
 <script src="/static/forge/gremlins.js"></script>
 <script src="/static/forge/push.js"></script>
+<script src="/static/forge/three-card-triage.js"></script>
 <script src="/static/forge/app.js"></script>
 <script src="/static/forge/field-report.js"></script>
 <script src="/static/forge/feedback.js"></script>
+<script src="/static/forge/pwa.js"></script>
 </body>
 </html>
