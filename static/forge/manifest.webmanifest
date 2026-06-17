@@ -1,0 +1,23 @@
+{
+  "name": "CodeMonkeys",
+  "short_name": "CodeMonkeys",
+  "description": "Self-hosted agent coding console",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#050507",
+  "theme_color": "#d4af37",
+  "icons": [
+    {
+      "src": "/static/forge/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/static/forge/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -113,6 +113,7 @@ token and can run commands. Invite only people you'd trust with that access.
 ```bash
 cd ~/CodeMonkeys
 python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
+./scripts/build-css.sh   # required once — builds static/forge/tailwind.css (gitignored)
 DATA_DIR=./data ./.venv/bin/uvicorn server:app --reload --port 8080
 # browse http://localhost:8080
 ```

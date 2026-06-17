@@ -65,10 +65,11 @@ const OmniSearch = {
       { id: "btn-corps", label: "⚙ Settings: Agent Corps (Personas)", cat: "Setting" },
       { id: "btn-mcp", label: "🔌 Settings: MCP Connectors", cat: "Setting" },
       { id: "btn-invite", label: "👥 Settings: Invite Developers", cat: "Setting" },
+      { id: "btn-agents-hub", label: "🤖 Agents & Automations", cat: "View" },
       { id: "btn-cost-dashboard", label: "💰 Cost Dashboard", cat: "View" },
       { id: "btn-feedback-inbox", label: "📥 Feedback Inbox", cat: "View" },
-      { id: "btn-search-sessions", label: "🔍 Search Sessions", cat: "Action" },
       { id: "btn-new-session", label: "+ New Session", cat: "Action" },
+      { action: () => document.getElementById("session-filter")?.focus(), label: "🔍 Focus session filter", cat: "Action" },
     ];
 
     // Add sessions from DOM (heuristic since they are there)
