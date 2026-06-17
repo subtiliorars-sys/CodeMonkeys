@@ -569,11 +569,11 @@ async function refreshSessions() {
       `<div class="group flex items-center gap-1 rounded px-2 py-1 hover:bg-yellow-900/20 ${s.id === state.sid ? "bg-yellow-900/30" : ""}">
          <span data-sid="${s.id}" class="session-item flex-1 cursor-pointer truncate ${s.id === state.sid ? "text-[var(--gold-bright)]" : "text-slate-300"}"
            title="Double-click to rename">
-           <span class="session-title" data-sid="${s.id}">${esc(s.title)}</span> <span class="text-slate-600">$${s.spent_usd}</span></span>
-         ${s.status === "interrupted"
+           <span class="session-title" data-sid="${s.id}">${esc(s.title)}</span>${s.read_only ? ' <span class="gold-border rounded px-1 text-[.6rem] text-[var(--gold)]">ro</span>' : ""} <span class="text-slate-600">$${s.spent_usd}</span></span>
+         ${!s.read_only && s.status === "interrupted"
            ? `<button data-resume="${s.id}" class="session-resume text-amber-400 hover:text-amber-300 text-[.65rem] px-1 opacity-0 group-hover:opacity-100" title="Resume interrupted session">resume</button>`
            : ""}
-         <button data-del="${s.id}" class="session-del text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100" title="Delete session">✕</button>
+         ${!s.read_only ? `<button data-del="${s.id}" class="session-del text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100" title="Delete session">✕</button>` : ""}
        </div>`).join("")
       || '<div class="text-slate-600">none yet</div>';
     document.querySelectorAll(".session-item").forEach((el) =>
@@ -583,6 +583,8 @@ async function refreshSessions() {
       el.ondblclick = (e) => {
         e.stopPropagation();
         const sid = el.dataset.sid;
+        const sess = visibleSessions.find((x) => x.id === sid);
+        if (sess?.read_only) return;
         const input = document.createElement("input");
         input.value = el.textContent;
         input.className = "input rounded px-1 py-0 text-[.7rem] w-full";
