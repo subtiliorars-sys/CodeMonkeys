@@ -10,9 +10,7 @@ Read `docs/STATE.md` + `docs/IDEATION.md` before each wave. Never merge your own
 
 ## Active queue
 
-| Wave | Status | Scope |
-|------|--------|--------|
-| CM-W7 | pending | S6 Layer 1 — session→user binding (API access gates + forge `read_only` badge) |
+_(none — safe automation backlog exhausted; next items are owner-gated below.)_
 
 ## Parallel track — Forge UI / Cursor parity (manual)
 
@@ -38,6 +36,13 @@ See `OFFICE_HOURS.md` for the 5-min PR checklist.
 - S6 Layers 2–4 (workspace jail, per-user secrets, shell sandbox) — owner decision
 
 ## Completed
+
+### Wave CM-W7 — S6 Layer 1 session ownership ✅
+**Branch:** `automation/wave-cm-w7-session-ownership` (merged via #122)  
+**Shipped:** Session→user binding on all `/api/sessions/{sid}/*` routes; members
+see/mutate only their sessions; Owner sees all with `read_only` flag on others';
+legacy `username=None` sessions (webhook) bind to Owner. Forge sidebar `ro` badge
+hides mutate controls on read-only rows. `tests/test_session_ownership.py` (8 tests).
 
 ### Wave CM-W6 — Feedback triage list proposals ✅
 **Branch:** `automation/wave-cm-w6-feedback-tests`  
