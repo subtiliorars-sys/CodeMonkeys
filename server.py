@@ -249,7 +249,7 @@ COMPACT_AT_FRAC = float(os.environ.get("COMPACT_AT_FRAC", "0.7"))
 KEEP_RECENT     = int(os.environ.get("KEEP_RECENT", "12"))
 COMPACT_CONTEXT_WINDOW_DEFAULT = 128000   # safe fallback when model is unknown
 MAX_SUBAGENTS = 8          # Campaign cap from CORPS_COMMANDER.md
-BASH_TIMEOUT = 180
+BASH_TIMEOUT = int(os.environ.get("CM_BASH_TIMEOUT", "180"))
 OUTPUT_CAP = 16000         # chars of tool output fed back to the model
 READ_CAP = 24000
 APPROVAL_TIMEOUT = 3600
@@ -507,9 +507,17 @@ def readyz():
     except Exception:
         provider_configured = False
 
+    # -- check: disk_space_ok --------------------------------------------------
+    disk_space_ok = False
+    try:
+        total, used, free = shutil.disk_usage(DATA_DIR)
+        disk_space_ok = free > 10 * 1024 * 1024  # at least 10MB
+    except Exception:
+        disk_space_ok = True  # fallback
+
     # -- aggregate ------------------------------------------------------------
     # Required checks determine the HTTP status code.
-    required_ok = data_writable and crypto_ok
+    required_ok = data_writable and crypto_ok and disk_space_ok
     overall = "ready" if (required_ok and provider_configured) else "not ready"
 
     body = {
@@ -519,6 +527,7 @@ def readyz():
         "checks": {
             "data_writable": data_writable,
             "crypto_ok": crypto_ok,
+            "disk_space_ok": disk_space_ok,
             "provider_configured": provider_configured,
         },
     }
@@ -4789,7 +4798,7 @@ def t_glob(args):
     pat = args["pattern"]
     out, root = [], os.path.realpath(WORKSPACE_DIR)
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d not in (".git", "node_modules", "__pycache__")]
+        dirnames[:] = [d for d in dirnames if d not in (".git", "node_modules", "__pycache__", ".venv", ".pytest_cache")]
         for fn in filenames:
             rel = os.path.relpath(os.path.join(dirpath, fn), root)
             if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(fn, pat):
@@ -4804,6 +4813,7 @@ def t_grep(args):
     try:
         r = subprocess.run(
             ["grep", "-rnI", "--exclude-dir=.git", "--exclude-dir=node_modules",
+             "--exclude-dir=.venv", "--exclude-dir=.pytest_cache", "--exclude-dir=__pycache__",
              "-m", "5", "-e", args["pattern"], target],
             capture_output=True, text=True, timeout=30)
     except subprocess.TimeoutExpired:
@@ -5606,6 +5616,7 @@ def _persist_index():
     idx = {sid: {"title": s.get("title", "Untitled"), "repo": s.get("repo"), "created": s.get("created", 0),
                  "budget_usd": s.get("budget_usd"),
                  "status": s.get("status", "idle"), "mode": s.get("mode", "default"),
+                 "tags": s.get("tags", []),
                  "username": s.get("username")}
            for sid, s in SESSIONS.items()}
     os.makedirs(SESSIONS_DIR, exist_ok=True)
@@ -5637,7 +5648,7 @@ def session_budget(session) -> float:
     return b if b else SESSION_BUDGET_USD
 
 
-def new_session(title="", repo="", budget_usd=None, username=None):
+def new_session(title="", repo="", budget_usd=None, username=None, tags=None):
     sid = uuid.uuid4().hex[:12]
     with _SESSIONS_LOCK:
         SESSIONS[sid] = {
@@ -5648,6 +5659,7 @@ def new_session(title="", repo="", budget_usd=None, username=None):
             "agents_spawned": 0, "stop_flag": threading.Event(),
             "approvals": {}, "lock": threading.Lock(),
             "username": username,
+            "tags": tags or [],
         }
         _persist_index()
     return SESSIONS[sid]
@@ -5674,6 +5686,7 @@ def restore_sessions():
             "agents_spawned": 0, "stop_flag": threading.Event(),
             "approvals": {}, "lock": threading.Lock(),
             "username": meta.get("username"),
+            "tags": meta.get("tags", []),
         }
         try:
             with open(_events_path(sid)) as f:
@@ -6599,6 +6612,7 @@ class SessionCreate(BaseModel):
     title: str = ""
     repo: str = ""
     budget_usd: float | None = None     # W10: per-session cap; None → global default
+    tags: List[str] | None = None
 
 
 class FileUpload(BaseModel):
@@ -6750,18 +6764,25 @@ def push_unsubscribe(req: PushUnsubscribeRequest, username: str = Depends(verify
 
 @app.post("/api/sessions")
 def session_create(req: SessionCreate, username: str = Depends(verify_user)):
-    s = new_session(req.title, req.repo, req.budget_usd, username=username)
+    s = new_session(req.title, req.repo, req.budget_usd, username=username, tags=req.tags)
     return {"id": s["id"], "budget_usd": session_budget(s)}
 
 
 @app.get("/api/sessions")
-def session_list(_: str = Depends(verify_user)):
-    return {"sessions": sorted([
-        {"id": s["id"], "title": s["title"], "repo": s["repo"],
-         "created": s["created"], "status": s["status"],
-         "spent_usd": round(s["spent_usd"], 4),
-         "budget_usd": round(session_budget(s), 4)}
-        for s in SESSIONS.values()], key=lambda x: -x["created"])}
+def session_list(tag: Optional[str] = None, _: str = Depends(verify_user)):
+    lst = []
+    for s in SESSIONS.values():
+        tags = s.get("tags", [])
+        if tag and tag not in tags:
+            continue
+        lst.append({
+            "id": s["id"], "title": s["title"], "repo": s["repo"],
+            "created": s["created"], "status": s["status"],
+            "spent_usd": round(s["spent_usd"], 4),
+            "budget_usd": round(session_budget(s), 4),
+            "tags": tags
+        })
+    return {"sessions": sorted(lst, key=lambda x: -x["created"])}
 
 
 class KBUpsert(BaseModel):
@@ -7762,8 +7783,9 @@ def session_delete(sid: str, _: str = Depends(verify_user)):
     return {"ok": True}
 
 
-class SessionRename(BaseModel):
-    title: str
+class SessionUpdate(BaseModel):
+    title: Optional[str] = None
+    tags: Optional[List[str]] = None
 
 class FeedbackRequest(BaseModel):
     category: Optional[str] = "bug"
@@ -7778,18 +7800,21 @@ class FeedbackStatusRequest(BaseModel):
 
 
 @app.patch("/api/sessions/{sid}")
-def session_rename(sid: str, req: SessionRename, _: str = Depends(verify_user)):
-    """Update the session title (in-memory + index)."""
+def session_update(sid: str, req: SessionUpdate, _: str = Depends(verify_user)):
+    """Update the session title and/or tags (in-memory + index)."""
     s = SESSIONS.get(sid)
     if not s:
         raise HTTPException(404, "No such session")
-    title = req.title.strip()[:120]
-    if not title:
-        raise HTTPException(400, "Title cannot be empty")
     with s["lock"]:
-        s["title"] = title
+        if req.title is not None:
+            title = req.title.strip()[:120]
+            if not title:
+                raise HTTPException(400, "Title cannot be empty")
+            s["title"] = title
+        if req.tags is not None:
+            s["tags"] = [t.strip()[:30] for t in req.tags if t.strip()][:10]
     _persist_index()
-    return {"ok": True, "title": title}
+    return {"ok": True, "title": s["title"], "tags": s.get("tags", [])}
 
 
 # ---- Fleet Deck status feed (~/fleet/contracts/fleetdeck-codemonkeys.md) ------
