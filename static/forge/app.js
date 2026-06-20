@@ -138,6 +138,16 @@ function extractSecretFromOtpauth(uri) {
   }
 }
 
+function extractSecretFromOtpauth(uri) {
+  try {
+    const url = new URL(uri);
+    return url.searchParams.get("secret") || "";
+  } catch (e) {
+    const match = uri.match(/[?&]secret=([A-Z2-7]+)/i);
+    return match ? match[1] : "";
+  }
+}
+
 function saveAuth(d) {
   state.token = d.token; state.username = d.username; state.role = d.role;
   localStorage.setItem("cm_token", d.token);
