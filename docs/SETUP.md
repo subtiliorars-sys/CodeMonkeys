@@ -85,21 +85,24 @@ Once logged in, sidebar → **👆 Add passkey / biometric** → approve on your
 done — no PIN or authenticator code needed (the device's biometric check is the
 second factor). Register a passkey on each device you use.
 
-## 6c. Optional: invite your developers
+## 6c. Optional: invite your developers (including Android friends)
 
-Sidebar → **👥 Invite developers** (Owner only). Type a username (or leave blank
-for an auto one) → **Create invite** → you get a **username + starter PIN shown
-once**. Hand those to your dev out-of-band (Signal, in person — not email if you
-can help it).
+**Terminal (recommended for Android):** see **`docs/FRIENDS_ANDROID.md`** — run
+`python3 scripts/friend_invite.py --base-url https://<your-app>.fly.dev` for a
+QR + copy-paste text message. Friends open **`/m`** (mobile-lite: chat, sessions,
+approvals only), scan authenticator, add passkey, **Add to Home screen**.
 
-Your dev opens this site, logs in with the starter username + PIN (no
-authenticator needed the first time), and is walked through setting their own
-username, PIN, and authenticator. After that they're a **Member**: they can use
-the console, sessions, and repos, but **cannot** see/edit your API keys or invite
-others. Remove anyone anytime from the same panel.
+**UI:** Sidebar → **👥 Invite developers** (Owner only). Type a username (or
+leave blank for an auto one) → **Create invite**. Hand the username out-of-band
+(Signal, in person).
 
-⚠️ No per-user isolation yet: every member shares this workspace and the GitHub
-token and can run commands. Invite only people you'd trust with that access.
+First login: username only (leave MFA blank) → setup walks them through
+authenticator + optional passkey. After that they're a **Member**: console,
+sessions, and their own workspace folder, but **cannot** see/edit your API keys
+or invite others. Remove anyone anytime from the same panel.
+
+⚠️ Members share the server's GitHub token and can run agent commands — invite
+only people you'd trust with that access.
 
 ## 7. Clone a repo and code
 

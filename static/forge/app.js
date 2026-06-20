@@ -109,6 +109,16 @@ function logout() {
   state.token = ""; stopPolling(); showLogin();
 }
 
+function extractSecretFromOtpauth(uri) {
+  try {
+    const url = new URL(uri);
+    return url.searchParams.get("secret") || "";
+  } catch (e) {
+    const match = uri.match(/[?&]secret=([A-Z2-7]+)/i);
+    return match ? match[1] : "";
+  }
+}
+
 function saveAuth(d) {
   state.token = d.token; state.username = d.username; state.role = d.role;
   localStorage.setItem("cm_token", d.token);
@@ -132,6 +142,10 @@ $("lg-submit").onclick = async () => {
         { username: $("lg-user").value, pin: $("lg-pin").value });
       saveAuth(d);
       $("lg-uri").textContent = d.mfa_otpauth_uri;
+      const secret = extractSecretFromOtpauth(d.mfa_otpauth_uri);
+      $("lg-secret-text").textContent = secret;
+      $("lg-otp-link").href = d.mfa_otpauth_uri;
+      
       // QR rendered locally by the server (data URI); never sent to a CDN.
       if (d.mfa_qr) { $("lg-qr").src = d.mfa_qr; $("lg-qr").classList.remove("hidden"); }
       else { $("lg-qr").classList.add("hidden"); }   // fall back to manual-entry of the URI above
@@ -148,6 +162,37 @@ $("lg-submit").onclick = async () => {
 $("lg-continue").onclick = () => showMain();
 $("btn-logout").onclick = logout;
 
+$("lg-copy-secret").onclick = () => {
+  navigator.clipboard.writeText($("lg-secret-text").textContent);
+  const origText = $("lg-copy-secret").textContent;
+  $("lg-copy-secret").textContent = "Copied!";
+  setTimeout(() => { $("lg-copy-secret").textContent = origText; }, 1500);
+};
+
+$("lg-add-passkey").onclick = async () => {
+  const msg = $("lg-passkey-msg");
+  msg.textContent = "Waiting for your device…";
+  try {
+    const options = await api("/api/webauthn/register/begin", "POST", {});
+    options.challenge = b64uToBuf(options.challenge);
+    options.user.id = b64uToBuf(options.user.id);
+    (options.excludeCredentials || []).forEach((c) => (c.id = b64uToBuf(c.id)));
+    const cred = await navigator.credentials.create({ publicKey: options });
+    const r = await api("/api/webauthn/register/complete", "POST", {
+      id: cred.id, rawId: bufToB64u(cred.rawId), type: cred.type,
+      response: {
+        clientDataJSON: bufToB64u(cred.response.clientDataJSON),
+        attestationObject: bufToB64u(cred.response.attestationObject),
+      },
+    });
+    msg.textContent = "✓ Biometrics registered! You can now log in without codes.";
+    msg.className = "text-[10px] text-green-400 mt-1 min-h-[12px]";
+  } catch (e) {
+    msg.textContent = "✗ Registration failed: " + e.message;
+    msg.className = "text-[10px] text-red-400 mt-1 min-h-[12px]";
+  }
+};
+
 /* ---------------- first-time setup (invited dev) ---------------- */
 
 $("su-submit").onclick = async () => {
@@ -160,6 +205,10 @@ $("su-submit").onclick = async () => {
       { new_username: $("su-user").value.trim(), new_pin: pin });
     saveAuth(d);
     $("su-uri").textContent = d.mfa_otpauth_uri;
+    const secret = extractSecretFromOtpauth(d.mfa_otpauth_uri);
+    $("su-secret-text").textContent = secret;
+    $("su-otp-link").href = d.mfa_otpauth_uri;
+
     // QR rendered locally by the server (data URI); never sent to a CDN.
     if (d.mfa_qr) { $("su-qr").src = d.mfa_qr; $("su-qr").classList.remove("hidden"); }
     else { $("su-qr").classList.add("hidden"); }
@@ -168,6 +217,37 @@ $("su-submit").onclick = async () => {
   } catch (e) { $("su-msg").textContent = e.message; }
 };
 $("su-done").onclick = () => showMain();
+
+$("su-copy-secret").onclick = () => {
+  navigator.clipboard.writeText($("su-secret-text").textContent);
+  const origText = $("su-copy-secret").textContent;
+  $("su-copy-secret").textContent = "Copied!";
+  setTimeout(() => { $("su-copy-secret").textContent = origText; }, 1500);
+};
+
+$("su-add-passkey").onclick = async () => {
+  const msg = $("su-passkey-msg");
+  msg.textContent = "Waiting for your device…";
+  try {
+    const options = await api("/api/webauthn/register/begin", "POST", {});
+    options.challenge = b64uToBuf(options.challenge);
+    options.user.id = b64uToBuf(options.user.id);
+    (options.excludeCredentials || []).forEach((c) => (c.id = b64uToBuf(c.id)));
+    const cred = await navigator.credentials.create({ publicKey: options });
+    const r = await api("/api/webauthn/register/complete", "POST", {
+      id: cred.id, rawId: bufToB64u(cred.rawId), type: cred.type,
+      response: {
+        clientDataJSON: bufToB64u(cred.response.clientDataJSON),
+        attestationObject: bufToB64u(cred.response.attestationObject),
+      },
+    });
+    msg.textContent = "✓ Biometrics registered! You can now log in without codes.";
+    msg.className = "text-[10px] text-green-400 mt-1 min-h-[12px]";
+  } catch (e) {
+    msg.textContent = "✗ Registration failed: " + e.message;
+    msg.className = "text-[10px] text-red-400 mt-1 min-h-[12px]";
+  }
+};
 
 /* ---------------- memory boards (Owner) ---------------- */
 
