@@ -4,15 +4,13 @@
 Usage:
   python scripts/reset_access.py list
   python scripts/reset_access.py reset-mfa <username>   # prints new otpauth URI
-  python scripts/reset_access.py reset-pin <username> <new_pin>
 """
-import hashlib
 import json
 import os
-import secrets
 import sys
 
 import pyotp
+
 
 def _default_users_file() -> str:
     if os.environ.get("USERS_FILE"):
@@ -42,21 +40,16 @@ def main():
     users = load()
     if cmd == "list":
         for u, d in users.items():
-            print(f"{u}  role={d['role']}")
+            mfa = "mfa" if d.get("mfa_secret") else "no-mfa"
+            print(f"{u}  role={d['role']}  {mfa}")
     elif cmd == "reset-mfa":
         u = sys.argv[2]
         users[u]["mfa_secret"] = pyotp.random_base32()
+        users[u].pop("pin_hash", None)
+        users[u].pop("salt", None)
         save(users)
         print(pyotp.TOTP(users[u]["mfa_secret"]).provisioning_uri(
             name=u, issuer_name="CodeMonkeys"))
-    elif cmd == "reset-pin":
-        u, pin = sys.argv[2], sys.argv[3]
-        salt = secrets.token_hex(16)
-        users[u]["salt"] = salt
-        users[u]["pin_hash"] = hashlib.pbkdf2_hmac(
-            "sha256", pin.encode(), bytes.fromhex(salt), 200_000).hex()
-        save(users)
-        print("PIN reset.")
     else:
         print(__doc__)
 

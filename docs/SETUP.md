@@ -87,22 +87,24 @@ second factor). Register a passkey on each device you use.
 
 ## 6c. Optional: invite your developers (including Android friends)
 
-**Terminal (recommended for Android):** see **`docs/FRIENDS_ANDROID.md`** — run
-`python3 scripts/friend_invite.py --base-url https://<your-app>.fly.dev` for a
-QR + copy-paste text message. Friends open **`/m`** (mobile-lite: chat, sessions,
-approvals only), scan authenticator, add passkey, **Add to Home screen**.
+Sidebar → **👥 Invite developers** (Owner only). Type a username (or leave blank
+for an auto one) → **Create invite** → you get a **username + starter PIN shown
+once**. Hand those to your dev out-of-band (Signal, in person — not email if you
+can help it).
 
-**UI:** Sidebar → **👥 Invite developers** (Owner only). Type a username (or
-leave blank for an auto one) → **Create invite**. Hand the username out-of-band
-(Signal, in person).
+Your dev opens this site (or **`/m`** for the mobile-lite chat/sessions/approvals
+view), logs in with the starter username + PIN (leave MFA blank the first time),
+and is walked through setting their own PIN and authenticator. They can add a
+passkey during setup, then use the browser's **Add to Home Screen** flow on
+Android/iOS.
 
-First login: username only (leave MFA blank) → setup walks them through
-authenticator + optional passkey. After that they're a **Member**: console,
-sessions, and their own workspace folder, but **cannot** see/edit your API keys
-or invite others. Remove anyone anytime from the same panel.
+After setup they're a **Member**: they can use the console, sessions, and repos,
+but **cannot** see/edit your API keys or invite others. Remove anyone anytime
+from the same panel.
 
-⚠️ Members share the server's GitHub token and can run agent commands — invite
-only people you'd trust with that access.
+⚠️ No per-user workspace isolation yet: members share the workspace, server
+GitHub token, and agent command surface — invite only people you'd trust with
+that access.
 
 ## 7. Clone a repo and code
 
@@ -116,6 +118,7 @@ only people you'd trust with that access.
 ```bash
 cd ~/CodeMonkeys
 python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
+./scripts/build-css.sh   # required once — builds static/forge/tailwind.css (gitignored)
 DATA_DIR=./data ./.venv/bin/uvicorn server:app --reload --port 8080
 # browse http://localhost:8080
 ```

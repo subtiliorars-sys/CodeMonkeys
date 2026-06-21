@@ -132,7 +132,7 @@ const CursorDesk = {
           { label: "Models & keys", id: "btn-models" },
           { label: "MCP", id: "btn-mcp" },
           { label: "Cost", id: "btn-cost-dashboard" },
-          { label: "Fleet Store", id: "btn-fleet-store" },
+          { label: "Fleet / Automations", id: "btn-agents-hub-settings" },
           { label: "Cursor Desk", id: "btn-desk-hub" },
           { label: "Code Gremlins", id: "btn-gremlins" },
           { label: "Agent Corps", id: "btn-corps" },

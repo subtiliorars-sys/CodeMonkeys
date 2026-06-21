@@ -2,7 +2,7 @@
 """CodeMonkeys — self-hosted, multi-provider AI coding console.
 
 Single-file FastAPI backend:
-  - Auth: username + PIN (PBKDF2) + mandatory per-user TOTP, HMAC session tokens
+  - Auth: username + mandatory per-user TOTP, HMAC session tokens
   - Models: any OpenAI-compatible endpoint (Gemini, OpenRouter, DeepSeek, ...)
             plus native Anthropic — configured at runtime, keys on /data
   - Agent loop: Claude Code-style tool loop, workspace-jailed
@@ -592,10 +592,16 @@ def _load_json(path, default):
 
 
 def _save_json(path, data):
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(data, f, indent=2)
-    os.replace(tmp, path)
+    tmp = path + ".tmp." + secrets.token_hex(8)
+    try:
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, path)
+    finally:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
 
 
 # ----------------------------------------------------------------- N2 daily spend cap
@@ -1006,6 +1012,39 @@ def _load_feedback_statuses():
         pass
     return {}
 
+
+def _save_feedback_statuses(statuses: dict) -> None:
+    if len(statuses) > FEEDBACK_STATUS_MAX:
+        oldest = sorted(statuses.keys())[0]
+        statuses.pop(oldest)
+    try:
+        os.makedirs(os.path.dirname(FEEDBACK_STATUS_FILE), exist_ok=True)
+        with open(FEEDBACK_STATUS_FILE, "w", encoding="utf-8") as f:
+            json.dump(statuses, f)
+    except Exception:
+        raise HTTPException(status_code=500, detail="Could not save status.")
+
+
+def _find_feedback_report(rid: str):
+    for path in (FEEDBACK_FILE, FEEDBACK_FILE + ".1"):
+        try:
+            if not os.path.exists(path):
+                continue
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except Exception:
+                        continue
+                    if str(rec.get("id") or "") == rid:
+                        return rec
+        except Exception:
+            continue
+    return None
+
 def _feedback_rate_ok(user: str) -> bool:
     now = time.time()
     hits = [t for t in _feedback_hits.get(user, []) if now - t < FEEDBACK_RATE_WINDOW]
@@ -1084,7 +1123,7 @@ def verify_user(username: str = Depends(verify_token)):
     """Any active (non-pending) account — Owner or invited Member."""
     user = load_users().get(username, {})
     if user.get("must_reset"):
-        raise HTTPException(403, "Finish first-time setup (new PIN + authenticator) first")
+        raise HTTPException(403, "Finish first-time setup (authenticator) first")
     if user.get("role") not in ("Owner", "Member"):
         raise HTTPException(403, "Not authorized")
     return username
@@ -1114,14 +1153,11 @@ def _client_ip(request: Request) -> str:
 
 class RegisterRequest(BaseModel):
     username: str
-    pin: str
-    mfa_code: str = ""
 
 
 class LoginRequest(BaseModel):
     username: str
-    pin: str
-    mfa_code: str
+    mfa_code: str = ""
 
 
 @app.get("/api/registration-status")
@@ -1135,8 +1171,6 @@ def register(req: RegisterRequest):
     username = req.username.strip()
     if not re.fullmatch(r"[A-Za-z0-9_.-]{2,32}", username):
         raise HTTPException(400, "Bad username")
-    if len(req.pin) < 4:
-        raise HTTPException(400, "PIN must be at least 4 digits")
     with _USERS_LOCK:
         if _is_erased(username):                  # M-7 tombstone guard (in-lock: races erasure)
             raise HTTPException(403, "This account was erased and cannot be re-registered")
@@ -1146,11 +1180,8 @@ def register(req: RegisterRequest):
         if users and not OPEN_ENROLLMENT:
             raise HTTPException(403, "Enrollment closed")
         role = "Owner" if not users else "Member"
-        salt = secrets.token_hex(16)
         mfa_secret = pyotp.random_base32()
         users[username] = {
-            "pin_hash": hash_pin(req.pin, salt),
-            "salt": salt,
             "role": role,
             "mfa_secret": mfa_secret,
             "created": int(time.time()),
@@ -1350,20 +1381,18 @@ def login(req: LoginRequest, request: Request = None):
                             headers={"Retry-After": str(locked)})
     users = load_users()
     user = users.get(uname)
-    if not user or not hmac.compare_digest(
-        user["pin_hash"], hash_pin(req.pin, user["salt"])
-    ):
+    if not user:
         _login_register_failure(uname, ip)
-        raise HTTPException(401, "Bad credentials")
-    # Invited accounts log in with the starter PIN only (no authenticator yet),
-    # then are forced through first-time setup. This branch is MFA-less, so the
-    # throttle is its ONLY brute-force barrier — deliberately do NOT clear the
-    # counter here (a correct guess still gets in, but a lucky near-miss run does
-    # not get its window wiped). The counter is cleared after /api/account/setup.
+        raise HTTPException(401, "Unknown username")
+    # Invited accounts: username only until they finish setup (scan authenticator).
     if user.get("must_reset"):
         return {"token": make_token(uname), "username": uname,
                 "role": user["role"], "must_reset": True}
-    if not pyotp.TOTP(user["mfa_secret"]).verify(req.mfa_code, valid_window=1):
+    secret = user.get("mfa_secret") or ""
+    if not secret:
+        _login_register_failure(uname, ip)
+        raise HTTPException(401, "Authenticator not set up — contact the owner")
+    if not pyotp.TOTP(secret).verify(req.mfa_code, valid_window=1):
         _login_register_failure(uname, ip)
         raise HTTPException(401, "Bad MFA code")
     _login_note_success(uname, ip)
@@ -1385,34 +1414,31 @@ def me(username: str = Depends(verify_token)):
 
 # ------------------------------------------------- invitations (Owner -> dev)
 
-def _gen_starter_pin():
-    return "".join(secrets.choice("0123456789") for _ in range(6))
-
-
 class InviteRequest(BaseModel):
     username: str = ""             # optional; auto-generated if blank
+
+
+def _gen_invite_username(req_username: str) -> str:
+    return req_username.strip() or ("dev-" + secrets.token_hex(3))
 
 
 @app.post("/api/invite")
 def invite(req: InviteRequest, _: str = Depends(verify_owner)):
     with _USERS_LOCK:
         users = load_users()
-        uname = req.username.strip() or ("dev-" + secrets.token_hex(3))
+        uname = _gen_invite_username(req.username)
         if not re.fullmatch(r"[A-Za-z0-9_.-]{2,32}", uname):
             raise HTTPException(400, "Bad username")
         if uname in users:
             raise HTTPException(409, "Username already exists")
         if _is_erased(uname):                     # M-7 tombstone guard
             raise HTTPException(403, "That username was erased and cannot be reused")
-        pin = _gen_starter_pin()
-        salt = secrets.token_hex(16)
         users[uname] = {
-            "pin_hash": hash_pin(pin, salt), "salt": salt, "role": "Member",
+            "role": "Member",
             "mfa_secret": "", "must_reset": True, "created": int(time.time()),
         }
         save_users(users)
-    # the starter PIN is returned ONCE, in cleartext, for the owner to hand over
-    return {"username": uname, "starter_pin": pin}
+    return {"username": uname}
 
 
 @app.get("/api/users")
@@ -1685,15 +1711,11 @@ def erasures_list(_: str = Depends(verify_owner)):
 
 class FirstSetup(BaseModel):
     new_username: str = ""        # optional rename
-    new_pin: str
 
 
 @app.post("/api/account/setup")
 def account_setup(req: FirstSetup, username: str = Depends(verify_token)):
-    """First-login flow for an invited account: set a new PIN (and optional new
-    username), get a fresh authenticator secret to scan."""
-    if len(req.new_pin) < 4:
-        raise HTTPException(400, "PIN must be at least 4 digits")
+    """First-login flow for an invited account: optional rename, then scan authenticator."""
     with _USERS_LOCK:
         users = load_users()
         user = users.get(username)
@@ -1711,11 +1733,10 @@ def account_setup(req: FirstSetup, username: str = Depends(verify_token)):
             users[new_name] = user
             del users[username]
             target = new_name
-        salt = secrets.token_hex(16)
         mfa_secret = pyotp.random_base32()
-        user["salt"] = salt
-        user["pin_hash"] = hash_pin(req.new_pin, salt)
         user["mfa_secret"] = mfa_secret
+        user.pop("pin_hash", None)
+        user.pop("salt", None)
         user["must_reset"] = False
         users[target] = user
         save_users(users)
@@ -5665,6 +5686,46 @@ def new_session(title="", repo="", budget_usd=None, username=None, tags=None):
     return SESSIONS[sid]
 
 
+def _is_owner_user(username: str) -> bool:
+    return load_users().get(username, {}).get("role") == "Owner"
+
+
+def _first_owner_username() -> str | None:
+    for uname, meta in load_users().items():
+        if meta.get("role") == "Owner":
+            return uname
+    return None
+
+
+def _session_visible(session: dict, caller: str) -> bool:
+    """Read access: session owner, or Owner role (support read-only view)."""
+    owner = session.get("username")
+    if owner is None:
+        return _is_owner_user(caller)
+    if owner == caller:
+        return True
+    return _is_owner_user(caller)
+
+
+def _session_writable(session: dict, caller: str) -> bool:
+    """Mutate access: only the session owner. Legacy (username=None) → Owner only."""
+    owner = session.get("username")
+    if owner is None:
+        return _is_owner_user(caller)
+    return owner == caller
+
+
+def _get_session(sid: str, caller: str, *, write: bool = False) -> dict:
+    s = SESSIONS.get(sid)
+    if not s:
+        raise HTTPException(404, "No such session")
+    if not _session_visible(s, caller):
+        raise HTTPException(404, "No such session")
+    if write and not _session_writable(s, caller):
+        raise HTTPException(403, "Not your session")
+    return s
+
+
 _N6_INTERRUPTED_STATUSES = ("running", "waiting_approval")
 
 
@@ -6769,20 +6830,24 @@ def session_create(req: SessionCreate, username: str = Depends(verify_user)):
 
 
 @app.get("/api/sessions")
-def session_list(tag: Optional[str] = None, _: str = Depends(verify_user)):
-    lst = []
+def session_list(tag: Optional[str] = None, username: str = Depends(verify_user)):
+    is_owner = _is_owner_user(username)
+    rows = []
     for s in SESSIONS.values():
+        if not _session_visible(s, username):
+            continue
         tags = s.get("tags", [])
         if tag and tag not in tags:
             continue
-        lst.append({
-            "id": s["id"], "title": s["title"], "repo": s["repo"],
-            "created": s["created"], "status": s["status"],
-            "spent_usd": round(s["spent_usd"], 4),
-            "budget_usd": round(session_budget(s), 4),
-            "tags": tags
-        })
-    return {"sessions": sorted(lst, key=lambda x: -x["created"])}
+        row = {"id": s["id"], "title": s["title"], "repo": s["repo"],
+               "created": s["created"], "status": s["status"],
+               "spent_usd": round(s["spent_usd"], 4),
+               "budget_usd": round(session_budget(s), 4),
+               "tags": tags}
+        if is_owner and s.get("username") and s.get("username") != username:
+            row["read_only"] = True
+        rows.append(row)
+    return {"sessions": sorted(rows, key=lambda x: -x["created"])}
 
 
 class KBUpsert(BaseModel):
@@ -7303,11 +7368,9 @@ def _render_transcript_md(s) -> str:
 
 
 @app.get("/api/sessions/{sid}/export")
-def session_export(sid: str, format: str = "md", _: str = Depends(verify_user)):
+def session_export(sid: str, format: str = "md", username: str = Depends(verify_user)):
     """Download a session transcript as Markdown (default) or JSON."""
-    s = SESSIONS.get(sid)
-    if not s:
-        raise HTTPException(404, "No such session")
+    s = _get_session(sid, username)
     if format == "json":
         with s["lock"]:
             payload = {
@@ -7327,12 +7390,10 @@ def session_export(sid: str, format: str = "md", _: str = Depends(verify_user)):
 
 
 @app.get("/api/sessions/{sid}/digest")
-def session_digest(sid: str, format: str = "json", _: str = Depends(verify_user)):
+def session_digest(sid: str, format: str = "json", username: str = Depends(verify_user)):
     """Wave 4 #6 — deterministic theme-token digest of a session (tier-1
     working memory). format=json (structured tokens) or md (readable)."""
-    s = SESSIONS.get(sid)
-    if not s:
-        raise HTTPException(404, "No such session")
+    s = _get_session(sid, username)
     if format == "md":
         return PlainTextResponse(_digest_markdown(s), media_type="text/markdown")
     with s["lock"]:
@@ -7530,9 +7591,7 @@ def _save_uploads(sid: str, files, *args, username: Optional[str] = None, **kwar
 
 @app.post("/api/sessions/{sid}/message")
 def session_message(sid: str, req: MessageRequest, username: str = Depends(verify_user)):
-    s = SESSIONS.get(sid)
-    if not s:
-        raise HTTPException(404, "No such session")
+    s = _get_session(sid, username, write=True)
     # Check-and-claim atomically: the worker thread only flips status to
     # "running" once it gets scheduled, so two rapid-fire duplicate POSTs
     # (double-click / double-Enter / client retry) could BOTH pass a bare
@@ -7549,8 +7608,6 @@ def session_message(sid: str, req: MessageRequest, username: str = Depends(verif
         # auto mode skips the human approval gate — Owner only (injection hardening).
         # Members requesting auto silently fall back to default so the API stays
         # forward-compatible without leaking role information.
-        s["username"] = username
-        _persist_index()
         user_role = load_users().get(username, {}).get("role")
         allowed_modes = ("plan", "default", "auto") if user_role == "Owner" else ("plan", "default")
         s["mode"] = req.mode if req.mode in allowed_modes else "default"
@@ -7670,7 +7727,7 @@ async def webhook_github(request: Request,
         while len(_webhook_seen) > WEBHOOK_SEEN_MAX:   # bounded FIFO
             _webhook_seen.pop(next(iter(_webhook_seen)))
         _active_webhook_runs += 1
-    s = new_session(title=title)
+    s = new_session(title=title, username=_first_owner_username())
     s["mode"] = "auto"        # unattended; risky commands still hit debate-verify
 
     def _run_and_release():
@@ -7686,10 +7743,8 @@ async def webhook_github(request: Request,
 
 
 @app.get("/api/sessions/{sid}/events")
-def session_events(sid: str, after: int = -1, _: str = Depends(verify_user)):
-    s = SESSIONS.get(sid)
-    if not s:
-        raise HTTPException(404, "No such session")
+def session_events(sid: str, after: int = -1, username: str = Depends(verify_user)):
+    s = _get_session(sid, username)
     with s["lock"]:
         events = [e for e in s["events"] if e["i"] > after]
         nxt = s["events"][-1]["i"] if s["events"] else -1
@@ -7698,10 +7753,8 @@ def session_events(sid: str, after: int = -1, _: str = Depends(verify_user)):
 
 
 @app.post("/api/sessions/{sid}/approve")
-def session_approve(sid: str, req: ApproveRequest, _: str = Depends(verify_user)):
-    s = SESSIONS.get(sid)
-    if not s:
-        raise HTTPException(404, "No such session")
+def session_approve(sid: str, req: ApproveRequest, username: str = Depends(verify_user)):
+    s = _get_session(sid, username, write=True)
     a = s["approvals"].get(req.approval_id)
     if not a:
         raise HTTPException(404, "No such approval (it may have timed out)")
@@ -7712,10 +7765,8 @@ def session_approve(sid: str, req: ApproveRequest, _: str = Depends(verify_user)
 
 
 @app.post("/api/sessions/{sid}/stop")
-def session_stop(sid: str, _: str = Depends(verify_user)):
-    s = SESSIONS.get(sid)
-    if not s:
-        raise HTTPException(404, "No such session")
+def session_stop(sid: str, username: str = Depends(verify_user)):
+    s = _get_session(sid, username, write=True)
     s["stop_flag"].set()
     # release any pending approvals as denied
     for a in list(s["approvals"].values()):
@@ -7736,9 +7787,7 @@ def session_resume(sid: str, username: str = Depends(verify_user)):
     plan), or default if the persisted mode would be auto and the user isn't
     Owner.
     """
-    s = SESSIONS.get(sid)
-    if not s:
-        raise HTTPException(404, "No such session")
+    s = _get_session(sid, username, write=True)
     with s["lock"]:
         if s["status"] not in ("interrupted", "idle"):
             raise HTTPException(409, "Session is busy")
@@ -7765,10 +7814,8 @@ def session_resume(sid: str, username: str = Depends(verify_user)):
 
 
 @app.delete("/api/sessions/{sid}")
-def session_delete(sid: str, _: str = Depends(verify_user)):
-    s = SESSIONS.get(sid)
-    if not s:
-        raise HTTPException(404, "No such session")
+def session_delete(sid: str, username: str = Depends(verify_user)):
+    s = _get_session(sid, username, write=True)
     if s["status"] not in ("idle", "interrupted"):
         raise HTTPException(409, "Stop the session before deleting it")
     with _SESSIONS_LOCK:
@@ -7800,11 +7847,9 @@ class FeedbackStatusRequest(BaseModel):
 
 
 @app.patch("/api/sessions/{sid}")
-def session_update(sid: str, req: SessionUpdate, _: str = Depends(verify_user)):
+def session_update(sid: str, req: SessionUpdate, username: str = Depends(verify_user)):
     """Update the session title and/or tags (in-memory + index)."""
-    s = SESSIONS.get(sid)
-    if not s:
-        raise HTTPException(404, "No such session")
+    s = _get_session(sid, username, write=True)
     with s["lock"]:
         if req.title is not None:
             title = req.title.strip()[:120]
@@ -7959,14 +8004,19 @@ def list_feedback(user: str = Depends(verify_owner)):
         except Exception: pass
     records.sort(key=lambda r: r.get("ts", ""), reverse=True)
     statuses = _load_feedback_statuses()
-    for r in records:
-        sid = r.get("id")
-        if sid and sid in statuses:
-            r["status"] = statuses[sid].get("status", "new")
-            r["status_note"] = statuses[sid].get("note", "")
-        else:
-            r["status"] = "new"
-    return {"reports": records[:200]}
+    dirty = False
+    out = []
+    for r in records[:200]:
+        rid = str(r.get("id") or "")
+        meta = dict(statuses.get(rid) or {"status": "new"})
+        if not any(str(p).strip() for p in (meta.get("proposals") or [])):
+            meta = ensure_proposals(r, meta, llm_fn=None)
+            statuses[rid] = meta
+            dirty = True
+        out.append(merge_report_with_meta(r, meta))
+    if dirty:
+        _save_feedback_statuses(statuses)
+    return {"reports": out}
 
 @app.post("/api/feedback/status")
 def set_feedback_status(req: FeedbackStatusRequest, user: str = Depends(verify_owner)):
@@ -7976,15 +8026,7 @@ def set_feedback_status(req: FeedbackStatusRequest, user: str = Depends(verify_o
         raise HTTPException(status_code=400, detail="Invalid id.")
     statuses = _load_feedback_statuses()
     statuses[req.id] = {"status": req.status, "note": (req.note or "")[:500]}
-    if len(statuses) > FEEDBACK_STATUS_MAX:
-        oldest = sorted(statuses.keys())[0]
-        statuses.pop(oldest)
-    try:
-        os.makedirs(os.path.dirname(FEEDBACK_STATUS_FILE), exist_ok=True)
-        with open(FEEDBACK_STATUS_FILE, "w", encoding="utf-8") as f:
-            json.dump(statuses, f)
-    except Exception:
-        raise HTTPException(status_code=500, detail="Could not save status.")
+    _save_feedback_statuses(statuses)
     return {"status": "ok"}
 
 @app.get("/api/feedback/shot/{name}")
@@ -7995,6 +8037,20 @@ def get_feedback_shot(name: str, user: str = Depends(verify_owner)):
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="Not found")
     return FileResponse(path)
+
+
+from feedback_triage import merge_report_with_meta, ensure_proposals, register_feedback_triage_routes
+
+register_feedback_triage_routes(
+    app,
+    verify_owner=verify_owner,
+    load_statuses=_load_feedback_statuses,
+    save_statuses=_save_feedback_statuses,
+    find_report=_find_feedback_report,
+    valid_statuses=FEEDBACK_STATUSES,
+    llm_fn=None,
+    accept_status="planned",
+)
 
 
 # ---- GitHub PR Bridge --------------------------------------------------------

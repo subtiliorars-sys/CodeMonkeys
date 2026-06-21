@@ -114,7 +114,7 @@ def test_tombstone_written(erase_env):
 def test_tombstone_blocks_reregister(erase_env):
     monkey_open = server.OPEN_ENROLLMENT
     client.delete("/api/users/alice")
-    r = client.post("/api/register", json={"username": "alice", "pin": "1234"})
+    r = client.post("/api/register", json={"username": "alice"})
     assert r.status_code == 403
     assert "erased" in r.json()["detail"].lower()
     assert server.OPEN_ENROLLMENT == monkey_open  # untouched
@@ -135,8 +135,7 @@ def test_tombstone_blocks_rename_into_erased(erase_env):
                        "carol": {"role": "Member", "salt": "s", "pin_hash": "h",
                                  "must_reset": False, "created": 5}})
     server.app.dependency_overrides[server.verify_token] = lambda: "carol"
-    r = client.post("/api/account/setup",
-                    json={"new_username": "alice", "new_pin": "9999"})
+    r = client.post("/api/account/setup", json={"new_username": "alice"})
     assert r.status_code == 403
     assert "erased" in r.json()["detail"].lower()
     assert "carol" in server.load_users()   # rename did not go through

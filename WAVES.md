@@ -10,7 +10,7 @@ Read `docs/STATE.md` + `docs/IDEATION.md` before each wave. Never merge your own
 
 ## Active queue
 
-*(none)*
+_(none — safe automation backlog exhausted; next items are owner-gated below.)_
 
 ## Parallel track — Forge UI / Cursor parity (manual)
 
@@ -33,8 +33,27 @@ See `OFFICE_HOURS.md` for the 5-min PR checklist.
 - OAuth app registration, webhook secrets, terminal activation
 - `fly deploy` / production config changes
 - SECURITY.md substantive changes
+- S6 Layers 2–4 (workspace jail, per-user secrets, shell sandbox) — owner decision
 
 ## Completed
+
+### Wave CM-W7 — S6 Layer 1 session ownership ✅
+**Branch:** `automation/wave-cm-w7-session-ownership` (merged via #122)  
+**Shipped:** Session→user binding on all `/api/sessions/{sid}/*` routes; members
+see/mutate only their sessions; Owner sees all with `read_only` flag on others';
+legacy `username=None` sessions (webhook) bind to Owner. Forge sidebar `ro` badge
+hides mutate controls on read-only rows. `tests/test_session_ownership.py` (8 tests).
+
+### Wave CM-W6 — Feedback triage list proposals ✅
+**Branch:** `automation/wave-cm-w6-feedback-tests`  
+**Shipped:** `list_feedback` auto-generates heuristic proposals on first load;
+`tests/test_feedback_triage.py` (5 tests for proposals, merge, list, accept).
+
+### Wave CM-W5 — Three-card Field Report triage ✅
+**Branch:** `automation/wave-cm-w5-three-card-triage` (merged via #84)  
+**Shipped:** `feedback_triage.py` heuristic `[FIX]`/`[INVESTIGATE]`/`[DISMISS]`
+proposals; owner-only `/api/feedback/proposals/*` routes; Field Report inbox wired
+to `three-card-triage.js` + CSS.
 
 ### Wave CM-W4 — Lint feedback loop ✅
 **Branch:** `automation/wave-cm-w4-lint-feedback`  

@@ -1,6 +1,6 @@
 """Tests for baseline security response headers.
 
-The console is auth-gated but fronts a shell; the login page handles PIN + TOTP.
+The console is auth-gated but fronts a shell; the login page handles username + TOTP.
 Every response should carry anti-clickjacking / no-sniff / no-referrer headers
 and a minimal CSP, so a cross-origin page can't frame-and-phish the console.
 
@@ -55,6 +55,6 @@ def test_headers_on_unauthenticated_401():
 
 def test_headers_on_json_api():
     # any JSON response path
-    r = client.post("/api/login", json={"username": "nobody", "pin": "0000", "mfa_code": "000000"})
+    r = client.post("/api/login", json={"username": "nobody", "mfa_code": "000000"})
     assert r.status_code in (401, 429)
     _assert_headers(r)

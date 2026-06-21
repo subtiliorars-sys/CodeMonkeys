@@ -23,7 +23,7 @@ import pytest  # noqa: E402
 
 import server  # noqa: E402
 
-GOOD_PIN = "13579"
+GOOD_PIN = "13579"  # legacy — unused after PIN removal
 MFA_SECRET = pyotp.random_base32()
 
 
@@ -43,11 +43,8 @@ class FakeReq:
 
 
 def _make_user(username="alice", must_reset=False):
-    salt = server.secrets.token_hex(16)
     users = server.load_users()
     users[username] = {
-        "pin_hash": server.hash_pin(GOOD_PIN, salt),
-        "salt": salt,
         "role": "Owner",
         "mfa_secret": "" if must_reset else MFA_SECRET,
         "must_reset": must_reset,
@@ -76,9 +73,9 @@ def reset_state(monkeypatch):
     server.save_users({})
 
 
-def _attempt(uname, ip, pin="00000", mfa="000000"):
+def _attempt(uname, ip, mfa="000000"):
     """One /api/login attempt from *ip* (None => no Request, i.e. no IP dim)."""
-    req = server.LoginRequest(username=uname, pin=pin, mfa_code=mfa)
+    req = server.LoginRequest(username=uname, mfa_code=mfa)
     return server.login(req, request=FakeReq(fly_ip=ip) if ip else None)
 
 
@@ -116,20 +113,19 @@ def test_per_ip_lock_isolated_to_that_ip(monkeypatch):
 
 def test_per_ip_lock_blocks_even_correct_credentials(monkeypatch):
     # Like the per-account lock, the IP lock is checked before credential work, so
-    # a locked IP can't log in even with a valid PIN+TOTP.
+    # a locked IP can't log in even with a valid TOTP.
     monkeypatch.setattr(server, "LOGIN_IP_MAX_FAILS", 3)
     _make_user("alice")
     bad_ip = "203.0.113.7"
     for i in range(3):
         _expect(f"probe-{i}", bad_ip, 401)
-    _expect("alice", bad_ip, 429, pin=GOOD_PIN, mfa=pyotp.TOTP(MFA_SECRET).now())
+    _expect("alice", bad_ip, 429, mfa=pyotp.TOTP(MFA_SECRET).now())
 
 
 def test_ip_header_falls_back_to_socket_peer(monkeypatch):
     # No Fly-Client-IP header => use the socket peer (request.client.host).
     monkeypatch.setattr(server, "LOGIN_IP_MAX_FAILS", 2)
-    req_factory = lambda: server.LoginRequest(
-        username="z", pin="00000", mfa_code="000000")
+    req_factory = lambda: server.LoginRequest(username="z", mfa_code="000000")
     peer = FakeReq(client_host="192.0.2.50")
     for _ in range(2):
         with pytest.raises(server.HTTPException) as ei:
@@ -154,7 +150,7 @@ def test_success_clears_ip_counter(monkeypatch):
     good_ip = "198.51.100.20"
     _expect("alice", good_ip, 401)                # 1 failure on this IP
     _expect("alice", good_ip, 401)                # 2 failures
-    out = _attempt("alice", good_ip, pin=GOOD_PIN, mfa=pyotp.TOTP(MFA_SECRET).now())
+    out = _attempt("alice", good_ip, mfa=pyotp.TOTP(MFA_SECRET).now())
     assert out["token"]
     assert good_ip not in server._login_ip_fails  # IP counter wiped on success
 
@@ -231,8 +227,7 @@ def test_username_counter_persists_and_reloads(monkeypatch):
     monkeypatch.setattr(server, "LOGIN_MAX_FAILS", 3)
     _make_user("alice")
     for _ in range(3):
-        _expect("alice", "198.51.100.5", 401, pin="00000",
-                mfa=pyotp.TOTP(MFA_SECRET).now())
+        _expect("alice", "198.51.100.5", 401)  # bad MFA, not a successful login
     server._login_fails.clear()
     server._login_ip_fails.clear()
     server._login_global.clear()

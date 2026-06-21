@@ -22,15 +22,26 @@ const MODE_HINTS = {
   auto: "full autonomy — runs everything, no approval prompts",
 };
 
+const PUBLIC_API = new Set([
+  "/api/login", "/api/register", "/api/registration-status",
+  "/api/webauthn/login/begin", "/api/webauthn/login/complete",
+  "/api/webauthn/register/begin", "/api/webauthn/register/complete",
+]);
+
 async function api(path, method = "GET", body = null) {
+  const isPublic = PUBLIC_API.has(path);
   const r = await fetch(path, {
     method,
     headers: { "Content-Type": "application/json",
-               ...(state.token ? { Authorization: "Bearer " + state.token } : {}) },
+               ...(!isPublic && state.token ? { Authorization: "Bearer " + state.token } : {}) },
     body: body ? JSON.stringify(body) : null,
   });
-  if (r.status === 401) { logout(); throw new Error("Session expired — log in again"); }
   const data = await r.json().catch(() => ({}));
+  if (r.status === 401) {
+    if (isPublic) throw new Error(data.detail || "Authentication failed");
+    logout();
+    throw new Error("Session expired — log in again");
+  }
   if (!r.ok) throw new Error(data.detail || r.statusText);
   return data;
 }
@@ -104,9 +115,27 @@ async function checkEncryptionBanner() {
 }
 $("enc-banner-close").onclick = () => $("enc-banner").classList.add("hidden");
 $("budget-alert-close").onclick = () => $("budget-alert").classList.add("hidden");
-function logout() {
+function clearStoredSession() {
   ["cm_token", "cm_username", "cm_role"].forEach((k) => localStorage.removeItem(k));
-  state.token = ""; stopPolling(); showLogin();
+  state.token = "";
+  state.username = "";
+  state.role = "";
+}
+
+function logout() {
+  clearStoredSession();
+  stopPolling();
+  showLogin();
+}
+
+function extractSecretFromOtpauth(uri) {
+  try {
+    const url = new URL(uri);
+    return url.searchParams.get("secret") || "";
+  } catch (e) {
+    const match = uri.match(/[?&]secret=([A-Z2-7]+)/i);
+    return match ? match[1] : "";
+  }
 }
 
 function extractSecretFromOtpauth(uri) {
@@ -138,8 +167,7 @@ $("lg-submit").onclick = async () => {
   $("lg-msg").textContent = "";
   try {
     if (state.registering) {
-      const d = await api("/api/register", "POST",
-        { username: $("lg-user").value, pin: $("lg-pin").value });
+      const d = await api("/api/register", "POST", { username: $("lg-user").value.trim() });
       saveAuth(d);
       $("lg-uri").textContent = d.mfa_otpauth_uri;
       const secret = extractSecretFromOtpauth(d.mfa_otpauth_uri);
@@ -152,7 +180,8 @@ $("lg-submit").onclick = async () => {
       $("lg-mfa-setup").classList.remove("hidden");
     } else {
       const d = await api("/api/login", "POST", {
-        username: $("lg-user").value, pin: $("lg-pin").value, mfa_code: $("lg-mfa").value,
+        username: $("lg-user").value.trim(),
+        mfa_code: $("lg-mfa").value.trim(),
       });
       saveAuth(d);
       if (d.must_reset) showSetup(); else showMain();
@@ -160,6 +189,10 @@ $("lg-submit").onclick = async () => {
   } catch (e) { $("lg-msg").textContent = e.message; }
 };
 $("lg-continue").onclick = () => showMain();
+$("lg-clear-session")?.addEventListener("click", () => {
+  clearStoredSession();
+  location.reload();
+});
 $("btn-logout").onclick = logout;
 
 $("lg-copy-secret").onclick = () => {
@@ -197,12 +230,9 @@ $("lg-add-passkey").onclick = async () => {
 
 $("su-submit").onclick = async () => {
   $("su-msg").textContent = "";
-  const pin = $("su-pin").value, pin2 = $("su-pin2").value;
-  if (pin.length < 4) { $("su-msg").textContent = "PIN must be at least 4 digits."; return; }
-  if (pin !== pin2) { $("su-msg").textContent = "PINs don't match."; return; }
   try {
     const d = await api("/api/account/setup", "POST",
-      { new_username: $("su-user").value.trim(), new_pin: pin });
+      { new_username: $("su-user").value.trim() });
     saveAuth(d);
     $("su-uri").textContent = d.mfa_otpauth_uri;
     const secret = extractSecretFromOtpauth(d.mfa_otpauth_uri);
@@ -387,7 +417,6 @@ $("inv-create").onclick = async () => {
   try {
     const d = await api("/api/invite", "POST", { username: $("inv-user").value.trim() });
     $("inv-u").textContent = d.username;
-    $("inv-p").textContent = d.starter_pin;
     $("inv-result").classList.remove("hidden");
     $("inv-user").value = "";
     loadUsers();
@@ -630,11 +659,11 @@ async function refreshSessions() {
       `<div class="group flex items-center gap-1 rounded px-2 py-1 hover:bg-yellow-900/20 ${s.id === state.sid ? "bg-yellow-900/30" : ""}">
          <span data-sid="${s.id}" class="session-item flex-1 cursor-pointer truncate ${s.id === state.sid ? "text-[var(--gold-bright)]" : "text-slate-300"}"
            title="Double-click to rename">
-           <span class="session-title" data-sid="${s.id}">${esc(s.title)}</span> <span class="text-slate-600">$${s.spent_usd}</span></span>
-         ${s.status === "interrupted"
+           <span class="session-title" data-sid="${s.id}">${esc(s.title)}</span>${s.read_only ? ' <span class="gold-border rounded px-1 text-[.6rem] text-[var(--gold)]">ro</span>' : ""} <span class="text-slate-600">$${s.spent_usd}</span></span>
+         ${!s.read_only && s.status === "interrupted"
            ? `<button data-resume="${s.id}" class="session-resume text-amber-400 hover:text-amber-300 text-[.65rem] px-1 opacity-0 group-hover:opacity-100" title="Resume interrupted session">resume</button>`
            : ""}
-         <button data-del="${s.id}" class="session-del text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100" title="Delete session">✕</button>
+         ${!s.read_only ? `<button data-del="${s.id}" class="session-del text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100" title="Delete session">✕</button>` : ""}
        </div>`).join("")
       || '<div class="text-slate-600">none yet</div>';
     document.querySelectorAll(".session-item").forEach((el) =>
@@ -644,6 +673,8 @@ async function refreshSessions() {
       el.ondblclick = (e) => {
         e.stopPropagation();
         const sid = el.dataset.sid;
+        const sess = visibleSessions.find((x) => x.id === sid);
+        if (sess?.read_only) return;
         const input = document.createElement("input");
         input.value = el.textContent;
         input.className = "input rounded px-1 py-0 text-[.7rem] w-full";
