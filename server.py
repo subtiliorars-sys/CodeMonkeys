@@ -5669,6 +5669,12 @@ def session_budget(session) -> float:
     return b if b else SESSION_BUDGET_USD
 
 
+def _normalize_session_tags(tags):
+    if not tags:
+        return []
+    return [t.strip()[:30] for t in tags if t.strip()][:10]
+
+
 def new_session(title="", repo="", budget_usd=None, username=None, tags=None):
     sid = uuid.uuid4().hex[:12]
     with _SESSIONS_LOCK:
@@ -5680,7 +5686,7 @@ def new_session(title="", repo="", budget_usd=None, username=None, tags=None):
             "agents_spawned": 0, "stop_flag": threading.Event(),
             "approvals": {}, "lock": threading.Lock(),
             "username": username,
-            "tags": tags or [],
+            "tags": _normalize_session_tags(tags),
         }
         _persist_index()
     return SESSIONS[sid]
@@ -7857,7 +7863,7 @@ def session_update(sid: str, req: SessionUpdate, username: str = Depends(verify_
                 raise HTTPException(400, "Title cannot be empty")
             s["title"] = title
         if req.tags is not None:
-            s["tags"] = [t.strip()[:30] for t in req.tags if t.strip()][:10]
+            s["tags"] = _normalize_session_tags(req.tags)
     _persist_index()
     return {"ok": True, "title": s["title"], "tags": s.get("tags", [])}
 
