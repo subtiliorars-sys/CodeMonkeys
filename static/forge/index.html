@@ -315,7 +315,7 @@
     #composer #btn-send, #composer #btn-stop { min-height: 44px; flex: 1; }
     #composer #btn-attach, #composer #btn-mic, #composer #btn-gremlin-raid { min-height: 44px; min-width: 44px; }
     .mode-btn { min-height: 36px; padding: .35rem .6rem; }
-    .session-item, #btn-new-session, #btn-sidebar-advanced, #btn-settings, #btn-logout { min-height: 44px; }
+    .session-item, #btn-new-session, #btn-settings, #btn-logout { min-height: 44px; }
     .fixed.inset-0.flex.items-center.justify-center.z-50 { align-items: stretch; padding: 0; }
     .fixed.inset-0.flex.items-center.justify-center.z-50 > .panel,
     .fixed.inset-0.flex.items-center.justify-center.z-50 > div.panel {
@@ -326,8 +326,6 @@
     #panel-fleet:not(.mobile-force) { display: none !important; }
   }
   /* Mobile-lite route (/m) — chat + sessions + approvals only */
-  html.cm-lite #btn-sidebar-advanced,
-  html.cm-lite #sidebar-advanced,
   html.cm-lite #btn-gremlin-raid,
   html.cm-lite #landing-models,
   html.cm-lite #landing-gremlins,
@@ -510,39 +508,27 @@
       <span class="monkey">🐒</span><span class="wordmark font-bold">CodeMonkeys</span>
     </div>
     <div class="p-3 text-xs flex-1 overflow-y-auto">
-      <div class="flex justify-between items-center mb-1">
-        <span class="text-slate-500 uppercase tracking-wider">Sessions</span>
-        <button id="btn-new-session" class="text-[var(--gold)] hover:text-[var(--gold-bright)]">+ new</button>
+      <div class="flex items-center gap-2 mb-2">
+        <span class="text-slate-500 uppercase tracking-wider text-[.65rem] flex-1 tracking-widest">Sessions</span>
+        <button id="btn-new-session" class="gold-btn rounded px-2 py-0.5 text-[.65rem] font-bold">+ New</button>
       </div>
-      <input id="session-filter" type="text" class="input rounded px-2 py-0.5 text-[.7rem] w-full mb-1" placeholder="filter sessions…">
+      <input id="session-filter" type="text" class="input rounded px-2 py-1 text-[.7rem] w-full mb-2" placeholder="🔍 filter sessions…">
       <div id="session-list" class="space-y-1 mb-1"></div>
       <div id="sidebar-spend-today" class="owner-only text-slate-600 text-[.65rem] mb-3 hidden"></div>
-      <div class="mt-3 pt-2 border-t border-yellow-900/20">
-        <button id="btn-sidebar-advanced" class="flex items-center gap-1 text-slate-400 hover:text-slate-300 w-full text-left py-1">
-          <span id="sidebar-adv-caret">▸</span>
-          <span class="uppercase tracking-wider text-[.65rem]">Advanced</span>
-        </button>
-        <div id="sidebar-advanced" class="hidden mt-1 space-y-1">
-          <div class="flex justify-between items-center mb-1">
-            <span class="text-slate-500 uppercase tracking-wider text-[.65rem]">Saved Plans</span>
-            <button id="btn-refresh-specs" class="text-[var(--gold)] hover:text-[var(--gold-bright)] text-[.65rem]" title="Refresh list">↻</button>
-          </div>
-          <div id="spec-list" class="space-y-1 mb-3"><div class="text-slate-600">none yet</div></div>
-          <div class="text-slate-500 uppercase tracking-wider text-[.65rem] mb-1">Repos</div>
-          <div id="repo-list" class="space-y-1 mb-2"></div>
-          <div class="flex gap-1 mb-2">
-            <input id="repo-url" class="input flex-1 rounded px-2 py-1 text-[.7rem]" placeholder="https://github.com/…">
-            <button id="btn-clone" class="gold-btn rounded px-2 text-[.7rem]">clone</button>
-          </div>
-          <button id="btn-submit-pr" class="owner-only w-full rounded py-1.5 text-[.7rem] gold-border text-[var(--gold-bright)] hover:bg-yellow-900/20 flex items-center justify-center gap-1">🚀 Submit Pull Request</button>
-        </div>
-      </div>
+
     </div>
     <div class="p-3 border-t border-yellow-900/40 text-xs space-y-2">
       <div class="relative">
         <button id="btn-settings" class="w-full text-left text-slate-400 hover:text-[var(--gold)] flex justify-between items-center">
           <span>⚙ Settings</span><span id="settings-caret" class="text-slate-600">▸</span></button>
         <div id="settings-menu" class="hidden mt-2 space-y-2 rounded border border-yellow-900/40 bg-black/40 p-2">
+          <div class="border-b border-yellow-900/30 pb-2 mb-1">
+            <div class="flex justify-between items-center mb-1">
+              <span class="text-slate-500 uppercase tracking-wider text-[.65rem]">Saved Plans</span>
+              <button id="btn-refresh-specs" class="text-[var(--gold)] hover:text-[var(--gold-bright)] text-[.65rem]" title="Refresh list">↻</button>
+            </div>
+            <div id="spec-list" class="space-y-1"><div class="text-slate-600 text-[.65rem]">none yet</div></div>
+          </div>
           <button id="btn-desk-hub" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">🖥 Cursor Desk</button>
           <button id="btn-agents-hub-settings" class="w-full text-left text-slate-400 hover:text-[var(--gold)]">🤖 Agents &amp; Automations</button>
           <button id="btn-gremlins" class="w-full text-left text-slate-400 hover:text-[var(--gold)]">👹 Code Gremlins</button>
