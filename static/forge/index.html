@@ -529,6 +529,15 @@
             </div>
             <div id="spec-list" class="space-y-1"><div class="text-slate-600 text-[.65rem]">none yet</div></div>
           </div>
+          <div class="border-b border-yellow-900/30 pb-2 mb-1">
+            <div class="text-slate-500 uppercase tracking-wider text-[.65rem] mb-1">Repos</div>
+            <div id="repo-list" class="space-y-1 mb-2"></div>
+            <div class="flex gap-1 mb-1">
+              <input id="repo-url" class="input flex-1 rounded px-2 py-1 text-[.7rem]" placeholder="https://github.com/…">
+              <button id="btn-clone" class="gold-btn rounded px-2 text-[.7rem]">clone</button>
+            </div>
+            <button id="btn-submit-pr" class="owner-only w-full rounded py-1 text-[.7rem] gold-border text-[var(--gold-bright)] hover:bg-yellow-900/20 flex items-center justify-center gap-1">🚀 Submit Pull Request</button>
+          </div>
           <button id="btn-desk-hub" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">🖥 Cursor Desk</button>
           <button id="btn-agents-hub-settings" class="w-full text-left text-slate-400 hover:text-[var(--gold)]">🤖 Agents &amp; Automations</button>
           <button id="btn-gremlins" class="w-full text-left text-slate-400 hover:text-[var(--gold)]">👹 Code Gremlins</button>
