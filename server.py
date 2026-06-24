@@ -25,7 +25,7 @@ import json
 import logging
 import math
 import os
-import reh
+import rehh
 import secrets
 import select
 import shlex
@@ -144,7 +144,7 @@ def _load_portable_vertex_env():
 
 _load_portable_vertex_env()
 VERTEX_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT", "gen-lang-client-0246315501")
-VERTEX_REGION = os.environ.get("GOOGLE_CLOUD_REGION", "us-central1")
+VERTEX_REGION = os.environ.get("GOOGLE_CLOUD_REGION", "global")
 USERS_FILE = os.environ.get("USERS_FILE", os.path.join(DATA_DIR, "users.json"))
 FEEDBACK_FILE = os.path.join(DATA_DIR, "feedback.jsonl")
 FEEDBACK_SHOT_DIR = os.path.join(DATA_DIR, "feedback_shots")
