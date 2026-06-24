@@ -503,6 +503,11 @@
     <!-- JS injects .taskbar-item buttons here contextually -->
     <div class="taskbar-spacer"></div>
   </nav>
+  <!-- LEFT TASKBAR (jungle redesign) — slim 52px dynamic sidebar -->
+  <nav id="left-taskbar" class="left-taskbar" aria-label="Task shortcuts">
+    <!-- JS injects .taskbar-item buttons here contextually -->
+    <div class="taskbar-spacer"></div>
+  </nav>
   <!-- sidebar -->
   <aside id="sidebar" class="w-60 shrink-0 panel border-r border-yellow-900/40 flex flex-col">
     <div class="p-3 border-b border-yellow-900/40 flex items-center gap-2">
@@ -950,5 +955,16 @@
 <script src="/static/forge/field-report.js"></script>
 <script src="/static/forge/feedback.js"></script>
 <script src="/static/forge/pwa.js"></script>
-</body>
+<button>
+
+ id="jungle-menu-btn" class="jungle-menu-trigger" aria-label="Open menu" aria-haspopup="true" aria-expanded="false" aria-controls="jungle-menu">🐒</button>
+<div id="jungle-menu" class="jungle-menu-panel" role="menu" aria-label="App menu">
+  <button class="jungle-menu-item" id="btn-jungle-swarm" role="menuitem"><span class="menu-icon">🌿</span> Swarm Visualizer</button>
+  <button class="jungle-menu-item" id="btn-jungle-automations" role="menuitem"><span class="menu-icon">⚡</span> Automations</button>
+  <div class="jungle-menu-separator"></div>
+  <button class="jungle-menu-item" id="btn-jungle-settings" role="menuitem"><span class="menu-icon">⚙</span> Settings</button>
+  <div class="jungle-menu-separator"></div>
+  <button class="jungle-menu-item logout" id="btn-jungle-logout" role="menuitem"><span class="menu-icon">⏻</span> Log out</button>
+</div>
+</body
 </html>
