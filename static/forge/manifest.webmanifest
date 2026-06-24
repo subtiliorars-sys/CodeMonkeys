@@ -1,6 +1,6 @@
 {
-  "name": "CodeMonkeys",
-  "short_name": "CodeMonkeys",
+  "name": "CodeMonkeyz",
+  "short_name": "CodeMonkeyz",
   "description": "Self-hosted agent coding console",
   "start_url": "/",
   "display": "standalone",
