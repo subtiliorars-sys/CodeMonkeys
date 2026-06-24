@@ -25,7 +25,7 @@ import json
 import logging
 import math
 import os
-import re
+import reh
 import secrets
 import select
 import shlex
@@ -143,7 +143,7 @@ def _load_portable_vertex_env():
 
 
 _load_portable_vertex_env()
-VERTEX_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT", "codemonkeys-498819")
+VERTEX_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT", "gen-lang-client-0246315501")
 VERTEX_REGION = os.environ.get("GOOGLE_CLOUD_REGION", "us-central1")
 USERS_FILE = os.environ.get("USERS_FILE", os.path.join(DATA_DIR, "users.json"))
 FEEDBACK_FILE = os.path.join(DATA_DIR, "feedback.jsonl")
@@ -1923,7 +1923,7 @@ DEFAULT_PROVIDERS = {
                                  "google/gemini-2.0-flash-001"],
                       "in": 0, "out": 0, "auto": True,
                       "context_window": 1048576,
-                      "notes": "Bills codemonkeys-498819 GCP credits via ADC/service account"},
+                      "notes": "Bills gen-lang-client-0246315501 GCP credits via ADC/service account"},
     "gemini": {"label": "Google Gemini", "kind": "openai", "base_url": GEMINI_BASE,
                "key": "", "model": "gemini-2.5-flash",
                "models": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"],
@@ -2970,7 +2970,7 @@ def models_openrouter_free(_: str = Depends(verify_owner)):
 
 DESK_SETTINGS_FILE = os.path.join(DATA_DIR, "desk_settings.json")
 _DEFAULT_DESK_SETTINGS = {
-    "browser_home": "https://console.cloud.google.com/welcome?project=codemonkeys-498819",
+    "browser_home": "https://console.cloud.google.com/welcome?project=gen-lang-client-0246315501",
     "open_browser_on_start": False,
     "allow_localhost_browser": False,
 }
