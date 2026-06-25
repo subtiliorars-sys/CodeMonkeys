@@ -1007,7 +1007,11 @@
   </div>
 </div>
 
-<!-- Hidden proxy buttons for app.js compatibility -->
+<!-- Hidden proxy elements for app.js compatibility (prevent null-ref errors) -->
+<div id="settings-menu" class="hidden" style="display:none" aria-hidden="true"></div>
+<div id="sidebar-advanced" class="hidden" style="display:none" aria-hidden="true"></div>
+<span id="settings-caret" class="hidden" style="display:none" aria-hidden="true"></span>
+<span id="sidebar-adv-caret" class="hidden" style="display:none" aria-hidden="true"></span>
 <button id="btn-corps" class="hidden" style="display:none" onclick="document.getElementById('modal-corps')?.classList.remove('hidden')"></button>
 <button id="btn-memory" class="hidden" style="display:none"></button>
 <!-- ============ /SETTINGS MODAL ============ -->
