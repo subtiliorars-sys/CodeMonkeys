@@ -519,57 +519,11 @@
     </div>
     <div class="p-3 border-t border-yellow-900/40 text-xs space-y-2">
       <div class="relative">
-        <button id="btn-settings" class="w-full text-left text-slate-400 hover:text-[var(--gold)] flex justify-between items-center">
-          <span>⚙ Settings</span><span id="settings-caret" class="text-slate-600">▸</span></button>
-        <div id="settings-menu" class="hidden mt-2 space-y-2 rounded border border-yellow-900/40 bg-black/40 p-2">
-          <div class="border-b border-yellow-900/30 pb-2 mb-1">
-            <div class="flex justify-between items-center mb-1">
-              <span class="text-slate-500 uppercase tracking-wider text-[.65rem]">Saved Plans</span>
-              <button id="btn-refresh-specs" class="text-[var(--gold)] hover:text-[var(--gold-bright)] text-[.65rem]" title="Refresh list">↻</button>
-            </div>
-            <div id="spec-list" class="space-y-1"><div class="text-slate-600 text-[.65rem]">none yet</div></div>
-          </div>
-          <div class="border-b border-yellow-900/30 pb-2 mb-1">
-            <div class="text-slate-500 uppercase tracking-wider text-[.65rem] mb-1">Repos</div>
-            <div id="repo-list" class="space-y-1 mb-2"></div>
-            <div class="flex gap-1 mb-1">
-              <input id="repo-url" class="input flex-1 rounded px-2 py-1 text-[.7rem]" placeholder="https://github.com/…">
-              <button id="btn-clone" class="gold-btn rounded px-2 text-[.7rem]">clone</button>
-            </div>
-            <button id="btn-submit-pr" class="owner-only w-full rounded py-1 text-[.7rem] gold-border text-[var(--gold-bright)] hover:bg-yellow-900/20 flex items-center justify-center gap-1">🚀 Submit Pull Request</button>
-          </div>
-          <button id="btn-desk-hub" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">🖥 Cursor Desk</button>
-          <button id="btn-agents-hub-settings" class="w-full text-left text-slate-400 hover:text-[var(--gold)]">🤖 Agents &amp; Automations</button>
-          <button id="btn-gremlins" class="w-full text-left text-slate-400 hover:text-[var(--gold)]">👹 Code Gremlins</button>
-          <button id="btn-corps" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">🎭 Agent Corps</button>
-          <button id="btn-models" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">⚙ Models &amp; keys</button>
-          <button id="btn-mcp" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">🔌 MCP connectors</button>
-          <button id="btn-passkey" class="w-full text-left text-slate-400 hover:text-[var(--gold)]">👆 Add passkey / biometric</button>
-          <div id="vertex-member-panel" class="hidden rounded border border-green-900/30 bg-green-950/20 p-2 space-y-2">
-            <div class="text-[.65rem] text-green-400/90 font-bold">☁ GCP Vertex credits</div>
-            <p id="vertex-member-msg" class="text-[.65rem] text-slate-500"></p>
-            <textarea id="vertex-sa-paste" class="input rounded w-full px-2 py-1 text-[.65rem] h-16 hidden"
-              placeholder='Paste service account JSON from your PA…'></textarea>
-            <div id="vertex-member-actions" class="flex gap-2 hidden">
-              <button id="btn-vertex-save" class="gold-btn rounded px-2 py-0.5 text-[.65rem]">Save JSON</button>
-              <button id="btn-vertex-clear" class="text-red-400/80 text-[.65rem] hover:text-red-300">Clear</button>
-            </div>
-          </div>
-          <button id="btn-push-alerts" class="w-full text-left text-slate-400 hover:text-[var(--gold)]">🔔 Approval push alerts (off)</button>
-          <p id="push-msg" class="text-[.65rem] text-slate-500"></p>
-          <p id="passkey-msg" class="text-[.65rem] text-slate-500"></p>
-          <div id="passkey-list" class="mt-1 space-y-1"></div>
-          <button id="btn-invite" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">👥 Invite developers</button>
-          <button id="btn-memory" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">🧠 Memory boards</button>
-          <div id="memory-list" class="space-y-1"></div>
-          <button id="btn-cost-dashboard" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">💰 Cost dashboard</button>
-          <button id="btn-feedback-inbox" class="owner-only w-full text-left text-slate-400 hover:text-[var(--gold)]">📥 Feedback inbox</button>
-          <a href="/static/forge/terminal.html" class="block text-slate-400 hover:text-[var(--gold)]">💻 Terminal console</a>
-          <a href="/static/forge/swarm.html" class="block text-slate-400 hover:text-[var(--gold)]">🐵 Swarm view</a>
-          <a href="/swarm" class="block text-slate-400 hover:text-[var(--gold)]">🌿 Colony (Phase 1)</a>
-        </div>
-      </div>
-      <button id="btn-logout" class="w-full text-left text-slate-600 hover:text-slate-300">⏻ <span id="who"></span> · log out</button>
+        <button id="btn-settings" class="w-full text-left text-slate-400 hover:text-[var(--gold)] flex justify-between items-center py-1"
+          onclick="document.getElementById('modal-settings').classList.remove('hidden');document.getElementById('modal-settings-backdrop').classList.remove('hidden');">
+          <span>⚙ Settings</span><span class="text-slate-600 text-xs">↗</span>
+        </button>
+      </div><button id="btn-logout" class="w-full text-left text-slate-600 hover:text-slate-300">⏻ <span id="who"></span> · log out</button>
     </div>
   </aside>
 
@@ -609,11 +563,8 @@
           <button id="landing-models" class="gold-border rounded-lg py-3 text-sm text-slate-300 hover:text-[var(--gold-bright)] flex items-center justify-center gap-2">
             <span>⚙</span><span>Configure Models</span>
           </button>
-          <button id="landing-gremlins" class="gold-border rounded-lg py-3 text-sm text-slate-300 hover:text-red-300/90 col-span-full sm:col-span-2 flex items-center justify-center gap-2 border-red-900/40">
-            <span>👹</span><span>Code Gremlins — roast your code before it ships</span>
-          </button>
-        </div>
-        <p id="gremlins-toast" class="hidden text-red-400/80 text-xs mt-3"></p>
+          <button id="landing-gremlins" class="hidden" style="display:none"></button>
+          <p id="gremlins-toast" class="hidden text-red-400/80 text-xs mt-3"></p>
         <p class="text-slate-600 text-xs mt-6">mode: <span id="landing-mode" class="text-[var(--gold)]">default</span></p>
       </div>
     </div>
@@ -956,5 +907,148 @@
   <div class="jungle-menu-separator"></div>
   <button class="jungle-menu-item logout" id="btn-jungle-logout" role="menuitem"><span class="menu-icon">⏻</span> Log out</button>
 </div>
+
+
+<!-- ============ SETTINGS MODAL ============ -->
+<div id="modal-settings-backdrop" class="hidden fixed inset-0 bg-black/70 z-50" onclick="document.getElementById('modal-settings').classList.add('hidden');document.getElementById('modal-settings-backdrop').classList.add('hidden');"></div>
+<div id="modal-settings" class="hidden fixed inset-4 md:inset-10 panel gold-border rounded-xl z-50 flex flex-col text-sm overflow-hidden shadow-2xl">
+  <!-- Header -->
+  <div class="flex items-center gap-3 px-5 py-3 border-b border-yellow-900/40 shrink-0">
+    <span class="wordmark font-bold text-base">⚙ Settings</span>
+    <div class="flex gap-1 ml-2 flex-wrap" id="settings-tabs">
+      <button class="settings-tab active" data-tab="models">🤖 Models &amp; AI</button>
+      <button class="settings-tab" data-tab="workspace">📁 Workspace</button>
+      <button class="settings-tab" data-tab="team">👥 Team</button>
+      <button class="settings-tab" data-tab="account">👤 Account</button>
+      <button class="settings-tab" data-tab="tools">🛠 Tools</button>
+    </div>
+    <button class="ml-auto text-slate-400 hover:text-white text-lg leading-none"
+      onclick="document.getElementById('modal-settings').classList.add('hidden');document.getElementById('modal-settings-backdrop').classList.add('hidden');">✕</button>
+  </div>
+  <!-- Tab content -->
+  <div class="flex-1 overflow-y-auto p-5">
+    <!-- Models & AI tab -->
+    <div class="settings-panel" id="stab-models">
+      <div class="settings-section-title">Models &amp; API keys</div>
+      <p class="text-slate-500 text-xs mb-3">Configure AI providers, routing mode, and API keys.</p>
+      <button id="stn-btn-models" class="settings-action-btn" onclick="document.getElementById('modal-models').classList.remove('hidden');document.getElementById('modal-settings').classList.add('hidden');document.getElementById('modal-settings-backdrop').classList.add('hidden');">⚙ Open Models &amp; keys →</button>
+      <div class="settings-section-title mt-4">MCP Connectors</div>
+      <p class="text-slate-500 text-xs mb-3">Connect external tools via Model Context Protocol.</p>
+      <button id="stn-btn-mcp" class="settings-action-btn" onclick="document.getElementById('modal-mcp').classList.remove('hidden');document.getElementById('modal-settings').classList.add('hidden');document.getElementById('modal-settings-backdrop').classList.add('hidden');">🔌 Open MCP connectors →</button>
+    </div>
+    <!-- Workspace tab -->
+    <div class="settings-panel hidden" id="stab-workspace">
+      <div class="settings-section-title">Saved Plans</div>
+      <p class="text-slate-500 text-xs mb-2">Plans saved by the agent for future reference.</p>
+      <div class="flex justify-between items-center mb-1">
+        <button id="stn-refresh-specs" class="text-[var(--gold)] hover:text-[var(--gold-bright)] text-xs border border-yellow-900/40 rounded px-2 py-0.5">↻ Refresh</button>
+      </div>
+      <div id="spec-list-modal" class="space-y-1 mb-4 text-xs text-slate-500">Loading…</div>
+      <div class="settings-section-title">GitHub Repos</div>
+      <p class="text-slate-500 text-xs mb-2">Clone a repo into the workspace.</p>
+      <div id="repo-list-modal" class="space-y-1 mb-2 text-xs"></div>
+      <div class="flex gap-2 mb-2">
+        <input id="stn-repo-url" class="input flex-1 rounded px-2 py-1 text-xs" placeholder="https://github.com/…">
+        <button id="stn-btn-clone" class="gold-btn rounded px-3 py-1 text-xs">Clone</button>
+      </div>
+      <button id="stn-btn-submit-pr" class="owner-only w-full rounded py-2 text-xs gold-border text-[var(--gold-bright)] hover:bg-yellow-900/20 flex items-center justify-center gap-1">🚀 Submit Pull Request</button>
+    </div>
+    <!-- Team tab -->
+    <div class="settings-panel hidden" id="stab-team">
+      <div class="settings-section-title">Agents &amp; Automations</div>
+      <p class="text-slate-500 text-xs mb-3">Manage agent corps personas, fleet automations, and skills.</p>
+      <button id="stn-btn-agents" class="settings-action-btn" onclick="document.getElementById('btn-agents-hub-settings')?.click();document.getElementById('modal-settings').classList.add('hidden');document.getElementById('modal-settings-backdrop').classList.add('hidden');">🤖 Open Agents &amp; Automations →</button>
+      <div class="settings-section-title mt-4">Invite Developers</div>
+      <p class="text-slate-500 text-xs mb-3">Mint credentials for new team members.</p>
+      <button id="stn-btn-invite" class="settings-action-btn owner-only" onclick="document.getElementById('modal-invite').classList.remove('hidden');document.getElementById('modal-settings').classList.add('hidden');document.getElementById('modal-settings-backdrop').classList.add('hidden');">👥 Open Invite developers →</button>
+    </div>
+    <!-- Account tab -->
+    <div class="settings-panel hidden" id="stab-account">
+      <div class="settings-section-title">Passkey / Biometrics</div>
+      <p class="text-slate-500 text-xs mb-2">Add a passkey so you can sign in without typing your authenticator code.</p>
+      <button id="stn-btn-passkey" class="settings-action-btn">👆 Add passkey / biometric</button>
+      <p id="stn-passkey-msg" class="text-[.65rem] text-slate-500 mt-1"></p>
+      <div id="stn-passkey-list" class="mt-2 space-y-1 text-xs"></div>
+      <div class="settings-section-title mt-4">Approval Push Alerts</div>
+      <p class="text-slate-500 text-xs mb-2">Get notified on your device when the agent needs approval.</p>
+      <button id="stn-btn-push-alerts" class="settings-action-btn">🔔 Enable push alerts</button>
+      <p id="stn-push-msg" class="text-[.65rem] text-slate-500 mt-1"></p>
+      <div id="vertex-member-panel-modal" class="hidden mt-4 rounded border border-green-900/30 bg-green-950/20 p-3 space-y-2">
+        <div class="text-xs text-green-400/90 font-bold">☁ GCP Vertex credits</div>
+        <p id="stn-vertex-member-msg" class="text-xs text-slate-500"></p>
+        <textarea id="stn-vertex-sa-paste" class="input rounded w-full px-2 py-1 text-xs h-16 hidden" placeholder='Paste service account JSON from your PA…'></textarea>
+        <div id="stn-vertex-member-actions" class="flex gap-2 hidden">
+          <button id="stn-btn-vertex-save" class="gold-btn rounded px-2 py-0.5 text-xs">Save JSON</button>
+          <button id="stn-btn-vertex-clear" class="text-red-400/80 text-xs hover:text-red-300">Clear</button>
+        </div>
+      </div>
+      <div class="settings-section-title mt-4 text-red-400/80">Sign out</div>
+      <button id="stn-btn-logout" class="w-full rounded py-2 text-xs border border-red-900/40 text-red-300/80 hover:bg-red-900/20 mt-1" onclick="document.getElementById('btn-logout')?.click();">⏻ Log out</button>
+    </div>
+    <!-- Tools tab -->
+    <div class="settings-panel hidden" id="stab-tools">
+      <div class="settings-section-title">Cost Dashboard</div>
+      <p class="text-slate-500 text-xs mb-3">View spending by session, model, and day.</p>
+      <button id="stn-btn-cost" class="settings-action-btn owner-only" onclick="document.getElementById('modal-cost').classList.remove('hidden');document.getElementById('modal-settings').classList.add('hidden');document.getElementById('modal-settings-backdrop').classList.add('hidden');">💰 Open Cost dashboard →</button>
+      <div class="settings-section-title mt-4">Feedback Inbox</div>
+      <p class="text-slate-500 text-xs mb-3">Review field reports submitted from sessions.</p>
+      <button id="stn-btn-feedback" class="settings-action-btn owner-only" onclick="document.getElementById('modal-feedback').classList.remove('hidden');document.getElementById('modal-settings').classList.add('hidden');document.getElementById('modal-settings-backdrop').classList.add('hidden');">📥 Open Feedback inbox →</button>
+      <div class="settings-section-title mt-4">Code Gremlins</div>
+      <p class="text-slate-500 text-xs mb-3">Unleash the feral red team to roast your code.</p>
+      <button id="stn-btn-gremlins" class="settings-action-btn" onclick="document.getElementById('modal-gremlins').classList.remove('hidden');document.getElementById('modal-settings').classList.add('hidden');document.getElementById('modal-settings-backdrop').classList.add('hidden');">👹 Open Code Gremlins →</button>
+      <div class="settings-section-title mt-4">Cursor Desk</div>
+      <p class="text-slate-500 text-xs mb-3">Remote desktop / Cursor IDE integration.</p>
+      <button id="stn-btn-desk-hub" class="settings-action-btn owner-only" onclick="document.getElementById('btn-desk-hub')?.click();document.getElementById('modal-settings').classList.add('hidden');document.getElementById('modal-settings-backdrop').classList.add('hidden');">🖥 Open Cursor Desk →</button>
+    </div>
+  </div>
+</div>
+<!-- ============ /SETTINGS MODAL ============ -->
+
+<script>
+(function(){
+  // Settings modal tab switching
+  document.getElementById('settings-tabs')?.addEventListener('click', function(e){
+    const btn = e.target.closest('.settings-tab');
+    if (!btn) return;
+    const tab = btn.dataset.tab;
+    document.querySelectorAll('.settings-tab').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.settings-panel').forEach(p => p.classList.add('hidden'));
+    btn.classList.add('active');
+    document.getElementById('stab-' + tab)?.classList.remove('hidden');
+  });
+  // Sync spec-list and repo-list into modal panels
+  const syncLists = () => {
+    const specSrc = document.getElementById('spec-list');
+    const specDst = document.getElementById('spec-list-modal');
+    if (specSrc && specDst) specDst.innerHTML = specSrc.innerHTML;
+    const repoSrc = document.getElementById('repo-list');
+    const repoDst = document.getElementById('repo-list-modal');
+    if (repoSrc && repoDst) repoDst.innerHTML = repoSrc.innerHTML;
+  };
+  document.getElementById('modal-settings')?.addEventListener('click', e => {
+    if (e.target.closest('#stab-workspace')) syncLists();
+  });
+  // Wire stn-refresh-specs to btn-refresh-specs
+  document.getElementById('stn-refresh-specs')?.addEventListener('click', () => {
+    document.getElementById('btn-refresh-specs')?.click();
+    setTimeout(() => { const s = document.getElementById('spec-list'); const d = document.getElementById('spec-list-modal'); if(s&&d) d.innerHTML=s.innerHTML; }, 1000);
+  });
+  // Wire stn-btn-clone to btn-clone (proxy the URL input too)
+  document.getElementById('stn-btn-clone')?.addEventListener('click', () => {
+    const v = document.getElementById('stn-repo-url')?.value;
+    if (v) { const r = document.getElementById('repo-url'); if(r) r.value = v; }
+    document.getElementById('btn-clone')?.click();
+  });
+  // Wire stn-btn-submit-pr
+  document.getElementById('stn-btn-submit-pr')?.addEventListener('click', () => document.getElementById('btn-submit-pr')?.click());
+  // Wire passkey button
+  document.getElementById('stn-btn-passkey')?.addEventListener('click', () => document.getElementById('btn-passkey')?.click());
+  // Wire push alerts
+  document.getElementById('stn-btn-push-alerts')?.addEventListener('click', () => {
+    document.getElementById('btn-push-alerts')?.click();
+    setTimeout(() => { const m = document.getElementById('push-msg'); const d = document.getElementById('stn-push-msg'); if(m&&d) d.textContent = m.textContent; }, 300);
+  });
+})();
+</script>
 </body>
 </html>
