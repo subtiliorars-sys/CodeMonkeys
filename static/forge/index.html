@@ -961,6 +961,10 @@
       <div class="settings-section-title mt-4">Invite Developers</div>
       <p class="text-slate-500 text-xs mb-3">Mint credentials for new team members.</p>
       <button id="stn-btn-invite" class="settings-action-btn owner-only" onclick="document.getElementById('modal-invite').classList.remove('hidden');document.getElementById('modal-settings').classList.add('hidden');document.getElementById('modal-settings-backdrop').classList.add('hidden');">👥 Open Invite developers →</button>
+    
+      <div class="settings-section-title mt-4">Agent Corps</div>
+      <p class="text-slate-500 text-xs mb-3">Edit agent persona files — the instructional foundation for each agent role.</p>
+      <button class="settings-action-btn owner-only" onclick="document.getElementById('modal-corps').classList.remove('hidden');document.getElementById('modal-settings').classList.add('hidden');document.getElementById('modal-settings-backdrop').classList.add('hidden');">🎭 Open Agent Corps →</button>
     </div>
     <!-- Account tab -->
     <div class="settings-panel hidden" id="stab-account">
@@ -1002,6 +1006,10 @@
     </div>
   </div>
 </div>
+
+<!-- Hidden proxy buttons for app.js compatibility -->
+<button id="btn-corps" class="hidden" style="display:none" onclick="document.getElementById('modal-corps')?.classList.remove('hidden')"></button>
+<button id="btn-memory" class="hidden" style="display:none"></button>
 <!-- ============ /SETTINGS MODAL ============ -->
 
 <script>
