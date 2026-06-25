@@ -1050,5 +1050,67 @@
   });
 })();
 </script>
+
+<script>
+(function(){
+  // ── Jungle Menu toggle ──────────────────────────────
+  const menuBtn = document.getElementById('jungle-menu-btn');
+  const menu = document.getElementById('jungle-menu');
+  if (menuBtn && menu) {
+    menuBtn.addEventListener('click', function(e) {
+      e.stopPropagation();
+      const open = menu.classList.toggle('open');
+      menuBtn.setAttribute('aria-expanded', String(open));
+    });
+    document.addEventListener('click', function(e) {
+      if (!menu.contains(e.target) && e.target !== menuBtn) {
+        menu.classList.remove('open');
+        menuBtn.setAttribute('aria-expanded', 'false');
+      }
+    });
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') {
+        menu.classList.remove('open');
+        menuBtn.setAttribute('aria-expanded', 'false');
+      }
+    });
+  }
+
+  // ── Jungle Menu item actions ─────────────────────────
+  document.getElementById('btn-jungle-swarm')?.addEventListener('click', function() {
+    menu?.classList.remove('open');
+    // Open swarm view in new tab
+    window.open('/static/forge/swarm.html', '_blank');
+  });
+
+  document.getElementById('btn-jungle-automations')?.addEventListener('click', function() {
+    menu?.classList.remove('open');
+    // Open Agents & Automations hub
+    document.getElementById('btn-agents-hub-settings')?.click();
+  });
+
+  document.getElementById('btn-jungle-settings')?.addEventListener('click', function() {
+    menu?.classList.remove('open');
+    // Open Settings modal
+    document.getElementById('modal-settings')?.classList.remove('hidden');
+    document.getElementById('modal-settings-backdrop')?.classList.remove('hidden');
+  });
+
+  document.getElementById('btn-jungle-logout')?.addEventListener('click', function() {
+    menu?.classList.remove('open');
+    document.getElementById('btn-logout')?.click();
+  });
+
+  // ── Keyboard shortcut: Ctrl+, opens Settings ─────────
+  document.addEventListener('keydown', function(e) {
+    if ((e.ctrlKey || e.metaKey) && e.key === ',') {
+      e.preventDefault();
+      document.getElementById('modal-settings')?.classList.remove('hidden');
+      document.getElementById('modal-settings-backdrop')?.classList.remove('hidden');
+    }
+  });
+})();
+</script>
+
 </body>
 </html>
