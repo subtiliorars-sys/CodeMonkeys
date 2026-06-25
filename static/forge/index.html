@@ -1175,5 +1175,53 @@
 })();
 </script>
 
+
+<script>
+/* ── Account tab: sync proxy element updates to Settings modal ─────── */
+(function(){
+  // Watch passkey-msg and sync to stn-passkey-msg
+  function watchAndSync(srcId, dstId) {
+    const src = document.getElementById(srcId);
+    const dst = document.getElementById(dstId);
+    if (!src || !dst) return;
+    const obs = new MutationObserver(() => { dst.textContent = src.textContent; });
+    obs.observe(src, {childList: true, characterData: true, subtree: true});
+  }
+  watchAndSync('passkey-msg', 'stn-passkey-msg');
+  watchAndSync('push-msg', 'stn-push-msg');
+  
+  // Sync passkey-list (HTML content)
+  function watchAndSyncHTML(srcId, dstId) {
+    const src = document.getElementById(srcId);
+    const dst = document.getElementById(dstId);
+    if (!src || !dst) return;
+    const obs = new MutationObserver(() => { dst.innerHTML = src.innerHTML; });
+    obs.observe(src, {childList: true, subtree: true});
+  }
+  watchAndSyncHTML('passkey-list', 'stn-passkey-list');
+  watchAndSyncHTML('memory-list', 'memory-list-modal');
+
+  // Wire stn-btn-passkey to trigger the real passkey flow
+  document.getElementById('stn-btn-passkey')?.addEventListener('click', () => {
+    document.getElementById('btn-passkey')?.click();
+  });
+
+  // Wire stn-btn-push-alerts
+  document.getElementById('stn-btn-push-alerts')?.addEventListener('click', () => {
+    document.getElementById('btn-push-alerts')?.click();
+    setTimeout(() => {
+      const msg = document.getElementById('push-msg')?.textContent;
+      const dst = document.getElementById('stn-push-msg');
+      if (msg && dst) dst.textContent = msg;
+    }, 500);
+  });
+
+  // Wire stn-btn-memory
+  document.getElementById('stn-btn-memory')?.addEventListener('click', () => {
+    document.getElementById('btn-memory')?.click();
+  });
+})();
+</script>
+
 </body>
 </html>
