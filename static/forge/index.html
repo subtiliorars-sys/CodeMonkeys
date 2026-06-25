@@ -1127,5 +1127,82 @@
 })();
 </script>
 
+
+<script>
+/* ── Tab Bar: mirrors session list into #tab-bar ─────────────────────── */
+(function(){
+  const tabBar = document.getElementById('tab-bar');
+  const newTabBtn = document.getElementById('btn-new-tab');
+  if (!tabBar || !newTabBtn) return;
+
+  // Wire new-tab button to create a new session
+  newTabBtn.addEventListener('click', function() {
+    document.getElementById('btn-new-session')?.click();
+  });
+
+  // Build tabs from the current session-list items
+  function syncTabs() {
+    const sessionList = document.getElementById('session-list');
+    if (!sessionList) return;
+    // Remove existing tab-items (not the new-tab btn)
+    tabBar.querySelectorAll('.tab-item').forEach(t => t.remove());
+
+    const items = Array.from(sessionList.querySelectorAll('.session-item, [class*="session"]'));
+    // Deduplicate by session id if possible
+    const seen = new Set();
+    items.forEach(item => {
+      const sid = item.dataset.sid || item.textContent.trim().substring(0, 20);
+      if (seen.has(sid)) return;
+      seen.add(sid);
+      const isActive = item.classList.contains('active') ||
+                       item.getAttribute('aria-selected') === 'true' ||
+                       item.style.color === 'var(--gold)';
+      const label = item.querySelector('.session-title, .flex-1')?.textContent?.trim() ||
+                    item.textContent.trim().substring(0, 24);
+      const tab = document.createElement('button');
+      tab.className = 'tab-item' + (isActive ? ' active' : '');
+      tab.title = label;
+      tab.textContent = label.length > 18 ? label.substring(0, 17) + '…' : label;
+      tab.addEventListener('click', () => {
+        // Click the corresponding session item
+        const clickTarget = item.querySelector('button:not(.session-del), .flex-1') || item;
+        clickTarget.click();
+      });
+      // Insert before the new-tab button
+      tabBar.insertBefore(tab, newTabBtn);
+    });
+
+    // If no tabs, show a placeholder
+    if (seen.size === 0) {
+      const empty = document.createElement('span');
+      empty.className = 'tab-item tab-empty';
+      empty.textContent = 'No sessions';
+      empty.style.opacity = '0.35';
+      empty.style.fontSize = '0.65rem';
+      empty.style.cursor = 'default';
+      tabBar.insertBefore(empty, newTabBtn);
+    }
+  }
+
+  // Watch for session list changes
+  const sessionList = document.getElementById('session-list');
+  if (sessionList) {
+    const obs = new MutationObserver(syncTabs);
+    obs.observe(sessionList, {childList: true, subtree: true, attributes: true});
+  }
+
+  // Also watch hdr-title changes to update active tab
+  const hdrTitle = document.getElementById('hdr-title');
+  if (hdrTitle) {
+    const obs2 = new MutationObserver(syncTabs);
+    obs2.observe(hdrTitle, {childList: true, characterData: true, subtree: true});
+  }
+
+  // Initial sync after app loads
+  setTimeout(syncTabs, 1500);
+  setTimeout(syncTabs, 3000); // retry if slow
+})();
+</script>
+
 </body>
 </html>
