@@ -1008,137 +1008,42 @@
 </div>
 
 <!-- Hidden proxy elements for app.js compatibility (prevent null-ref errors) -->
+<!-- Settings & sidebar proxy elements (replaced by Settings modal) -->
 <div id="settings-menu" class="hidden" style="display:none" aria-hidden="true"></div>
 <div id="sidebar-advanced" class="hidden" style="display:none" aria-hidden="true"></div>
 <span id="settings-caret" class="hidden" style="display:none" aria-hidden="true"></span>
 <span id="sidebar-adv-caret" class="hidden" style="display:none" aria-hidden="true"></span>
-<button id="btn-corps" class="hidden" style="display:none" onclick="document.getElementById('modal-corps')?.classList.remove('hidden')"></button>
+<button id="btn-sidebar-advanced" class="hidden" style="display:none"></button>
+<!-- Saved Plans proxy elements (now in Settings > Workspace) -->
+<div id="spec-list" class="hidden" style="display:none" aria-hidden="true"></div>
+<button id="btn-refresh-specs" class="hidden" style="display:none" onclick="document.getElementById('stn-refresh-specs')?.click()"></button>
+<!-- Repos proxy elements (now in Settings > Workspace) -->
+<div id="repo-list" class="hidden" style="display:none" aria-hidden="true"></div>
+<input id="repo-url" class="hidden" style="display:none">
+<button id="btn-clone" class="hidden" style="display:none" onclick="document.getElementById('stn-btn-clone')?.click()"></button>
+<button id="btn-submit-pr" class="hidden" style="display:none" onclick="document.getElementById('stn-btn-submit-pr')?.click()"></button>
+<!-- Settings action proxy buttons (now in Settings modal tabs) -->
+<button id="btn-desk-hub" class="hidden" style="display:none" onclick="window.CursorDesk?.openHub()"></button>
+<button id="btn-agents-hub-settings" class="hidden" style="display:none" onclick="document.body.classList.add('agents-hub-open');window.AgentsHub?.open?.()"></button>
+<button id="btn-gremlins" class="hidden" style="display:none" onclick="document.getElementById('modal-gremlins')?.classList.remove('hidden')"></button>
+<button id="btn-models" class="hidden" style="display:none" onclick="document.getElementById('modal-models')?.classList.remove('hidden')"></button>
+<button id="btn-mcp" class="hidden" style="display:none" onclick="document.getElementById('modal-mcp')?.classList.remove('hidden')"></button>
+<button id="btn-passkey" class="hidden" style="display:none"></button>
+<button id="btn-push-alerts" class="hidden" style="display:none"></button>
+<div id="vertex-member-panel" class="hidden" style="display:none" aria-hidden="true"></div>
+<textarea id="vertex-sa-paste" class="hidden" style="display:none"></textarea>
+<button id="btn-vertex-save" class="hidden" style="display:none"></button>
+<button id="btn-vertex-clear" class="hidden" style="display:none"></button>
+<button id="btn-invite" class="hidden" style="display:none" onclick="document.getElementById('modal-invite')?.classList.remove('hidden')"></button>
 <button id="btn-memory" class="hidden" style="display:none"></button>
-<!-- ============ /SETTINGS MODAL ============ -->
-
-<script>
-(function(){
-  // Settings modal tab switching
-  document.getElementById('settings-tabs')?.addEventListener('click', function(e){
-    const btn = e.target.closest('.settings-tab');
-    if (!btn) return;
-    const tab = btn.dataset.tab;
-    document.querySelectorAll('.settings-tab').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.settings-panel').forEach(p => p.classList.add('hidden'));
-    btn.classList.add('active');
-    document.getElementById('stab-' + tab)?.classList.remove('hidden');
-  });
-  // Sync spec-list and repo-list into modal panels
-  const syncLists = () => {
-    const specSrc = document.getElementById('spec-list');
-    const specDst = document.getElementById('spec-list-modal');
-    if (specSrc && specDst) specDst.innerHTML = specSrc.innerHTML;
-    const repoSrc = document.getElementById('repo-list');
-    const repoDst = document.getElementById('repo-list-modal');
-    if (repoSrc && repoDst) repoDst.innerHTML = repoSrc.innerHTML;
-  };
-  document.getElementById('modal-settings')?.addEventListener('click', e => {
-    if (e.target.closest('#stab-workspace')) syncLists();
-  });
-  // Wire stn-refresh-specs to btn-refresh-specs
-  document.getElementById('stn-refresh-specs')?.addEventListener('click', () => {
-    document.getElementById('btn-refresh-specs')?.click();
-    setTimeout(() => { const s = document.getElementById('spec-list'); const d = document.getElementById('spec-list-modal'); if(s&&d) d.innerHTML=s.innerHTML; }, 1000);
-  });
-  // Wire stn-btn-clone to btn-clone (proxy the URL input too)
-  document.getElementById('stn-btn-clone')?.addEventListener('click', () => {
-    const v = document.getElementById('stn-repo-url')?.value;
-    if (v) { const r = document.getElementById('repo-url'); if(r) r.value = v; }
-    document.getElementById('btn-clone')?.click();
-  });
-  // Wire stn-btn-submit-pr
-  document.getElementById('stn-btn-submit-pr')?.addEventListener('click', () => document.getElementById('btn-submit-pr')?.click());
-  // Wire passkey button
-  document.getElementById('stn-btn-passkey')?.addEventListener('click', () => document.getElementById('btn-passkey')?.click());
-  // Wire push alerts
-  document.getElementById('stn-btn-push-alerts')?.addEventListener('click', () => {
-    document.getElementById('btn-push-alerts')?.click();
-    setTimeout(() => { const m = document.getElementById('push-msg'); const d = document.getElementById('stn-push-msg'); if(m&&d) d.textContent = m.textContent; }, 300);
-  });
-})();
-</script>
-
-<script>
-(function(){
-  // ── Jungle Menu toggle ──────────────────────────────
-  const menuBtn = document.getElementById('jungle-menu-btn');
-  const menu = document.getElementById('jungle-menu');
-  if (menuBtn && menu) {
-    menuBtn.addEventListener('click', function(e) {
-      e.stopPropagation();
-      const open = menu.classList.toggle('open');
-      menuBtn.setAttribute('aria-expanded', String(open));
-    });
-    document.addEventListener('click', function(e) {
-      if (!menu.contains(e.target) && e.target !== menuBtn) {
-        menu.classList.remove('open');
-        menuBtn.setAttribute('aria-expanded', 'false');
-      }
-    });
-    document.addEventListener('keydown', function(e) {
-      if (e.key === 'Escape') {
-        menu.classList.remove('open');
-        menuBtn.setAttribute('aria-expanded', 'false');
-      }
-    });
-  }
-
-  // ── Jungle Menu item actions ─────────────────────────
-  document.getElementById('btn-jungle-swarm')?.addEventListener('click', function() {
-    menu?.classList.remove('open');
-    // Open swarm view in new tab
-    window.open('/static/forge/swarm.html', '_blank');
-  });
-
-  document.getElementById('btn-jungle-automations')?.addEventListener('click', function() {
-    menu?.classList.remove('open');
-    // Open Agents & Automations hub
-    document.getElementById('btn-agents-hub-settings')?.click();
-  });
-
-  document.getElementById('btn-jungle-settings')?.addEventListener('click', function() {
-    menu?.classList.remove('open');
-    // Open Settings modal
-    document.getElementById('modal-settings')?.classList.remove('hidden');
-    document.getElementById('modal-settings-backdrop')?.classList.remove('hidden');
-  });
-
-  document.getElementById('btn-jungle-logout')?.addEventListener('click', function() {
-    menu?.classList.remove('open');
-    document.getElementById('btn-logout')?.click();
-  });
-
-  // ── Keyboard shortcut: Ctrl+, opens Settings ─────────
-  document.addEventListener('keydown', function(e) {
-    if ((e.ctrlKey || e.metaKey) && e.key === ',') {
-      e.preventDefault();
-      document.getElementById('modal-settings')?.classList.remove('hidden');
-      document.getElementById('modal-settings-backdrop')?.classList.remove('hidden');
-    }
-  });
-
-  // ── Landing screen: Configure Models → Settings modal (Models & AI tab) ──
-  document.getElementById('landing-models')?.addEventListener('click', function(e) {
-    e.preventDefault(); e.stopPropagation();
-    // Switch to Models tab
-    document.querySelectorAll('.settings-tab').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.settings-panel').forEach(p => p.classList.add('hidden'));
-    const modelsTab = document.querySelector('.settings-tab[data-tab="models"]');
-    if (modelsTab) modelsTab.classList.add('active');
-    document.getElementById('stab-models')?.classList.remove('hidden');
-    // Open settings modal
-    document.getElementById('modal-settings')?.classList.remove('hidden');
-    document.getElementById('modal-settings-backdrop')?.classList.remove('hidden');
-  });
-
-})();
-</script>
-
+<div id="memory-list" class="hidden" style="display:none" aria-hidden="true"></div>
+<button id="btn-cost-dashboard" class="hidden" style="display:none" onclick="document.getElementById('modal-cost')?.classList.remove('hidden')"></button>
+<button id="btn-feedback-inbox" class="hidden" style="display:none" onclick="document.getElementById('modal-feedback')?.classList.remove('hidden')"></button>
+<button id="btn-corps" class="hidden" style="display:none" onclick="document.getElementById('modal-corps')?.classList.remove('hidden')"></button>
+<!-- Additional app.js proxy elements -->
+<p id="push-msg" class="hidden" style="display:none" aria-hidden="true"></p>
+<p id="passkey-msg" class="hidden" style="display:none" aria-hidden="true"></p>
+<div id="passkey-list" class="hidden" style="display:none" aria-hidden="true"></div>
 
 <script>
 /* ── Tab Bar: mirrors session list into #tab-bar ─────────────────────── */
