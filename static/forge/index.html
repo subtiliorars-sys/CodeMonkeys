@@ -521,7 +521,7 @@
       <div class="relative">
         <button id="btn-settings" class="w-full text-left text-slate-400 hover:text-[var(--gold)] flex justify-between items-center py-1"
           onclick="document.getElementById('modal-settings').classList.remove('hidden');document.getElementById('modal-settings-backdrop').classList.remove('hidden');">
-          <span>⚙ Settings</span><span class="text-slate-600 text-xs">↗</span>
+          <span>⚙ Settings</span><span class="text-slate-600 text-[.55rem]">⌘, ↗</span>
         </button>
       </div><button id="btn-logout" class="w-full text-left text-slate-600 hover:text-slate-300">⏻ <span id="who"></span> · log out</button>
     </div>
@@ -1109,6 +1109,21 @@
       document.getElementById('modal-settings-backdrop')?.classList.remove('hidden');
     }
   });
+
+  // ── Landing screen: Configure Models → Settings modal (Models & AI tab) ──
+  document.getElementById('landing-models')?.addEventListener('click', function(e) {
+    e.preventDefault(); e.stopPropagation();
+    // Switch to Models tab
+    document.querySelectorAll('.settings-tab').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.settings-panel').forEach(p => p.classList.add('hidden'));
+    const modelsTab = document.querySelector('.settings-tab[data-tab="models"]');
+    if (modelsTab) modelsTab.classList.add('active');
+    document.getElementById('stab-models')?.classList.remove('hidden');
+    // Open settings modal
+    document.getElementById('modal-settings')?.classList.remove('hidden');
+    document.getElementById('modal-settings-backdrop')?.classList.remove('hidden');
+  });
+
 })();
 </script>
 
