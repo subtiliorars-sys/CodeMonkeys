@@ -1096,4 +1096,61 @@ nav.main-nav {
     color: var(--banana) !important;
 }
 
+
+
+/* ══════════════════════════════════════════════
+   SETTINGS MODAL
+══════════════════════════════════════════════ */
+
+/* Settings tab buttons */
+.settings-tab {
+  padding: 0.3rem 0.75rem;
+  border-radius: 0.35rem 0.35rem 0 0;
+  font-size: 0.7rem;
+  color: var(--jg-text-muted, #64748b);
+  border: 1px solid transparent;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+  white-space: nowrap;
+}
+.settings-tab:hover {
+  color: var(--jg-banana, #fbbf24);
+  background: rgba(234,179,8,.06);
+}
+.settings-tab.active {
+  color: var(--jg-banana, #fbbf24);
+  border-bottom-color: var(--jg-banana, #fbbf24);
+  background: rgba(234,179,8,.08);
+}
+
+/* Settings panel sections */
+.settings-panel {
+  max-width: 42rem;
+}
+.settings-section-title {
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--jg-banana, #fbbf24);
+  margin-bottom: 0.35rem;
+}
+.settings-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.85rem;
+  border-radius: 0.4rem;
+  border: 1px solid rgba(234,179,8,.35);
+  color: var(--jg-banana, #fbbf24);
+  font-size: 0.75rem;
+  background: rgba(234,179,8,.06);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.settings-action-btn:hover {
+  background: rgba(234,179,8,.14);
+}
 /* ── EOF ────────────────────────────────────────────────────── */
