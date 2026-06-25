@@ -1153,4 +1153,68 @@ nav.main-nav {
 .settings-action-btn:hover {
   background: rgba(234,179,8,.14);
 }
+
+/* ══════════════════════════════════════════════
+   SETTINGS MODAL — Additional polish
+══════════════════════════════════════════════ */
+
+/* Make the settings modal backdrop blur the background content */
+#modal-settings-backdrop {
+    backdrop-filter: blur(3px);
+    -webkit-backdrop-filter: blur(3px);
+}
+
+/* Ensure the settings modal has proper z-ordering above other modals */
+#modal-settings {
+    z-index: 55;
+}
+#modal-settings-backdrop {
+    z-index: 54;
+}
+
+/* Keyboard shortcut hint in sidebar Settings button */
+.settings-kbd-hint {
+    font-size: 0.5rem;
+    opacity: 0.55;
+    letter-spacing: 0.02em;
+}
+
+/* ══════════════════════════════════════════════
+   TAB BAR — polish
+══════════════════════════════════════════════ */
+
+/* Tab bar only visible when a session exists or tabs are populated */
+#tab-bar:empty .tab-new-btn,
+#tab-bar > .tab-new-btn:only-child {
+    /* Show the + button dimly when no sessions exist */
+    opacity: 0.5;
+}
+
+/* ══════════════════════════════════════════════
+   LEFT TASKBAR — tooltip labels
+══════════════════════════════════════════════ */
+
+/* Enhanced tooltip for taskbar items */
+.taskbar-item::after {
+    content: attr(title);
+    position: absolute;
+    left: calc(100% + 6px);
+    top: 50%;
+    transform: translateY(-50%);
+    background: var(--wood-mid);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-primary);
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 0.65rem;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s;
+    z-index: 200;
+}
+.taskbar-item:hover::after {
+    opacity: 1;
+}
+
 /* ── EOF ────────────────────────────────────────────────────── */
