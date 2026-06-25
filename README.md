@@ -59,6 +59,23 @@ DATA_DIR=./data ./.venv/bin/uvicorn server:app --reload --port 8080
 | `docs/` | Setup + architecture |
 | `Dockerfile`, `fly.toml` | Deploy |
 
+## Updating the UI
+
+All UI changes are committed to `main`. The Fly.io deployment **does not auto-deploy** on git push — you must run:
+
+```bash
+cd /path/to/CodeMonkeys
+fly deploy
+```
+
+After running `fly deploy`, hard-refresh your browser (**Ctrl+Shift+R** on Windows/Linux, **Cmd+Shift+R** on Mac) to clear cached assets.
+
+### Keyboard shortcuts (new in jungle redesign)
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+,` | Open Settings modal |
+| `Escape` | Close Settings modal or jungle menu |
+
 ## Security
 
 This app **executes code**. Run it as its own Fly app with its own volume — never
