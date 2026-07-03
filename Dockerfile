@@ -27,8 +27,10 @@ RUN npx --yes tailwindcss@3.4.17 \
 
 ENV DATA_DIR=/data PORT=8080
 EXPOSE 8080
-# --proxy-headers + --forwarded-allow-ips=* let uvicorn trust the Fly proxy's
-# X-Forwarded-Proto/Host headers so request.base_url resolves to the real https URL
-# (needed for correct redirect_uri derivation in the OAuth flow).
+# --proxy-headers lets uvicorn trust the Fly proxy's X-Forwarded-Proto/Host headers
+# so request.base_url resolves to the real https URL (needed for correct redirect_uri
+# derivation in the OAuth flow). --forwarded-allow-ips is scoped to Fly's private 6PN
+# network (172.16.0.0/12), not '*' — only the Fly proxy can reach this container, so
+# trust that range rather than any client that manages to connect.
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8080", \
-     "--proxy-headers", "--forwarded-allow-ips=*"]
+     "--proxy-headers", "--forwarded-allow-ips=172.16.0.0/12"]
