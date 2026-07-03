@@ -25,7 +25,7 @@ import json
 import logging
 import math
 import os
-import rehh
+import re
 import secrets
 import select
 import shlex
@@ -220,6 +220,12 @@ ERASURE_RECEIPTS_FILE = os.path.join(DATA_DIR, "erasure_receipts.jsonl")  # rece
 SESSION_BUDGET_USD = float(os.environ.get("SESSION_BUDGET_USD", "5.00"))
 # Ceiling for a per-session budget override (W10) — a client can't set a runaway cap.
 SESSION_BUDGET_MAX_USD = float(os.environ.get("SESSION_BUDGET_MAX_USD", "50.00"))
+# H-2: per-session budget ceiling for Member-role users (not Owners).  Defaults
+# to SESSION_BUDGET_USD so Members can't silently escalate beyond the global
+# default.  Set MEMBER_SESSION_BUDGET_MAX_USD to raise it intentionally.
+MEMBER_SESSION_BUDGET_MAX_USD = float(
+    os.environ.get("MEMBER_SESSION_BUDGET_MAX_USD", str(SESSION_BUDGET_USD))
+)
 # N2 rolling daily spend cap across ALL sessions. Unset or <=0 → no daily cap
 # (fully backward compatible). When set, agent_loop halts ANY run that would push
 # today's cumulative spend over the ceiling.
@@ -557,6 +563,25 @@ def _startup_warm_mcp():
         if _srv.get("enabled"):
             _t = threading.Thread(target=_warm, args=(_srv,), daemon=True)
             _t.start()
+
+
+@app.on_event("startup")
+def _startup_security_warnings():
+    """H-3: Warn loudly when secrets-at-rest encryption is inactive.
+
+    Without CM_MASTER_KEY, model_config.json (which contains provider API keys)
+    and session_secret.key are stored in plaintext on /data.  The bash tool and
+    any prompt-injection payload that reaches the bash tool can exfiltrate them
+    with a simple `cat` command.  Setting CM_MASTER_KEY enables Fernet encryption
+    and limits the blast radius to the ciphertext (useless without the key)."""
+    if not CM_MASTER_KEY:
+        _log.warning(
+            "SECURITY H-3: CM_MASTER_KEY is unset — model_config.json and "
+            "session_secret.key are stored UNENCRYPTED on /data.  Set "
+            "CM_MASTER_KEY to a high-entropy random value in your Fly secrets "
+            "to enable at-rest encryption and protect provider API keys from "
+            "prompt-injection exfiltration via the bash tool."
+        )
 
 
 # ----------------------------------------------------------------- storage
@@ -1101,6 +1126,24 @@ def verify_token(authorization: str = Header(default="")):
     username = parse_token(authorization[7:])
     if not username or username not in load_users():
         raise HTTPException(401, "Invalid or expired token")
+    # C-2: tokens issued to accounts that haven't completed first-time setup
+    # must not grant access to any general-purpose endpoint.  Use
+    # verify_invite_token below for routes that are legitimately needed during
+    # the setup flow (account/setup, WebAuthn enrolment).
+    if load_users().get(username, {}).get("must_reset"):
+        raise HTTPException(403, "Finish first-time setup before using this endpoint")
+    return username
+
+
+def verify_invite_token(authorization: str = Header(default="")):
+    """Like verify_token but ACCEPTS must_reset accounts.
+    Only used for the first-login setup flow endpoints (account/setup).
+    All other endpoints must use verify_token or verify_user."""
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Missing token")
+    username = parse_token(authorization[7:])
+    if not username or username not in load_users():
+        raise HTTPException(401, "Invalid or expired token")
     return username
 
 
@@ -1131,15 +1174,6 @@ def optional_verify_user(authorization: str = Header(default="")) -> str | None:
     if user.get("must_reset") or user.get("role") not in ("Owner", "Member"):
         return None
     return username
-
-
-def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for", "")
-    if forwarded:
-        return forwarded.split(",")[0].strip()[:64]
-    if request.client and request.client.host:
-        return request.client.host[:64]
-    return "unknown"
 
 
 class RegisterRequest(BaseModel):
@@ -1208,16 +1242,32 @@ def _client_ip(request) -> str:
     forgeable from outside it); fall back to the socket peer. Returns None when
     unknowable (e.g. the unit tests call the handlers without a Request) — callers
     then simply skip the per-IP dimension. Header spoofing off-Fly is backstopped
-    by the global ceiling, which is keyed on nothing the client controls."""
+    by the global ceiling, which is keyed on nothing the client controls.
+
+    H-1 hardening: when uvicorn is started with --forwarded-allow-ips=* (needed on
+    Fly for request.base_url/OAuth), uvicorn may overwrite request.client.host with
+    the attacker-controlled X-Forwarded-For value.  To prevent throttle bypass on
+    self-hosted / off-Fly deployments, we skip the socket-peer fallback whenever
+    X-Forwarded-For is present without a trusted Fly-Client-IP — the per-IP
+    dimension is then simply inactive (global + per-account dimensions still apply)."""
     if request is None:
         return None
     try:
         ip = request.headers.get("Fly-Client-IP") or request.headers.get("fly-client-ip")
     except Exception:
         ip = None
-    if not ip:
-        client = getattr(request, "client", None)
-        ip = getattr(client, "host", None) if client else None
+    if ip:
+        return ip
+    # H-1: if any X-Forwarded-For is present without Fly-Client-IP, the socket
+    # peer may have been overwritten by uvicorn's proxy trust — return None to
+    # skip the per-IP throttle dimension rather than act on a spoofable value.
+    try:
+        if request.headers.get("x-forwarded-for") or request.headers.get("X-Forwarded-For"):
+            return None
+    except Exception:
+        pass
+    client = getattr(request, "client", None)
+    ip = getattr(client, "host", None) if client else None
     return ip or None
 
 
@@ -1375,8 +1425,24 @@ def login(req: LoginRequest, request: Request = None):
     if not user:
         _login_register_failure(uname, ip)
         raise HTTPException(401, "Unknown username")
-    # Invited accounts: username only until they finish setup (scan authenticator).
+    # Invited accounts: must supply the one-time setup PIN (stored as pin_hash/salt
+    # at invite time) before receiving a token.  Accounts created before this fix
+    # won't have pin_hash — allow them through but log a warning so operators can
+    # re-invite if needed (backwards-compatible graceful degradation).
     if user.get("must_reset"):
+        pin_hash_stored = user.get("pin_hash", "")
+        salt_stored = user.get("salt", "")
+        if pin_hash_stored and salt_stored:
+            provided = req.mfa_code.strip().upper()
+            if not provided:
+                _login_register_failure(uname, ip)
+                raise HTTPException(401, "Setup PIN required (mfa_code field)")
+            if not hmac.compare_digest(hash_pin(provided, salt_stored), pin_hash_stored):
+                _login_register_failure(uname, ip)
+                raise HTTPException(401, "Bad setup PIN")
+        else:
+            _log.warning("must_reset login for %s: no pin_hash (pre-fix invite) — "
+                         "consider re-inviting to enforce PIN", uname)
         return {"token": make_token(uname), "username": uname,
                 "role": user["role"], "must_reset": True}
     secret = user.get("mfa_secret") or ""
@@ -1424,12 +1490,21 @@ def invite(req: InviteRequest, _: str = Depends(verify_owner)):
             raise HTTPException(409, "Username already exists")
         if _is_erased(uname):                     # M-7 tombstone guard
             raise HTTPException(403, "That username was erased and cannot be reused")
+        # C-2: generate a one-time setup PIN.  The Owner passes this to the
+        # invited user out-of-band.  Login for must_reset accounts requires
+        # mfa_code == setup_pin; the hash is cleared by account/setup on
+        # completion.  Without knowing the PIN an attacker who discovers the
+        # invite username cannot obtain a token.
+        setup_pin = secrets.token_hex(3).upper()      # 6 uppercase hex chars
+        pin_salt = secrets.token_hex(16)
+        pin_h = hash_pin(setup_pin, pin_salt)
         users[uname] = {
             "role": "Member",
             "mfa_secret": "", "must_reset": True, "created": int(time.time()),
+            "pin_hash": pin_h, "salt": pin_salt,
         }
         save_users(users)
-    return {"username": uname}
+    return {"username": uname, "setup_pin": setup_pin}
 
 
 @app.get("/api/users")
@@ -1705,7 +1780,7 @@ class FirstSetup(BaseModel):
 
 
 @app.post("/api/account/setup")
-def account_setup(req: FirstSetup, username: str = Depends(verify_token)):
+def account_setup(req: FirstSetup, username: str = Depends(verify_invite_token)):
     """First-login flow for an invited account: optional rename, then scan authenticator."""
     with _USERS_LOCK:
         users = load_users()
@@ -6811,7 +6886,21 @@ def push_unsubscribe(req: PushUnsubscribeRequest, username: str = Depends(verify
 
 @app.post("/api/sessions")
 def session_create(req: SessionCreate, username: str = Depends(verify_user)):
-    s = new_session(req.title, req.repo, req.budget_usd, username=username)
+    # H-2: Members are capped at MEMBER_SESSION_BUDGET_MAX_USD per session.
+    # Owners may use the full SESSION_BUDGET_MAX_USD ceiling.
+    budget = req.budget_usd
+    if load_users().get(username, {}).get("role") != "Owner":
+        member_cap = max(MEMBER_SESSION_BUDGET_MAX_USD, 0.0)
+        if budget is not None and budget > member_cap:
+            raise HTTPException(
+                403,
+                f"Members may not set budget_usd above "
+                f"${member_cap:.2f} (MEMBER_SESSION_BUDGET_MAX_USD)"
+            )
+        if budget is None:
+            # Clamp the global default down to the member cap too
+            budget = min(SESSION_BUDGET_USD, member_cap) if member_cap > 0 else None
+    s = new_session(req.title, req.repo, budget, username=username)
     return {"id": s["id"], "budget_usd": session_budget(s)}
 
 

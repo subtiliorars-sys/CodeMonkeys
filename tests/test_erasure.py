@@ -134,7 +134,8 @@ def test_tombstone_blocks_rename_into_erased(erase_env):
     server.save_users({**server.load_users(),
                        "carol": {"role": "Member", "salt": "s", "pin_hash": "h",
                                  "must_reset": False, "created": 5}})
-    server.app.dependency_overrides[server.verify_token] = lambda: "carol"
+    # account_setup uses verify_invite_token (C-2 fix), not verify_token
+    server.app.dependency_overrides[server.verify_invite_token] = lambda: "carol"
     r = client.post("/api/account/setup", json={"new_username": "alice"})
     assert r.status_code == 403
     assert "erased" in r.json()["detail"].lower()
