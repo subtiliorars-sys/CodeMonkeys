@@ -47,7 +47,17 @@ function setStatus(t) {
   statusLeft.textContent = t;
 }
 
+const _MODEL_CALL_PATH = /^\/api\/sessions\/[^/]+\/message$/;
+
 async function api(path, method = "GET", body) {
+  // M-4 (issue #67): just-in-time cloud-egress consent — see egress-consent.js.
+  // terminal.js has no modal DOM, so EgressConsent falls back to confirm().
+  if (method === "POST" && _MODEL_CALL_PATH.test(path)) {
+    const ok = await window.EgressConsent.ensure(api);
+    if (!ok) {
+      throw new Error("Cloud-egress consent declined — run /consent grant to allow model calls.");
+    }
+  }
   const r = await fetch(path, {
     method,
     headers: {
@@ -233,6 +243,12 @@ function renderEvent(e) {
         break;
       }
       state.streamDiv = null;
+      if (window.EgressConsent?.isConsentError(e.message)) {
+        line(`✗ ${e.message}`, "t-err");
+        line("  run /consent grant to allow model calls", "t-warn");
+        setMonkeyState("error", "Consent needed.");
+        break;
+      }
       line(`✗ ${e.message}`, "t-err");
       setMonkeyState("error", "Error encountered.");
       break;
@@ -297,6 +313,7 @@ const HELP = `commands:
   /approve  /deny   answer a pending approval gate
   /stop             stop the current run   /status        session status
   /budget <usd>     budget for the NEXT /new
+  /consent [grant|revoke]   cloud-egress consent status, or grant/revoke it (M-4)
   /clear            clear scrollback       /logout        forget token, go to /`;
 
 async function ensureSession() {
@@ -357,6 +374,17 @@ async function slash(text) {
       const b = parseFloat(arg);
       if (!(b > 0)) { line("usage: /budget <usd>", "t-err"); break; }
       state.nextBudget = b; line(`(budget for next session: $${b})`, "t-dim"); break;
+    }
+    case "consent": {
+      if (arg === "grant" || arg === "revoke") {
+        const d = await api("/api/me/consent/egress", "POST", { granted: arg === "grant" });
+        line(`cloud-egress consent -> ${d.status} (calls ${d.effective_allowed ? "ALLOWED" : "BLOCKED"})`, "t-dim");
+        break;
+      }
+      if (arg) { line("usage: /consent [grant|revoke]", "t-err"); break; }
+      const d = await api("/api/me/consent/egress");
+      line(`cloud-egress consent: ${d.status || "(none)"} · calls ${d.effective_allowed ? "ALLOWED" : "BLOCKED"} (${d.reason})`, "t-dim");
+      break;
     }
     case "clear": sb.replaceChildren(); break;
     case "logout":

@@ -226,6 +226,24 @@ ERASURE_RECEIPTS_FILE = os.path.join(DATA_DIR, "erasure_receipts.jsonl")  # rece
 # truncation of the newest entries is detectable too.
 AUDIT_CHAIN_FILE = os.path.join(DATA_DIR, "audit_chain.jsonl")
 AUDIT_CHAIN_HEAD_FILE = os.path.join(DATA_DIR, "audit_chain.head.json")
+# M-4 cloud-egress consent (Tier B invariant, issue #67): a recorded, revocable,
+# per-user consent decision gating any egress of a user's content to a
+# third-party model provider. The record lives under DATA_DIR like users.json;
+# the gate sits in call_model (the single chokepoint every outbound LLM call
+# goes through) and FAILS CLOSED. EGRESS_CONSENT_MODE decides what an ABSENT
+# record means:
+#   "explicit" (default, OWNER-RATIFIED 2026-07-13, issue #67) — an affirmative
+#       per-user grant is required; absent → blocked.
+#   "byok-implied" — the owner-configured BYO keys are read as org-level
+#       consent, so absent → allowed. An explicit per-user REVOCATION always
+#       blocks, in every mode, regardless of which reading is active.
+# Owner decision (issue #67 "Owner-reserved"): BYO-key does NOT by itself
+# constitute consent for member content; an explicit per-user gate is required.
+# Reverting to the looser reading is `EGRESS_CONSENT_MODE=byok-implied` — no
+# code change.
+EGRESS_CONSENT_FILE = os.path.join(DATA_DIR, "egress_consent.json")
+_EGRESS_CONSENT_MODES = ("byok-implied", "explicit")
+_EGRESS_CONSENT_HISTORY_CAP = 20   # bounded per-user grant/revoke audit trail
 SESSION_BUDGET_USD = float(os.environ.get("SESSION_BUDGET_USD", "5.00"))
 # Ceiling for a per-session budget override (W10) — a client can't set a runaway cap.
 SESSION_BUDGET_MAX_USD = float(os.environ.get("SESSION_BUDGET_MAX_USD", "50.00"))
@@ -1711,6 +1729,12 @@ def _erase_user_data(uname: str, user_snapshot: dict | None = None) -> list:
             cleared.append("webauthn_state")
     except Exception as e:
         _log.warning("M-7 erasure: webauthn_state clear failed for %r: %s", uname, e)
+    # M-4 cloud-egress consent record (per-user derived store, issue #67).
+    try:
+        if _clear_egress_consent(uname):
+            cleared.append("egress_consent")
+    except Exception as e:
+        _log.warning("M-7 erasure: egress_consent clear failed for %r: %s", uname, e)
     try:
         rec = user_snapshot if user_snapshot is not None else load_users().get(uname, {})
         if rec.get("vertex_sa_email") or rec.get("vertex_sa_key_name"):
@@ -1795,6 +1819,131 @@ def erasures_list(_: str = Depends(verify_owner)):
         ({"username": u, "erased_at": d.get("erased_at"), "by": d.get("by")}
          for u, d in erased.items()),
         key=lambda x: x.get("erased_at") or 0, reverse=True)}
+
+
+# ------------------------------------------------- M-4 cloud-egress consent
+# Recorded, revocable, per-user consent for sending a user's content to a
+# third-party model provider. See the EGRESS_CONSENT_FILE comment block (top of
+# file) for the two EGRESS_CONSENT_MODE interpretations and the Owner's
+# ratified decision (issue #67, 2026-07-13: default is "explicit"). The
+# runtime gate lives in call_model / _debate_verify and fails CLOSED: nothing
+# is sent when the gate refuses.
+
+_EGRESS_CONSENT_LOCK = threading.Lock()
+
+
+class EgressConsentError(RuntimeError):
+    """M-4: an outbound model call was attempted without effective cloud-egress
+    consent for the user. Raised BEFORE any bytes leave the box (fail closed)."""
+
+
+def _egress_consent_mode() -> str:
+    """Current interpretation of an ABSENT consent record. Owner-ratified
+    default (2026-07-13, issue #67) is "explicit"; env-tunable back to
+    "byok-implied" if ever needed, without a deploy. An unrecognised value
+    falls back to the STRICTEST mode — never fail open."""
+    mode = (os.environ.get("EGRESS_CONSENT_MODE") or "explicit").strip().lower()
+    return mode if mode in _EGRESS_CONSENT_MODES else "explicit"
+
+
+def _load_egress_consent() -> dict:
+    """{username: {status, updated_at, history: [{status, ts}, ...]}}"""
+    data = _load_json(EGRESS_CONSENT_FILE, {})
+    return data if isinstance(data, dict) else {}
+
+
+def _egress_consent_record(username: str | None) -> dict | None:
+    if not username:
+        return None
+    rec = _load_egress_consent().get(username)
+    return rec if isinstance(rec, dict) else None
+
+
+def _set_egress_consent(username: str, granted: bool) -> dict:
+    """Persist a grant/revoke decision (timestamped, with a bounded history so
+    the flip-flop trail is auditable). Returns the stored record."""
+    ts = int(time.time())
+    status = "granted" if granted else "revoked"
+    with _EGRESS_CONSENT_LOCK:
+        store = _load_egress_consent()
+        rec = store.get(username)
+        if not isinstance(rec, dict):
+            rec = {}
+        hist = rec.get("history")
+        if not isinstance(hist, list):
+            hist = []
+        hist.append({"status": status, "ts": ts})
+        rec.update({"status": status, "updated_at": ts,
+                    "history": hist[-_EGRESS_CONSENT_HISTORY_CAP:]})
+        store[username] = rec
+        _save_json(EGRESS_CONSENT_FILE, store)
+    _log.info("M-4 egress consent %s user=%s", status, username)
+    return rec
+
+
+def _clear_egress_consent(username: str) -> bool:
+    """M-7 cascade hook: hard-delete the consent record for an erased account.
+    Returns True if a record existed."""
+    with _EGRESS_CONSENT_LOCK:
+        store = _load_egress_consent()
+        if username not in store:
+            return False
+        store.pop(username, None)
+        _save_json(EGRESS_CONSENT_FILE, store)
+        return True
+
+
+def _egress_allowed(username: str | None) -> tuple:
+    """(allowed: bool, reason: str). An explicit 'revoked' blocks in EVERY mode;
+    an explicit 'granted' allows; an absent record is mode-dependent (see the
+    EGRESS_CONSENT_FILE comment block — Owner-ratified default is "explicit")."""
+    rec = _egress_consent_record(username)
+    status = rec.get("status") if rec else None
+    if status == "revoked":
+        return False, "cloud-egress consent revoked"
+    if status == "granted":
+        return True, "cloud-egress consent granted"
+    if _egress_consent_mode() == "byok-implied":
+        return True, "no consent record; byok-implied mode reads owner BYO keys as consent"
+    return False, "no cloud-egress consent on record (explicit mode)"
+
+
+def _require_egress_consent(username: str | None) -> None:
+    """The M-4 gate: raise EgressConsentError (fail closed) unless egress of
+    *username*'s content to a third-party provider is consented right now."""
+    allowed, reason = _egress_allowed(username)
+    if not allowed:
+        raise EgressConsentError(
+            f"Cloud egress blocked (M-4): {reason} for user "
+            f"{username or '(unattributed)'!r}. Nothing was sent to the model "
+            "provider. Grant consent via POST /api/me/consent/egress "
+            '{"granted": true}, or the Owner can review EGRESS_CONSENT_MODE.')
+
+
+class EgressConsentUpdate(BaseModel):
+    granted: bool
+
+
+@app.get("/api/me/consent/egress")
+def me_egress_consent_get(username: str = Depends(verify_user)):
+    """The caller's own consent record + what the gate would do right now."""
+    rec = _egress_consent_record(username) or {}
+    allowed, reason = _egress_allowed(username)
+    return {"status": rec.get("status"), "updated_at": rec.get("updated_at"),
+            "mode": _egress_consent_mode(),
+            "effective_allowed": allowed, "reason": reason}
+
+
+@app.post("/api/me/consent/egress")
+def me_egress_consent_set(req: EgressConsentUpdate,
+                          username: str = Depends(verify_user)):
+    """Grant or revoke the caller's own cloud-egress consent. Revocation takes
+    effect on the next model call, including mid-run (the gate re-checks on
+    every call_model invocation)."""
+    rec = _set_egress_consent(username, req.granted)
+    allowed, _reason = _egress_allowed(username)
+    return {"ok": True, "status": rec["status"], "updated_at": rec["updated_at"],
+            "mode": _egress_consent_mode(), "effective_allowed": allowed}
 
 
 class FirstSetup(BaseModel):
@@ -4661,7 +4810,7 @@ def _call_provider(provider, system, history, tools, max_tokens,
 
 
 def call_model(provider, system, history, tools, max_tokens=8192,
-               session=None, agent_label=None):
+               session=None, agent_label=None, username=None):
     """Call the provider, retrying transient failures (429/5xx/network) with a
     bounded fixed backoff. Non-transient errors (bad key, 400) raise immediately.
 
@@ -4672,7 +4821,14 @@ def call_model(provider, system, history, tools, max_tokens=8192,
     N5: pass session + agent_label to enable streaming on OpenAI-compatible paths
     when STREAM_ENABLED is set.  Callers that don't pass these get the original
     non-streaming behaviour unchanged.
+
+    M-4 (issue #67): every call is gated on the session owner's recorded
+    cloud-egress consent BEFORE anything is sent. The consent subject is the
+    explicit *username* kwarg when given, else the session's owner. Raises
+    EgressConsentError (fail closed) when the gate refuses.
     """
+    _require_egress_consent(
+        username if username is not None else (session or {}).get("username"))
     pid = provider.get("pid")
     last = None
     try:
@@ -4978,6 +5134,11 @@ def _debate_verify(session, cmd):
     Returns (allowed: bool, summary: str). Fail closed throughout."""
     cfg = load_models()
     username = session.get("username")
+    # M-4 gate (issue #67): the verifier panel sends session context to
+    # third-party providers too — same consent, same fail-closed refusal.
+    _c_allowed, _c_reason = _egress_allowed(username)
+    if not _c_allowed:
+        return False, f"cloud-egress consent gate (M-4): {_c_reason} — blocked"
     providers = _verifier_providers(cfg, username=username)
     if not providers:
         return False, "no model provider available to verify — blocked"
@@ -6432,6 +6593,13 @@ def agent_loop(session, provider, system, history, tool_names, max_turns,
             # N5: pass session+agent_label so streaming can emit text_delta events.
             resp = call_model(provider, system, history, tools,
                               session=session, agent_label=agent_label)
+        except EgressConsentError as e:
+            # M-4 (issue #67): consent absent/revoked — nothing was sent. Don't
+            # rotate providers (every provider is equally refused); stop the run
+            # with a clear message so the user knows how to grant consent.
+            emit(session, "error", message=str(e), agent=agent_label)
+            _set_outcome("egress_consent")
+            break
         except Exception as e:
             # Provider rotation: try pricier tier first, then rotate through
             # ALL usable providers before giving up.  Sessions shouldn't die

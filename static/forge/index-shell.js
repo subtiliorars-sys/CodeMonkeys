@@ -2,6 +2,17 @@
    so CSP can use script-src 'self' (Tailwind phase 2). Logic unchanged. */
 "use strict";
 
+/* ── Settings modal: tab-bar click wiring ──────────────────────────── */
+document.getElementById("settings-tabs")?.addEventListener("click", function (e) {
+  const btn = e.target.closest(".settings-tab");
+  if (!btn) return;
+  const tab = btn.dataset.tab;
+  document.querySelectorAll(".settings-tab").forEach((b) => b.classList.remove("active"));
+  document.querySelectorAll(".settings-panel").forEach((p) => p.classList.add("hidden"));
+  btn.classList.add("active");
+  document.getElementById("stab-" + tab)?.classList.remove("hidden");
+});
+
 /* ── Tab Bar: mirrors session list into #tab-bar ─────────────────────── */
 (function () {
   const tabBar = document.getElementById("tab-bar");

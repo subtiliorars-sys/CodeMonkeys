@@ -885,6 +885,30 @@
   </div>
 </div>
 
+<!-- ============ CLOUD-EGRESS CONSENT MODAL (M-4, issue #67) ============ -->
+<!-- Blocking by design: no backdrop-click-close / no ✕ — the caller is
+     waiting on Grant or Decline before a model call proceeds. -->
+<div id="modal-egress-consent" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+  <div class="panel gold-border rounded-lg p-5 w-full max-w-lg max-h-[90vh] overflow-y-auto text-sm">
+    <h2 class="wordmark font-bold mb-2">☁ Cloud model access</h2>
+    <p class="text-slate-400 text-xs leading-relaxed mb-3">
+      Sending a task to the agent sends your prompt, and any code it reads or writes,
+      to a third-party AI model provider (e.g. Anthropic, OpenAI, Google) so it can
+      generate a response. CodeMonkeys needs your explicit, per-account consent
+      before that happens — it's recorded and you can revoke it any time from
+      Settings → Account.
+    </p>
+    <div class="flex flex-col sm:flex-row gap-2">
+      <button id="egress-consent-grant" class="gold-btn rounded-lg py-2 px-4 text-xs flex-1">Grant access</button>
+      <button id="egress-consent-decline" class="gold-border rounded-lg py-2 px-4 text-xs text-slate-300 hover:text-red-200 flex-1">Decline</button>
+    </div>
+    <div id="egress-consent-declined-msg" class="hidden mt-3 text-xs text-red-300/90 gold-border rounded p-2 bg-red-900/10">
+      Model calls are unavailable until you grant access. Change your mind any time
+      from Settings → Account → Cloud-Egress Consent.
+    </div>
+  </div>
+</div>
+
 <script src="/static/forge/agents-hub.js"></script>
 <script src="/static/forge/omni-search.js"></script>
 <script src="/static/forge/fleet-store.js"></script>
@@ -893,6 +917,7 @@
 <script src="/static/forge/gremlins.js"></script>
 <script src="/static/forge/push.js"></script>
 <script src="/static/forge/three-card-triage.js"></script>
+<script src="/static/forge/egress-consent.js"></script>
 <script src="/static/forge/app.js"></script>
 <script src="/static/forge/field-report.js"></script>
 <script src="/static/forge/feedback.js"></script>
@@ -986,6 +1011,16 @@
           <button id="stn-btn-vertex-clear" class="text-red-400/80 text-xs hover:text-red-300">Clear</button>
         </div>
       </div>
+      <div class="settings-section-title mt-4">☁ Cloud-Egress Consent</div>
+      <p class="text-slate-500 text-xs mb-2">Your prompts and code are only sent to a third-party model provider while this is on (M-4, issue #67). Turning it off blocks model calls immediately, including mid-run.</p>
+      <label class="flex items-center gap-2 text-xs mb-1">
+        <span class="toggle-switch">
+          <input type="checkbox" id="stn-egress-consent-toggle">
+          <span class="toggle-track"></span>
+        </span>
+        <span id="stn-egress-consent-label">Loading…</span>
+      </label>
+      <p id="stn-egress-consent-msg" class="text-[.65rem] text-slate-500 mt-1"></p>
       <div class="settings-section-title mt-4 text-red-400/80">Sign out</div>
       <button id="stn-btn-logout" class="w-full rounded py-2 text-xs border border-red-900/40 text-red-300/80 hover:bg-red-900/20 mt-1" onclick="document.getElementById('btn-logout')?.click();">⏻ Log out</button>
     </div>
@@ -1046,6 +1081,7 @@
 <div id="passkey-list" class="hidden" style="display:none" aria-hidden="true"></div>
 
 <script src="/static/forge/index-shell.js"></script>
+
 
 </body>
 </html>

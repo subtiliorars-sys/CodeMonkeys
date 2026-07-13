@@ -28,7 +28,19 @@ const PUBLIC_API = new Set([
   "/api/webauthn/register/begin", "/api/webauthn/register/complete",
 ]);
 
+const _MODEL_CALL_PATH = /^\/api\/sessions\/[^/]+\/message$/;
+
 async function api(path, method = "GET", body = null) {
+  // M-4 (issue #67): just-in-time cloud-egress consent, checked before the
+  // one frontend call that can trigger call_model. The backend gate is the
+  // real enforcement (fail-closed) — this only avoids sending a doomed
+  // request and gives the user a chance to grant/decline first.
+  if (method === "POST" && _MODEL_CALL_PATH.test(path)) {
+    const ok = await window.EgressConsent.ensure(api);
+    if (!ok) {
+      throw new Error("Cloud-egress consent declined — model calls are unavailable until you grant access (Settings → Account).");
+    }
+  }
   const isPublic = PUBLIC_API.has(path);
   const r = await fetch(path, {
     method,
@@ -985,7 +997,15 @@ function renderEvent(e) {
       hideProviderWait();
       _clearStreamState();
       div.className = "ev-err rounded px-3 py-2";
-      div.innerHTML = agentTag(e) + esc(e.message); break;
+      if (window.EgressConsent?.isConsentError(e.message)) {
+        div.innerHTML = agentTag(e) + esc(e.message)
+          + `<div class="mt-2"><button class="gold-btn rounded px-3 py-1 text-xs" id="ev-egress-grant-${e.i}">Grant cloud-egress access</button></div>`;
+        const btn = div.querySelector(`#ev-egress-grant-${e.i}`);
+        if (btn) btn.onclick = () => EgressConsent.reopen(api);
+      } else {
+        div.innerHTML = agentTag(e) + esc(e.message);
+      }
+      break;
     case "provider_wait":
       showProviderWait(e.reason);
       return null;
