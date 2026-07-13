@@ -105,7 +105,40 @@ async function load() {
   }
 }
 
+/* S-3 (issue #68) — tamper-evidence check of the persisted audit hash chain.
+   Calls GET /api/audit/verify (owner-only) and shows intact/tampered. */
+async function verifyChain() {
+  const el = document.getElementById("chain-status");
+  el.style.color = "var(--dim)";
+  el.textContent = "verifying…";
+  try {
+    const tok = getToken();
+    const resp = await fetch("/api/audit/verify", {
+      headers: tok ? { Authorization: "Bearer " + tok } : {},
+    });
+    if (resp.status === 401 || resp.status === 403) {
+      el.style.color = "var(--red)";
+      el.textContent = `access denied (${resp.status}) — owner login required`;
+      return;
+    }
+    const data = await resp.json();
+    if (data.ok) {
+      el.style.color = "#39d353";
+      el.textContent = `chain intact ✓ ${data.entries} entr${data.entries === 1 ? "y" : "ies"}` +
+        (data.head ? `, head ${String(data.head).slice(0, 12)}…` : "");
+    } else {
+      el.style.color = "var(--red)";
+      el.textContent = `TAMPERED ✗ ${data.error || "chain verification failed"}` +
+        (data.line ? ` (line ${data.line})` : "");
+    }
+  } catch (e) {
+    el.style.color = "var(--red)";
+    el.textContent = `verify failed: ${e}`;
+  }
+}
+
 document.getElementById("btn-refresh").addEventListener("click", load);
+document.getElementById("btn-verify").addEventListener("click", verifyChain);
 
 // Trigger load on Enter in filter inputs
 ["f-type", "f-session", "f-limit"].forEach(id => {
