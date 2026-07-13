@@ -1,0 +1,5 @@
+# Desktop shell extras (install on top of requirements.txt).
+# WebView2 is used on Windows via pywebview.
+-r requirements.txt
+pywebview==5.4
+pyinstaller==6.14.1

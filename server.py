@@ -31,6 +31,7 @@ import select
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -95,8 +96,17 @@ except ImportError:
 
 # ----------------------------------------------------------------- config
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+def _app_base_dir() -> str:
+    """Repo root in source checkouts; PyInstaller extract dir when frozen."""
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        return sys._MEIPASS  # type: ignore[attr-defined]
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+BASE_DIR = _app_base_dir()
+# Desktop launcher sets DATA_DIR to %APPDATA%\\codemonkeys\\data (or XDG).
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(BASE_DIR, "data"))
+CM_DESKTOP = os.environ.get("CM_DESKTOP", "").strip() in ("1", "true", "yes")
 
 
 def _vertex_config_dir():
@@ -770,6 +780,12 @@ def _read_enc_file(path: str, default):
     return data, needs_migrate
 
 
+def _fchmod(fd: int, mode: int) -> None:
+    """Best-effort file mode; Windows Python has no os.fchmod."""
+    if hasattr(os, "fchmod"):
+        os.fchmod(fd, mode)  # type: ignore[attr-defined]
+
+
 def _write_enc_file(path: str, data, mode: int = 0o600,
                     clear_decrypt_failed: bool = False) -> None:
     """Atomic write of a JSON config file, Fernet-encrypted when CM_MASTER_KEY
@@ -792,8 +808,8 @@ def _write_enc_file(path: str, data, mode: int = 0o600,
     dir_ = os.path.dirname(path) or "."
     fd, tmp = tempfile.mkstemp(dir=dir_, prefix=".enc_cfg_")
     try:
-        # Apply the desired mode before writing any content.
-        os.fchmod(fd, mode)
+        # Apply the desired mode before writing any content (POSIX only).
+        _fchmod(fd, mode)
         with os.fdopen(fd, "wb") as f:
             f.write(content)
             f.flush()
@@ -817,7 +833,7 @@ def _write_enc_file(path: str, data, mode: int = 0o600,
                 _orig = _src.read()
             if _orig.startswith(_ENC_MAGIC):
                 bfd, btmp = tempfile.mkstemp(dir=dir_, prefix=".enc_bak_")
-                os.fchmod(bfd, 0o600)
+                _fchmod(bfd, 0o600)
                 with os.fdopen(bfd, "wb") as _bf:
                     _bf.write(_orig)
                 os.replace(btmp, path + ".undecryptable.bak")
@@ -827,7 +843,6 @@ def _write_enc_file(path: str, data, mode: int = 0o600,
     if clear_decrypt_failed:
         with _DECRYPT_FAILED_LOCK:
             _DECRYPT_FAILED = False
-
 
 # Module-level singleton — _session_secret() is called on every token
 # sign/verify, so we load once and cache.
@@ -8713,4 +8728,11 @@ _evict_env_secrets()
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))
+    # Desktop / local: bind loopback by default when CM_DESKTOP=1 or HOST set.
+    # Fly Dockerfile still passes --host 0.0.0.0 explicitly.
+    _default_host = "127.0.0.1" if CM_DESKTOP else "0.0.0.0"
+    uvicorn.run(
+        app,
+        host=os.environ.get("HOST", _default_host),
+        port=int(os.environ.get("PORT", "8080")),
+    )

@@ -12,6 +12,16 @@ Read `docs/STATE.md` + `docs/IDEATION.md` before each wave. Never merge your own
 
 _(none — safe automation backlog exhausted; next items are owner-gated below.)_
 
+## Parallel track — Windows desktop (manual)
+
+**Docs:** `docs/DESKTOP.md` · **Run:** `python -m desktop` · **Package:** `pwsh scripts/build-windows.ps1`
+
+| Wave | Status | Scope |
+|------|--------|--------|
+| CM-DESK-W1 | `active` | Loopback launcher + pywebview shell + PyInstaller onedir build |
+| CM-DESK-W2 | pending | Installer polish (Start Menu shortcut, optional NSIS/MSIX), icon |
+| CM-DESK-W3 | pending | Public BYOK web tier (after desktop is solid) |
+
 ## Parallel track — Forge UI / Cursor parity (manual)
 
 **Branch:** `work/frontend-polish` · deploy: owner runs `fly deploy` (not automation PR).  

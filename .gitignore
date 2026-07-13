@@ -7,6 +7,10 @@ __pycache__/
 vertex.env
 .vertex.env
 **/vertex-sa.json
+# desktop packaging
+dist/
+build/
+*.spec.bak
 # editor / tooling
 .cursor/
 .claude/worktrees/
