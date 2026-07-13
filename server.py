@@ -217,6 +217,15 @@ _PUSH_LOCK = threading.Lock()
 # owner-auditable erasure RECEIPT. Both live under DATA_DIR (/data) like users.json.
 ERASED_FILE = os.path.join(DATA_DIR, "erased_accounts.json")          # tombstone
 ERASURE_RECEIPTS_FILE = os.path.join(DATA_DIR, "erasure_receipts.jsonl")  # receipts
+# S-3 (issue #68) — hash-chained tamper-evident audit trail.  Every safelisted
+# security event (see _AUDIT_SAFELIST) and every erasure receipt is ALSO
+# appended to this chain: each entry commits to the previous entry's SHA-256,
+# so mutation/deletion/insertion/reorder of any entry is detectable by
+# verify_audit_chain() (owner endpoint /api/audit/verify, CLI
+# scripts/verify_audit_chain.py).  The head file records the current tail so
+# truncation of the newest entries is detectable too.
+AUDIT_CHAIN_FILE = os.path.join(DATA_DIR, "audit_chain.jsonl")
+AUDIT_CHAIN_HEAD_FILE = os.path.join(DATA_DIR, "audit_chain.head.json")
 SESSION_BUDGET_USD = float(os.environ.get("SESSION_BUDGET_USD", "5.00"))
 # Ceiling for a per-session budget override (W10) — a client can't set a runaway cap.
 SESSION_BUDGET_MAX_USD = float(os.environ.get("SESSION_BUDGET_MAX_USD", "50.00"))
@@ -1732,6 +1741,10 @@ def _write_receipt(uname: str, by: str, stores: list, ts: int) -> None:
                                     "by": by, "stores": stores}) + "\n")
         except OSError as e:
             _log.error("M-7 erasure: receipt append failed for %r: %s", uname, e)
+    # S-3 (issue #68): commit the receipt to the tamper-evident hash chain too
+    # (same minimal fields as the receipt line — id + store names only).
+    audit_chain_append({"type": "erasure", "ts": ts, "user": uname, "by": by,
+                        "stores": list(stores)})
     _log.info("M-7 erasure receipt: user=%s by=%s stores=%s", uname, by, stores)
 
 
@@ -5944,6 +5957,14 @@ def emit(session, etype, **fields):
             f.write(json.dumps(evt) + "\n")
     except OSError:
         pass
+    # S-3 (issue #68): security-relevant events also go into the hash-chained
+    # tamper-evident trail — the SAME redacted projection /api/audit serves
+    # (safelisted types + safelisted fields only), so the chain never persists
+    # anything the audit surface wouldn't already expose.
+    if etype in _AUDIT_SAFELIST:
+        proj = _audit_filter_event(session["id"], evt)
+        if proj is not None:
+            audit_chain_append(proj)
     return evt
 
 
@@ -7201,6 +7222,187 @@ def _audit_filter_event(sid: str, evt: dict) -> dict | None:
                 v = v[:600]
             proj[k] = v
     return proj
+
+
+# ---- S-3 hash-chained tamper-evident receipts (issue #68) ---------------------
+# The in-memory aggregator above answers "what happened"; the chain below makes
+# the PERSISTED trail tamper-evident.  Every safelisted event (the same redacted
+# projection /api/audit serves — nothing new is exposed) and every M-7 erasure
+# receipt is appended to AUDIT_CHAIN_FILE as
+#     {"seq": n, "prev": <sha256 of entry n-1>, "event": {...}, "hash": <sha256>}
+# where hash = SHA-256(canonical JSON of {event, prev, seq}).  Entry 0 links to
+# a well-known genesis value.  AUDIT_CHAIN_HEAD_FILE records the current tail
+# (seq + hash) so deleting entries off the END of the file is also detectable.
+#
+# Threat model / limits: this is tamper-EVIDENCE, not tamper-proofing.  An
+# attacker with write access to /data who deletes the chain file AND the head
+# record together leaves an empty-but-valid trail — a self-contained log cannot
+# prove its own absence.  Anchoring the head hash externally (e.g. the owner
+# noting `verify`'s head value out-of-band) closes that; any partial edit is
+# caught by verify_audit_chain().  Access control is unchanged: the chain file
+# lives under DATA_DIR like the session event logs, and the verification
+# endpoint is verify_owner-gated like /api/audit itself.
+
+_AUDIT_CHAIN_GENESIS = "0" * 64
+_AUDIT_CHAIN_LOCK = threading.Lock()
+# Cached (seq, hash) of the newest chain entry; lazily loaded under the lock.
+_AUDIT_CHAIN_TAIL: dict = {"loaded": False, "seq": -1, "hash": _AUDIT_CHAIN_GENESIS}
+
+
+def _audit_chain_entry_hash(seq: int, prev: str, event: dict) -> str:
+    """Canonical SHA-256 for a chain entry: sorted-key, compact-separator JSON
+    of {event, prev, seq}.  Deterministic — the same entry always hashes the
+    same, so the verifier can recompute it from the persisted line."""
+    payload = json.dumps({"event": event, "prev": prev, "seq": seq},
+                         sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _audit_chain_load_tail() -> None:
+    """Populate _AUDIT_CHAIN_TAIL from the last line of the chain file (the
+    file, not the head record, is authoritative for appends — after a crash
+    between the two writes the next append re-syncs the head).  Caller must
+    hold _AUDIT_CHAIN_LOCK."""
+    if _AUDIT_CHAIN_TAIL["loaded"]:
+        return
+    seq, tail_hash = -1, _AUDIT_CHAIN_GENESIS
+    try:
+        last = None
+        with open(AUDIT_CHAIN_FILE, encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    last = line
+        if last is not None:
+            entry = json.loads(last)
+            seq, tail_hash = int(entry["seq"]), str(entry["hash"])
+    except (OSError, ValueError, KeyError, TypeError):
+        # No chain yet (fresh install) or a damaged tail — appends restart the
+        # numbering only in the fresh-install case; damage is what the verifier
+        # is for and it will still flag it.
+        pass
+    _AUDIT_CHAIN_TAIL.update(loaded=True, seq=seq, hash=tail_hash)
+
+
+def audit_chain_append(event: dict) -> dict | None:
+    """Append one already-redacted audit event to the S-3 hash chain.
+    Best-effort like emit()'s own persistence: an OSError is logged, never
+    raised into the request path.  Returns the appended entry, or None."""
+    with _AUDIT_CHAIN_LOCK:
+        _audit_chain_load_tail()
+        seq = _AUDIT_CHAIN_TAIL["seq"] + 1
+        prev = _AUDIT_CHAIN_TAIL["hash"]
+        entry = {"seq": seq, "prev": prev, "event": event,
+                 "hash": _audit_chain_entry_hash(seq, prev, event)}
+        try:
+            with open(AUDIT_CHAIN_FILE, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
+            with open(AUDIT_CHAIN_HEAD_FILE, "w", encoding="utf-8") as f:
+                json.dump({"seq": seq, "hash": entry["hash"]}, f)
+        except OSError as e:
+            _log.error("S-3 audit chain append failed: %s", e)
+            return None
+        _AUDIT_CHAIN_TAIL.update(seq=seq, hash=entry["hash"])
+        return entry
+
+
+def verify_audit_chain(chain_path: str | None = None,
+                       head_path: str | None = None) -> dict:
+    """S-3 verifier — walk the persisted chain and check every link.
+
+    Detects: mutation of any entry (recomputed hash mismatch), deletion or
+    insertion or reordering anywhere in the chain (sequence break or prev-hash
+    link break), malformed/garbled lines, and deletion of entries off the END
+    of the file (last entry must match the separately-persisted head record).
+
+    Returns {"ok": True, "entries": n, "head": <tail hash>, "head_checked":
+    bool} for an intact chain, or {"ok": False, "entries": <verified-so-far>,
+    "error": <why>, "line": <1-based line>, "seq": ...} at the first break.
+    """
+    chain_path = chain_path or AUDIT_CHAIN_FILE
+    head_path = head_path or AUDIT_CHAIN_HEAD_FILE
+
+    def _fail(error: str, line_no=None, seq=None, entries=0) -> dict:
+        out = {"ok": False, "entries": entries, "error": error}
+        if line_no is not None:
+            out["line"] = line_no
+        if seq is not None:
+            out["seq"] = seq
+        return out
+
+    entries = 0
+    prev_hash = _AUDIT_CHAIN_GENESIS
+    last_seq = -1
+    try:
+        f = open(chain_path, encoding="utf-8")
+    except OSError:
+        f = None
+    if f is not None:
+        with f:
+            for line_no, line in enumerate(f, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                    seq = int(entry["seq"])
+                    prev = str(entry["prev"])
+                    event = entry["event"]
+                    entry_hash = str(entry["hash"])
+                    if not isinstance(event, dict):
+                        raise TypeError("event must be an object")
+                except (ValueError, KeyError, TypeError) as e:
+                    return _fail(f"malformed chain entry: {e}",
+                                 line_no, entries=entries)
+                expected = last_seq + 1
+                if seq != expected:
+                    kind = ("entry deleted or chain reordered" if seq > expected
+                            else "entry inserted or chain reordered")
+                    return _fail(f"sequence break: expected seq {expected}, "
+                                 f"found {seq} ({kind})", line_no, seq, entries)
+                if prev != prev_hash:
+                    return _fail("prev-hash link broken: entry does not commit "
+                                 "to the prior entry (insertion, deletion, or "
+                                 "reorder)", line_no, seq, entries)
+                if _audit_chain_entry_hash(seq, prev, event) != entry_hash:
+                    return _fail("entry hash mismatch: event content was "
+                                 "mutated after it was chained",
+                                 line_no, seq, entries)
+                prev_hash, last_seq = entry_hash, seq
+                entries += 1
+
+    # Tail-truncation check against the separately persisted head record.
+    try:
+        with open(head_path, encoding="utf-8") as hf:
+            head = json.load(hf)
+    except OSError:
+        head = None
+    except ValueError:
+        return _fail("head record is malformed JSON", entries=entries)
+
+    if head is not None:
+        if entries == 0:
+            return _fail(f"head record expects seq {head.get('seq')} but the "
+                         "chain file is empty or missing (chain deleted or "
+                         "truncated)", entries=entries)
+        if head.get("seq") != last_seq or head.get("hash") != prev_hash:
+            return _fail(f"tail mismatch: head record expects seq "
+                         f"{head.get('seq')}, chain ends at seq {last_seq} "
+                         "(tail entries deleted, or head/chain out of sync)",
+                         seq=last_seq, entries=entries)
+    elif entries:
+        return _fail("chain has entries but the head record is missing "
+                     "(possible tail-truncation cover-up)", entries=entries)
+
+    return {"ok": True, "entries": entries,
+            "head": prev_hash if entries else None,
+            "head_checked": head is not None}
+
+
+@app.get("/api/audit/verify")
+def audit_chain_verify(_: str = Depends(verify_owner)):
+    """S-3 — owner-only tamper-evidence check of the persisted audit chain.
+    Returns only integrity metadata (ok/entries/head hash/failure reason);
+    never event content, so it exposes nothing beyond /api/audit."""
+    return verify_audit_chain()
 
 
 @app.get("/api/audit")
