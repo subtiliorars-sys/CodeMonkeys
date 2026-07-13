@@ -20,7 +20,7 @@ def test_openai_base_url_vertex():
     prov = server._resolve(server.DEFAULT_PROVIDERS["vertex-gemini"], pid="vertex-gemini")
     url = server._openai_base_url(prov)
     assert "aiplatform.googleapis.com" in url
-    assert "codemonkeys-498819" in url
+    assert server.VERTEX_PROJECT in url
     assert url.endswith("/endpoints/openapi")
 
 
