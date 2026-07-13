@@ -27,7 +27,7 @@ Prefs override slug picks: `~/.config/agent-corps/model-prefs.env` (see `model-p
 | Tier | Units |
 |------|-------|
 | **T0** | `recon-scout`, `historian`, `scribe` |
-| **T1** | `field-engineer`, `logistics-engineer`, `medic`, `provost-qa`, `intel-analyst`, `forward-observer`, `quartermaster`, `cartographer`, `interrogator`, `sapper` |
+| **T1** | `field-engineer`, `logistics-engineer`, `medic`, `provost-qa`, `intel-analyst`, `forward-observer`, `quartermaster`, `cartographer`, `interrogator`, `sapper`, `compliance-officer`, `community-strategist`, `game-designer` |
 | **T3** | `staff-planner`, `red-team` (**always** — never spawn these at T0/T1/T2) |
 
 ---

@@ -1,19 +1,19 @@
 # Vendored from subtiliorars-sys/agent-corps — DO NOT edit these files here.
-# Re-sync:  corps-vendor-sync /home/subtiliorars/CodeMonkeys/corps
-# Audit:    corps-drift-check /home/subtiliorars/CodeMonkeys/corps
+# Re-sync:  corps-vendor-sync ../CodeMonkeys/corps
+# Audit:    corps-drift-check ../CodeMonkeys/corps
 source_repo: subtiliorars-sys/agent-corps
-source_sha: e87b8d347ded21be87fee48673402a3f419b7a24
-source_short: e87b8d3
-synced_utc: 2026-06-07T02:58:10Z
-mode: --with-deploy
+source_sha: 460b66bc2bb6749074894d85464d8a122de1c273
+source_short: 460b66b
+synced_utc: 2026-07-13T08:58:40Z
+mode: --docs-only
 files:
-  ddd525485083ec62fb457058a610c11f4217bd9f  AGENT_DOCTRINE.md
+  d3fa3ea6e6d215f261a0724f07087af89accba9f  AGENT_DOCTRINE.md
   316c7e63dadc79591e8540df71d1a5ab14f73240  CORPS_COMMANDER.md
-  ea3e1053eafd9bbea33983bc4da774ca4dc3b153  CORPS_MODEL_TIERS.md
+  7dc766912250e0d6b1b8228f26ec973728dd4a6a  CORPS_MODEL_TIERS.md
   f91342aee7aa064039ded67512510ad5a62856e1  CORPS_TREASURY.md
   497c776e23411cb8d9a281e3d0e8469e7ba46aa5  CORPS_PLAYBOOKS.md
   3c4fcdd5197db3e31f4dbcac954a77eab35438af  FLEET_PROTOCOL.md
-  85bc1652f1002fef2f4431b6154469b0e0b5c66d  agent-governance.md
+  4f5e25669584f2a10d4d8a810f5ad60173402c0f  agent-governance.md
   042fec043b637ecdae61fa3b9c941e28eb959ff2  commands/deploy.md
   1db6ff04423629dc79faeca0de86cad01ea15394  agents/cartographer.md
   7b5f470fcff80220550b2b6d12cc27d1a8732f16  agents/community-strategist.md
@@ -33,6 +33,8 @@ files:
   acef07bb61aaf660fb957cd6f8e0f34d33cb8e40  agents/sapper.md
   4a1a1ef977d581253a230eb1174ac30632d2d202  agents/scribe.md
   d4242525a44d4be2e189802ea1d9d91f9257e906  agents/staff-planner.md
+  bd94e763b5631b447c511abfd1772f3dade20105  templates/CONSENT_README.md
+  e642bac3f11c29c3469472fca30a47cc909a0662  templates/DECISIONS_TEMPLATE.md
   31bd4c70d6ad9287aa0dc34de4fcb439e8078169  templates/RISK_REGISTER_TEMPLATE.md
   f54b539b57f63a50f122d5675eb3dd5a9baa2862  templates/RUNSHEET_TEMPLATE.md
   43c21755c473df06ad682d7220a2c6b3cbfeba1a  playbooks/blackboard.md
