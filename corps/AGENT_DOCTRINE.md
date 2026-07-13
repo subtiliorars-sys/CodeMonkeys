@@ -104,8 +104,18 @@ model on every Cursor Task spawn.
 | Unit | Mission | Model |
 |------|---------|-------|
 | **provost-qa** | Tests + verification (run/observe) | Sonnet |
-| **code-gremlins** | Savage roast + stress/efficiency raid (report only) | Sonnet (T2) |
 | **red-team** | Adversarial review: try to *refute* / break | Opus |
+
+**Specialists (domain advisors — read/plan, hand build to line units)**
+| Unit | Mission | Model |
+|------|---------|-------|
+| **compliance-officer** | Regulatory / policy exposure review (reports, doesn't fix) | Sonnet |
+| **community-strategist** | Community & social strategy (plans + copy, never posts live) | Sonnet |
+| **game-designer** | Game design: loops, economy, progression (designs on paper) | Sonnet |
+
+The 15 units above plus these 3 specialists = **18 agents** total. The core 15 are the
+mission-command roster (recon → line → verify); the specialists are domain advisors deployed
+only when a mission needs that expertise — they cost nothing until spawned (menu, not bill).
 
 ## 4. Standing orders (every unit obeys)
 
