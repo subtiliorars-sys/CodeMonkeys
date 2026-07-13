@@ -1683,15 +1683,29 @@ def me_vertex_clear(username: str = Depends(verify_user)):
 # HARD-DELETES the subject's record AND every other store keyed to that account,
 # writes a tombstone that guards every reactivation path, and emits a receipt.
 #
-# CM persistence is single-Owner-plus-Members with a SHARED workspace: sessions
-# (data/sessions/<sid>), uploads (workspace/uploads/<sid>/), the blackboard and
-# the KB are workspace-global and NOT attributed to a username — deleting them on
-# one member's erasure would destroy other accounts' (incl. the Owner's) data, so
-# they are out of per-user cascade scope by design. The stores actually keyed to a
-# *username* are: the users.json record (which carries pin_hash/salt/mfa_secret/
-# webauthn credentials), the per-username login-throttle counter, and the
-# transient in-memory WebAuthn registration challenge. The cascade clears each.
-# (See PR / report for the full enumeration + the architectural note.)
+# Stores keyed to a *username* and cleared by the cascade: the users.json record
+# (which carries pin_hash/salt/mfa_secret/webauthn credentials), the per-username
+# login-throttle counter, the transient in-memory WebAuthn registration
+# challenge, the M-4 egress-consent record, and per-user Vertex credentials.
+#
+# Issue #70 (M-7 follow-up — message content): since S6 Layer 1/2 landed, the
+# content stores are per-user too, so the cascade also covers them:
+#   - sessions are SINGLE-OWNER (session["username"]; only the owner can type
+#     into one — _session_writable), so the member's sessions are deleted whole
+#     (events JSONL + history + index entry) without touching anyone else's;
+#   - typed "user" events are additionally tagged with their author at write
+#     time (emit()), so any of the member's messages that ever land in a session
+#     they do NOT own are found and content-scrubbed individually, leaving the
+#     rest of that shared log intact;
+#   - uploads, blackboards, per-user KB and cloned repos live under the member's
+#     isolated WORKSPACE_DIR/user_<uname>/ subtree, which is deleted whole.
+# Residual (disclosed in GOVERNANCE.md): records written BEFORE attribution
+# existed — legacy username=None sessions and any pre-#70 writes on the
+# workspace-root blackboard/KB — carry no author and cannot be selectively
+# attributed to an erased member; they stay, by design, because deleting those
+# shared records would destroy other accounts' (incl. the Owner's) data.
+# Feedback reports (data/feedback.jsonl) are anonymous by design (no username
+# recorded) and therefore not attributable.
 
 def _load_erased() -> dict:
     """The tombstone map {username: {erased_at, by}}. Caller need not hold a lock
@@ -1747,7 +1761,156 @@ def _erase_user_data(uname: str, user_snapshot: dict | None = None) -> list:
                 cleared.append("vertex_user_credentials")
     except Exception as e:
         _log.warning("M-7 erasure: vertex_user clear failed for %r: %s", uname, e)
+    # Issue #70 — message content. Sessions are single-owner, so the member's
+    # own sessions go whole; author-tagged strays in OTHER owners' sessions are
+    # content-scrubbed in place; the isolated workspace subtree goes whole.
+    try:
+        if _erase_user_sessions(uname):
+            cleared.append("sessions")
+    except Exception as e:
+        _log.warning("M-7 erasure: sessions clear failed for %r: %s", uname, e)
+    try:
+        if _scrub_user_authored_events(uname):
+            cleared.append("session_events_scrubbed")
+    except Exception as e:
+        _log.warning("M-7 erasure: event scrub failed for %r: %s", uname, e)
+    try:
+        if _erase_user_workspace(uname):
+            cleared.append("workspace")
+    except Exception as e:
+        _log.warning("M-7 erasure: workspace clear failed for %r: %s", uname, e)
     return cleared
+
+
+_M7_ERASED_MARKER = "[erased per M-7]"
+
+
+def _erase_user_sessions(uname: str) -> int:
+    """Hard-delete every session OWNED by *uname* (issue #70). A session is
+    single-owner — only session["username"] can type into it (_session_writable)
+    — so the whole record (in-memory entry, events JSONL, history JSON, index
+    row) is that member's content and can go without touching any other
+    account's data. Legacy username=None sessions are Owner-only and are left
+    alone. Returns the number of sessions deleted."""
+    if not uname:
+        return 0
+    doomed = []
+    with _SESSIONS_LOCK:
+        for sid in [sid for sid, s in SESSIONS.items()
+                    if s.get("username") == uname]:
+            doomed.append(SESSIONS.pop(sid))
+        if doomed:
+            _persist_index()
+    for s in doomed:
+        # Flag first, then stop: emit()/persist_history() check the flag so an
+        # in-flight run of this session can no longer re-materialize the files.
+        s["_m7_erased"] = True
+        try:
+            s["stop_flag"].set()
+        except Exception:
+            pass
+        for path in (_events_path(s["id"]),
+                     os.path.join(SESSIONS_DIR, f"{s['id']}.history.json")):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+    return len(doomed)
+
+
+def _m7_scrub_event(evt: dict) -> None:
+    """Blank every content-bearing string field of an author-tagged event,
+    keeping the structural skeleton (i/ts/type) so indices, ordering and the
+    surrounding shared log stay intact."""
+    for k, v in list(evt.items()):
+        if k in ("i", "ts", "type"):
+            continue
+        if isinstance(v, str):
+            evt[k] = _M7_ERASED_MARKER
+
+
+def _scrub_user_authored_events(uname: str) -> int:
+    """Selectively erase *uname*'s author-tagged events from sessions they do
+    NOT own (issue #70). Sessions are single-owner today, so after
+    _erase_user_sessions this normally finds nothing — it is the precise-erasure
+    backstop for any tagged message that ever lands in a shared/legacy log.
+    Only the tagged events are scrubbed; every other member's (and the Owner's)
+    events in the same file are byte-identical afterwards. Returns the number
+    of events scrubbed."""
+    if not uname:
+        return 0
+    scrubbed = 0
+    with _SESSIONS_LOCK:
+        others = {sid: s for sid, s in SESSIONS.items()
+                  if s.get("username") != uname}
+    for sid, s in others.items():
+        # In-memory view (may hold only the restored tail of the log). One
+        # malformed session must not abort the scrub of the rest.
+        try:
+            with s["lock"]:
+                for evt in s["events"]:
+                    if isinstance(evt, dict) and evt.get("author") == uname:
+                        _m7_scrub_event(evt)
+        except Exception as e:
+            _log.warning("M-7 erasure: in-memory scrub failed for %s: %s", sid, e)
+        # Persisted JSONL is the full log — rewrite only if a tagged line exists.
+        path = _events_path(sid)
+        try:
+            with open(path, "r", errors="replace") as f:
+                lines = f.readlines()
+        except OSError:
+            continue
+        out, hit = [], False
+        for line in lines:
+            try:
+                evt = json.loads(line)
+            except ValueError:
+                out.append(line)
+                continue
+            if isinstance(evt, dict) and evt.get("author") == uname:
+                _m7_scrub_event(evt)
+                hit = True
+                scrubbed += 1
+                out.append(json.dumps(evt) + "\n")
+            else:
+                out.append(line)      # untouched lines stay byte-identical
+        if hit:
+            tmp = path + ".tmp"
+            try:
+                with open(tmp, "w") as f:
+                    f.writelines(out)
+                os.replace(tmp, path)
+            except OSError as e:
+                _log.warning("M-7 erasure: could not rewrite %s: %s", path, e)
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+    return scrubbed
+
+
+def _erase_user_workspace(uname: str) -> bool:
+    """Delete the member's ISOLATED workspace subtree WORKSPACE_DIR/user_<uname>
+    (their uploads, per-user blackboards/KB/specs, cloned repos — issue #70).
+    Strictly guarded so an erasure can never reach shared data: the target must
+    be a real directory (not a symlink) whose realpath is a DIRECT child of
+    WORKSPACE_DIR named exactly user_<uname>; anything else is refused. The
+    workspace ROOT (other members' subtrees, legacy shared files) is never
+    touched. Returns True only if the subtree was removed."""
+    if not uname:
+        return False
+    target = os.path.join(WORKSPACE_DIR, f"user_{uname}")
+    if not os.path.isdir(target):
+        return False
+    root = os.path.realpath(WORKSPACE_DIR)
+    real = os.path.realpath(target)
+    if (os.path.islink(target) or os.path.dirname(real) != root
+            or os.path.basename(real) != f"user_{uname}"):
+        _log.warning("M-7 erasure: refused workspace delete for %r "
+                     "(path did not resolve to a direct user_ subdir)", uname)
+        return False
+    shutil.rmtree(target, ignore_errors=True)
+    return not os.path.isdir(target)
 
 
 def _write_tombstone(uname: str, by: str) -> int:
@@ -5550,7 +5713,7 @@ def t_blackboard_read(args):
         return f.read(_BB_MAX + 1)[:_BB_MAX]
 
 
-def t_blackboard_write(args):
+def t_blackboard_write(args, username: Optional[str] = None):
     slug = _bb_slug(args.get("slug", ""))
     section = str(args.get("section", "")).upper()
     content = (args.get("content", "") or "").strip()
@@ -5562,7 +5725,12 @@ def t_blackboard_write(args):
     if mode not in ("append", "replace"):
         return "ERROR: mode must be 'append' or 'replace'"
     try:
-        full = _jail_blackboard(slug)
+        # Issue #70: a member session's boards live in THEIR user_<name>/
+        # workspace (same base the read path — blackboard_read and
+        # _blackboard_context — already resolves), so member content is
+        # per-user-attributed at write time instead of commingling on the
+        # workspace-root board, and erasing the member erases their boards.
+        full = _jail_blackboard(slug, username)
     except ValueError as e:
         return f"ERROR: {e}"
     # Serialize the whole read-modify-write: concurrent sessions/subagents
@@ -6128,10 +6296,17 @@ def _redact(text):
 
 
 def emit(session, etype, **fields):
+    # Issue #70 (M-7): attribute typed messages to their author AT WRITE TIME,
+    # so the persisted log is self-describing and per-user erasure can find a
+    # member's messages even if one ever lands in a session they don't own.
+    if etype == "user" and "author" not in fields and session.get("username"):
+        fields["author"] = session["username"]
     with session["lock"]:
         evt = {"i": len(session["events"]), "ts": int(time.time()), "type": etype, **fields}
         evt = {k: (_redact(v) if isinstance(v, str) else v) for k, v in evt.items()}
         session["events"].append(evt)
+    if session.get("_m7_erased"):
+        return evt      # erased mid-run: never re-materialize the deleted log
     try:
         with open(_events_path(session["id"]), "a") as f:
             f.write(json.dumps(evt) + "\n")
@@ -6149,6 +6324,8 @@ def emit(session, etype, **fields):
 
 
 def persist_history(session):
+    if session.get("_m7_erased"):
+        return          # see _erase_user_sessions (issue #70)
     _save_json(os.path.join(SESSIONS_DIR, f"{session['id']}.history.json"),
                session["history"])
 
@@ -6420,7 +6597,9 @@ def make_executor(session, allowed, agent_label=None, depth=0):
                 with open(full, "r", errors="replace") as f:
                     return f.read(_BB_MAX + 1)[:_BB_MAX], True
             if name == "blackboard_write":
-                r = t_blackboard_write(args)
+                # Pass the session owner so the board lands in THEIR workspace,
+                # mirroring the blackboard_read branch above (issue #70).
+                r = t_blackboard_write(args, username=username)
                 return r, not r.startswith("ERROR")
             if name == "run_lint":
                 return t_run_lint(args, session=session), True
