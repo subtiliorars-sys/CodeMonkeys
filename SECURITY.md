@@ -149,6 +149,22 @@ keep that radius away from everything else.
   org-level consent, absent → allowed; explicit revocation still always
   blocks). An unrecognised value falls back to `explicit`, never open. See
   issue #67 "Owner-reserved" for the ratification.
+- **Frontend** (`static/forge/`): a just-in-time modal (`#modal-egress-consent`
+  in `index.html`, driven by `egress-consent.js`) checks `GET
+  /api/me/consent/egress` before the one frontend call that can trigger
+  `call_model` (`POST /api/sessions/{sid}/message` — the choke point shared by
+  the main app, workbench, and Agents Hub via `window.api`) and blocks with a
+  plain-language grant/decline prompt when consent isn't already granted. The
+  standalone terminal page (`terminal.html`/`terminal.js`, which has no shared
+  DOM with the main app) reuses the same `egress-consent.js` module but falls
+  back to a blocking `confirm()` prompt plus a `/consent [grant|revoke]`
+  command, since it has no modal markup of its own. Settings → Account has a
+  toggle to revoke (or re-grant) consent at any time, calling the same
+  `POST /api/me/consent/egress` endpoint. A mid-run `EgressConsentError` (e.g.
+  consent revoked from another tab while a run is in flight) is detected by
+  its fixed message prefix and rendered with its own "Grant cloud-egress
+  access" action instead of a generic error. None of this changes the backend
+  gate itself — it's UI in front of an already fail-closed `_require_egress_consent`.
 
 ## MCP connectors
 
