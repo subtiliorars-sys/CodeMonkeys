@@ -1,5 +1,6 @@
 import os
 import sys
+import shutil
 import tempfile
 import shutil
 import pytest
@@ -54,17 +55,19 @@ def test_grep_glob_exclusions(tmp_path, monkeypatch):
     assert "good.txt" in glob_res
     assert "bad.txt" not in glob_res
 
-    # Test grep tool
-    grep_res = t_grep({"pattern": "should", "path": "."})
-    assert "good.txt" in grep_res
-    assert "bad.txt" not in grep_res
+    # Test grep tool (requires grep on PATH — CI/Linux)
+    if shutil.which("grep"):
+        grep_res = t_grep({"pattern": "should", "path": "."})
+        assert "good.txt" in grep_res
+        assert "bad.txt" not in grep_res
 
 
 def test_session_tagging(monkeypatch, tmp_path):
     """Test session tags creation, listing, filtering, and updating."""
     monkeypatch.setattr(server, "SESSIONS_DIR", str(tmp_path))
     monkeypatch.setattr(server, "SESSIONS", {})
-    
+    monkeypatch.setattr(server, "load_users", lambda: {"testuser": {"role": "Owner"}})
+
     # 1. Create session with tags
     # Mock user auth dependency via dependency_overrides
     server.app.dependency_overrides[server.verify_user] = lambda: "testuser"
