@@ -73,6 +73,17 @@ def test_absent_record_blocks_in_explicit_mode(consent_env, monkeypatch):
     assert consent_env["n"] == 0
 
 
+def test_default_mode_is_explicit_when_env_unset(consent_env):
+    """Owner-ratified 2026-07-13 (issue #67): with EGRESS_CONSENT_MODE unset,
+    the default is "explicit", not the old "byok-implied" — an absent record
+    blocks. `consent_env` already deletes the env var; this locks the default
+    in so a future change can't silently loosen it."""
+    assert server._egress_consent_mode() == "explicit"
+    with pytest.raises(server.EgressConsentError):
+        server.call_model(PROVIDER, "sys", [], [], username="nobody")
+    assert consent_env["n"] == 0
+
+
 def test_absent_record_allowed_in_byok_implied_mode(consent_env, monkeypatch):
     """Default mode: owner BYO keys read as consent — current behaviour kept
     until the Owner ratifies the issue-#67 reserved question."""

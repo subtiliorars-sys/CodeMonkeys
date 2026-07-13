@@ -232,14 +232,15 @@ AUDIT_CHAIN_HEAD_FILE = os.path.join(DATA_DIR, "audit_chain.head.json")
 # the gate sits in call_model (the single chokepoint every outbound LLM call
 # goes through) and FAILS CLOSED. EGRESS_CONSENT_MODE decides what an ABSENT
 # record means:
-#   "byok-implied" (default, preserves current behaviour) — the owner-configured
-#       BYO keys are read as org-level consent, so absent → allowed. An explicit
-#       per-user REVOCATION always blocks, in every mode.
-#   "explicit" — an affirmative per-user grant is required; absent → blocked.
-# OWNER DECISION PENDING (issue #67 "Owner-reserved"): whether BYO-key
-# constitutes consent for MEMBER content, or an explicit per-user gate is
-# required. Until ratified, the default stays byok-implied; flipping to the
-# strict interpretation is `EGRESS_CONSENT_MODE=explicit` — no code change.
+#   "explicit" (default, OWNER-RATIFIED 2026-07-13, issue #67) — an affirmative
+#       per-user grant is required; absent → blocked.
+#   "byok-implied" — the owner-configured BYO keys are read as org-level
+#       consent, so absent → allowed. An explicit per-user REVOCATION always
+#       blocks, in every mode, regardless of which reading is active.
+# Owner decision (issue #67 "Owner-reserved"): BYO-key does NOT by itself
+# constitute consent for member content; an explicit per-user gate is required.
+# Reverting to the looser reading is `EGRESS_CONSENT_MODE=byok-implied` — no
+# code change.
 EGRESS_CONSENT_FILE = os.path.join(DATA_DIR, "egress_consent.json")
 _EGRESS_CONSENT_MODES = ("byok-implied", "explicit")
 _EGRESS_CONSENT_HISTORY_CAP = 20   # bounded per-user grant/revoke audit trail
@@ -1823,9 +1824,10 @@ def erasures_list(_: str = Depends(verify_owner)):
 # ------------------------------------------------- M-4 cloud-egress consent
 # Recorded, revocable, per-user consent for sending a user's content to a
 # third-party model provider. See the EGRESS_CONSENT_FILE comment block (top of
-# file) for the two EGRESS_CONSENT_MODE interpretations and the pending Owner
-# decision (issue #67). The runtime gate lives in call_model / _debate_verify
-# and fails CLOSED: nothing is sent when the gate refuses.
+# file) for the two EGRESS_CONSENT_MODE interpretations and the Owner's
+# ratified decision (issue #67, 2026-07-13: default is "explicit"). The
+# runtime gate lives in call_model / _debate_verify and fails CLOSED: nothing
+# is sent when the gate refuses.
 
 _EGRESS_CONSENT_LOCK = threading.Lock()
 
@@ -1836,10 +1838,11 @@ class EgressConsentError(RuntimeError):
 
 
 def _egress_consent_mode() -> str:
-    """Current interpretation of an ABSENT consent record (env-tunable so the
-    Owner can ratify either reading of the BYO-key question without a deploy).
-    An unrecognised value falls back to the STRICTEST mode — never fail open."""
-    mode = (os.environ.get("EGRESS_CONSENT_MODE") or "byok-implied").strip().lower()
+    """Current interpretation of an ABSENT consent record. Owner-ratified
+    default (2026-07-13, issue #67) is "explicit"; env-tunable back to
+    "byok-implied" if ever needed, without a deploy. An unrecognised value
+    falls back to the STRICTEST mode — never fail open."""
+    mode = (os.environ.get("EGRESS_CONSENT_MODE") or "explicit").strip().lower()
     return mode if mode in _EGRESS_CONSENT_MODES else "explicit"
 
 
@@ -1893,7 +1896,7 @@ def _clear_egress_consent(username: str) -> bool:
 def _egress_allowed(username: str | None) -> tuple:
     """(allowed: bool, reason: str). An explicit 'revoked' blocks in EVERY mode;
     an explicit 'granted' allows; an absent record is mode-dependent (see the
-    EGRESS_CONSENT_FILE comment block — Owner decision pending)."""
+    EGRESS_CONSENT_FILE comment block — Owner-ratified default is "explicit")."""
     rec = _egress_consent_record(username)
     status = rec.get("status") if rec else None
     if status == "revoked":

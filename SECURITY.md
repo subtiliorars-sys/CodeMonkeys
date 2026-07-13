@@ -144,11 +144,11 @@ keep that radius away from everything else.
 - Self-service: `GET/POST /api/me/consent/egress` (any active account).
   Revocation takes effect on the **next** model call, including mid-run.
 - `EGRESS_CONSENT_MODE` decides what an ABSENT record means:
-  `byok-implied` (default — owner BYO keys read as org-level consent, absent →
-  allowed, explicit revocation still always blocks) or `explicit` (affirmative
-  grant required, absent → blocked). An unrecognised value falls back to
-  `explicit`, never open. **Owner decision pending** on which interpretation is
-  ratified — see issue #67 "Owner-reserved".
+  `explicit` (default, **Owner-ratified 2026-07-13** — affirmative grant
+  required, absent → blocked) or `byok-implied` (owner BYO keys read as
+  org-level consent, absent → allowed; explicit revocation still always
+  blocks). An unrecognised value falls back to `explicit`, never open. See
+  issue #67 "Owner-reserved" for the ratification.
 
 ## MCP connectors
 
