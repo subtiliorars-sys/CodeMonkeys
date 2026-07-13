@@ -254,6 +254,17 @@ AUDIT_CHAIN_HEAD_FILE = os.path.join(DATA_DIR, "audit_chain.head.json")
 EGRESS_CONSENT_FILE = os.path.join(DATA_DIR, "egress_consent.json")
 _EGRESS_CONSENT_MODES = ("byok-implied", "explicit")
 _EGRESS_CONSENT_HISTORY_CAP = 20   # bounded per-user grant/revoke audit trail
+# M-8 backup posture (Tier B invariant): GOVERNANCE.md requires the backup path
+# to be VERIFIED, not just documented — "test: restore drill + receipt". CM's
+# data lives on the Fly volume `cm_data` at /data (docs/RECOVERY.md); its backup
+# notion is the Fly volume snapshot. run_backup_drill() (below, near the M-7
+# receipt code) proves a tree is restorable-in-practice by reading back and
+# validating every structured store CM writes, and appends a timestamped receipt
+# here — same append-only JSONL idiom as erasure_receipts.jsonl. Owner-only
+# viewer: GET /api/backup/drill-history; trigger: POST /api/backup/drill or
+# scripts/backup_drill.py (fly ssh console, or against a restored snapshot copy).
+BACKUP_DRILL_RECEIPTS_FILE = os.path.join(DATA_DIR, "backup_drill_receipts.jsonl")
+_BACKUP_DRILL_HISTORY_CAP = 100    # newest receipts returned by the owner endpoint
 SESSION_BUDGET_USD = float(os.environ.get("SESSION_BUDGET_USD", "5.00"))
 # Ceiling for a per-session budget override (W10) — a client can't set a runaway cap.
 SESSION_BUDGET_MAX_USD = float(os.environ.get("SESSION_BUDGET_MAX_USD", "50.00"))
@@ -2122,6 +2133,310 @@ def me_egress_consent_set(req: EgressConsentUpdate,
     allowed, _reason = _egress_allowed(username)
     return {"ok": True, "status": rec["status"], "updated_at": rec["updated_at"],
             "mode": _egress_consent_mode(), "effective_allowed": allowed}
+
+
+# ------------------------------------------------- M-8 backup posture: restore drill
+# The drill answers ONE question with a receipt: "would the data tree under
+# DATA_DIR actually come back after a restore?" It reads back and validates
+# every structured store CM writes (JSON parse + expected shape, JSONL line
+# parse, CMENC1 decrypt under the current master key, S-3 chain integrity via
+# verify_audit_chain, the sessions tree), then appends the result to
+# BACKUP_DRILL_RECEIPTS_FILE and commits a summary to the S-3 hash chain —
+# the M-7 receipt idiom. It is READ-ONLY over the stores themselves (its only
+# write is its own receipt), and failure reasons carry exception class +
+# position ONLY, never file bytes, so a corrupted store cannot leak content
+# through a receipt or an API response. Run it against the LIVE tree
+# (round-trip readability) or a RESTORED snapshot copy via data_dir=
+# (scripts/backup_drill.py <dir>) — the actual restore drill.
+
+_BACKUP_DRILL_LOCK = threading.Lock()
+
+# Every structured store CM writes under DATA_DIR: (canonical name, the module
+# global holding its live path, checker kind). Live runs resolve the global (so
+# env overrides like USERS_FILE are honored); data_dir= runs join the canonical
+# name under the given tree. The audit chain + sessions tree are checked
+# separately below; anything NOT listed here is still caught by the generic
+# top-level *.json/*.jsonl sweep in run_backup_drill.
+_BACKUP_DRILL_STORES = (
+    ("users.json",              "USERS_FILE",             "json-dict"),
+    ("erased_accounts.json",    "ERASED_FILE",            "json-dict"),
+    ("egress_consent.json",     "EGRESS_CONSENT_FILE",    "json-dict"),
+    ("login_throttle.json",     "LOGIN_THROTTLE_FILE",    "json-dict"),
+    ("daily_spend.json",        "DAILY_SPEND_FILE",       "json-dict"),
+    ("desk_settings.json",      "DESK_SETTINGS_FILE",     "json-dict"),
+    ("push_subscriptions.json", "PUSH_SUBS_FILE",         "json-dict"),
+    ("push_vapid.json",         "PUSH_VAPID_FILE",        "json"),
+    ("feedback_status.json",    "FEEDBACK_STATUS_FILE",   "json"),
+    ("model_catalog.json",      "MODEL_CATALOG_FILE",     "json"),
+    ("mcp_config.json",         "MCP_CONFIG_FILE",        "json-list"),
+    ("model_config.json",       "MODELS_FILE",            "enc-json"),
+    ("mcp_tokens.json",         "MCP_TOKENS_FILE",        "enc-json"),
+    ("erasure_receipts.jsonl",  "ERASURE_RECEIPTS_FILE",  "jsonl"),
+    ("feedback.jsonl",          "FEEDBACK_FILE",          "jsonl"),
+    ("backup_drill_receipts.jsonl", "BACKUP_DRILL_RECEIPTS_FILE", "jsonl"),
+    ("session_secret.key",      "SECRET_FILE",            "key"),
+    ("master.key",              "MASTER_KEY_FILE",        "key"),
+)
+
+
+def _drill_reason(exc: Exception) -> str:
+    """Terse, content-free failure reason. JSONDecodeError/UnicodeDecodeError
+    are reduced to class + position (their str() never embeds the document, but
+    we don't rely on that); OSError messages carry errno + path only."""
+    if isinstance(exc, json.JSONDecodeError):
+        return f"JSONDecodeError: line {exc.lineno} column {exc.colno}"
+    if isinstance(exc, UnicodeDecodeError):
+        return f"UnicodeDecodeError: byte offset {exc.start}"
+    return f"{type(exc).__name__}: {exc}"
+
+
+def _drill_check_json(path: str, want: type | None = None) -> dict:
+    """A plain-JSON store parses and (when known) has the expected top-level
+    shape. Absent is fine — a fresh volume simply hasn't written it yet."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return {"status": "absent"}
+    except (OSError, ValueError, UnicodeDecodeError) as e:
+        return {"status": "fail", "reason": _drill_reason(e)}
+    if want is not None and not isinstance(data, want):
+        return {"status": "fail",
+                "reason": f"expected {want.__name__}, got {type(data).__name__}"}
+    return {"status": "pass"}
+
+
+def _drill_check_jsonl(path: str) -> dict:
+    """Every non-blank line of an append-only JSONL store parses."""
+    try:
+        f = open(path, encoding="utf-8")
+    except FileNotFoundError:
+        return {"status": "absent"}
+    except OSError as e:
+        return {"status": "fail", "reason": _drill_reason(e)}
+    records = 0
+    line_no = 0
+    with f:
+        try:
+            for line_no, line in enumerate(f, start=1):
+                if not line.strip():
+                    continue
+                json.loads(line)
+                records += 1
+        except (ValueError, UnicodeDecodeError) as e:
+            return {"status": "fail",
+                    "reason": f"line {line_no}: {_drill_reason(e)}"}
+        except OSError as e:
+            return {"status": "fail", "reason": _drill_reason(e)}
+    return {"status": "pass", "records": records}
+
+
+def _drill_check_enc_json(path: str) -> dict:
+    """A config store that may be Fernet-encrypted (CMENC1) or plaintext JSON.
+    Unlike the runtime readers this is STRICT and side-effect-free: a file we
+    cannot decrypt is a drill FAILURE (after a restore that is exactly what the
+    Owner must find out), and the fail-soft _DECRYPT_FAILED banner flag is left
+    alone. Decryption uses the process's current master key (CM_MASTER_KEY env
+    or data/master.key) — the same key a restored volume would boot with."""
+    try:
+        with open(path, "rb") as f:
+            blob = f.read()
+    except FileNotFoundError:
+        return {"status": "absent"}
+    except OSError as e:
+        return {"status": "fail", "reason": _drill_reason(e)}
+    encrypted = blob.startswith(_ENC_MAGIC)
+    if encrypted:
+        fernet = _make_fernet()
+        if fernet is None:
+            return {"status": "fail", "reason":
+                    "encrypted (CMENC1) but no master key is available to decrypt"}
+        try:
+            blob = fernet.decrypt(blob[len(_ENC_MAGIC):])
+        except _FernetInvalidToken:
+            return {"status": "fail", "reason":
+                    "encrypted (CMENC1) but does not decrypt under the current master key"}
+    try:
+        json.loads(blob.decode())
+    except (ValueError, UnicodeDecodeError) as e:
+        return {"status": "fail", "reason": _drill_reason(e)}
+    return {"status": "pass", "encrypted": encrypted}
+
+
+def _drill_check_key(path: str) -> dict:
+    """Key material just has to be present-and-readable (absent is fine — both
+    keys are regenerated on first boot; content is deliberately not inspected)."""
+    try:
+        with open(path, "rb") as f:
+            blob = f.read()
+    except FileNotFoundError:
+        return {"status": "absent"}
+    except OSError as e:
+        return {"status": "fail", "reason": _drill_reason(e)}
+    if not blob.strip():
+        return {"status": "fail", "reason": "key file exists but is empty"}
+    return {"status": "pass"}
+
+
+def _drill_check_chain(chain_path: str, head_path: str) -> dict:
+    """The S-3 audit chain must not just parse — it must VERIFY (hash links,
+    sequence, tail-truncation). Reuses verify_audit_chain so drill and
+    /api/audit/verify can never drift apart."""
+    if not os.path.exists(chain_path) and not os.path.exists(head_path):
+        return {"status": "absent"}
+    res = verify_audit_chain(chain_path, head_path)
+    if res.get("ok"):
+        return {"status": "pass", "records": res.get("entries", 0)}
+    return {"status": "fail",
+            "reason": res.get("error", "chain verification failed")}
+
+
+def _drill_check_sessions(sessions_dir: str) -> dict:
+    """Every persisted session artifact (index.json, *.history.json,
+    *.events.jsonl) reads back. Reported as one store; a failure lists the
+    first few offending filenames (server-generated sids — no user content)."""
+    if not os.path.isdir(sessions_dir):
+        return {"status": "absent"}
+    try:
+        names = sorted(os.listdir(sessions_dir))
+    except OSError as e:
+        return {"status": "fail", "reason": _drill_reason(e)}
+    checked, bad = 0, []
+    for name in names:
+        path = os.path.join(sessions_dir, name)
+        if not os.path.isfile(path) or ".tmp." in name:
+            continue
+        if name.endswith(".jsonl"):
+            res = _drill_check_jsonl(path)
+        elif name.endswith(".json"):
+            res = _drill_check_json(path)
+        else:
+            continue
+        checked += 1
+        if res["status"] == "fail":
+            bad.append(f"{name}: {res.get('reason', '')}")
+    if bad:
+        suffix = f" (+{len(bad) - 5} more)" if len(bad) > 5 else ""
+        return {"status": "fail", "files": checked,
+                "reason": "; ".join(bad[:5]) + suffix}
+    return {"status": "pass", "files": checked}
+
+
+def run_backup_drill(by: str, data_dir: str | None = None) -> dict:
+    """M-8 restore drill. data_dir=None drills the LIVE tree (module-global
+    paths); a path drills a restored/copied tree laid out like /data. Appends a
+    receipt into the drilled tree and (live runs only) commits a summary to the
+    S-3 chain. Returns the full per-store result."""
+    checkers = {
+        "json":      _drill_check_json,
+        "json-dict": lambda p: _drill_check_json(p, dict),
+        "json-list": lambda p: _drill_check_json(p, list),
+        "jsonl":     _drill_check_jsonl,
+        "enc-json":  _drill_check_enc_json,
+        "key":       _drill_check_key,
+    }
+    base = data_dir if data_dir is not None else DATA_DIR
+    results, covered = [], set()
+    for name, attr, kind in _BACKUP_DRILL_STORES:
+        path = os.path.join(data_dir, name) if data_dir is not None else globals()[attr]
+        covered.add(os.path.normcase(os.path.abspath(path)))
+        results.append({"store": name, **checkers[kind](path)})
+    if data_dir is not None:
+        chain = os.path.join(data_dir, "audit_chain.jsonl")
+        head = os.path.join(data_dir, "audit_chain.head.json")
+        sessions = os.path.join(data_dir, "sessions")
+    else:
+        chain, head, sessions = AUDIT_CHAIN_FILE, AUDIT_CHAIN_HEAD_FILE, SESSIONS_DIR
+    covered.update(os.path.normcase(os.path.abspath(p)) for p in (chain, head))
+    results.append({"store": "audit_chain", **_drill_check_chain(chain, head)})
+    results.append({"store": "sessions/", **_drill_check_sessions(sessions)})
+    # Future-proofing sweep: a store added later (or landed out-of-band) still
+    # gets a generic parse check, so the drill can't silently under-cover.
+    try:
+        extras = sorted(os.listdir(base)) if os.path.isdir(base) else []
+    except OSError:
+        extras = []
+    for name in extras:
+        path = os.path.join(base, name)
+        if (not os.path.isfile(path)
+                or os.path.normcase(os.path.abspath(path)) in covered
+                or name.startswith(".") or ".tmp." in name
+                or name.endswith(".bak")):
+            continue
+        if name.endswith(".jsonl"):
+            results.append({"store": name, **_drill_check_jsonl(path)})
+        elif name.endswith(".json"):
+            results.append({"store": name, **_drill_check_enc_json(path)})
+    failed = [r["store"] for r in results if r["status"] == "fail"]
+    checked = sum(1 for r in results if r["status"] != "absent")
+    # A drill that verified NOTHING is not a pass: an empty tree is what
+    # restoring the wrong (or blank) volume looks like. Live trees always have
+    # at least session_secret.key, so this only bites a bad data_dir.
+    out = {"ok": not failed and checked > 0, "ts": int(time.time()), "by": by,
+           "data_dir": base, "checked": checked,
+           "absent": sum(1 for r in results if r["status"] == "absent"),
+           "failed": failed, "stores": results}
+    if checked == 0:
+        out["note"] = "no stores found — empty tree or wrong data_dir?"
+    _write_drill_receipt(out, data_dir=data_dir)
+    return out
+
+
+def _write_drill_receipt(result: dict, data_dir: str | None = None) -> None:
+    """Append the drill receipt (append-only JSONL — the M-7 receipt idiom).
+    Live runs also commit a summary to the S-3 hash chain, so 'a drill ran and
+    said X' is itself tamper-evident. Best-effort like _write_receipt: an
+    OSError is logged, never raised into the caller."""
+    path = (os.path.join(data_dir, "backup_drill_receipts.jsonl")
+            if data_dir is not None else BACKUP_DRILL_RECEIPTS_FILE)
+    line = {"ts": result["ts"], "event": "backup_drill", "by": result["by"],
+            "ok": result["ok"], "checked": result["checked"],
+            "absent": result["absent"], "failed": result["failed"],
+            "stores": result["stores"]}
+    with _BACKUP_DRILL_LOCK:
+        try:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(line) + "\n")
+        except OSError as e:
+            _log.error("M-8 drill: receipt append failed: %s", e)
+    if data_dir is None:
+        audit_chain_append({"type": "backup_drill", "ts": result["ts"],
+                            "by": result["by"], "ok": result["ok"],
+                            "checked": result["checked"],
+                            "failed": result["failed"]})
+    _log.info("M-8 backup drill: ok=%s checked=%s failed=%s by=%s",
+              result["ok"], result["checked"], result["failed"], result["by"])
+
+
+@app.post("/api/backup/drill")
+def backup_drill_run(owner: str = Depends(verify_owner)):
+    """M-8 — Owner-only restore drill over the live DATA_DIR. Read-only apart
+    from appending its own receipt; returns the full per-store result."""
+    return run_backup_drill(by=owner)
+
+
+@app.get("/api/backup/drill-history")
+def backup_drill_history(_: str = Depends(verify_owner)):
+    """Owner-only view of past drill receipts, newest first, bounded — the
+    GET /api/erasures idiom for the M-8 receipt trail."""
+    receipts, malformed = [], 0
+    try:
+        with open(BACKUP_DRILL_RECEIPTS_FILE, encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    receipts.append(json.loads(line))
+                except ValueError:
+                    malformed += 1
+    except FileNotFoundError:
+        pass
+    except OSError:
+        raise HTTPException(500, "drill receipt store unreadable")
+    receipts = receipts[-_BACKUP_DRILL_HISTORY_CAP:]
+    receipts.reverse()
+    return {"drills": receipts, "malformed_lines": malformed}
 
 
 class FirstSetup(BaseModel):

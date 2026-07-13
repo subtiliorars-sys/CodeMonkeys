@@ -34,8 +34,13 @@ not when you intend to add it.
 ### Tier B — Holds people's data (adds to A)
 - [ ] **M-4 Consent before cloud egress** — no user content leaves to a third-party model/service without recorded, revocable consent. _(gate + test)_
 - [ ] **M-5 PII gates + scrubbing** — surfaces that publish/share user-derived content refuse high-confidence identifiers (fail-closed), with a scrubber beneath. _(gate + test)_
+<<<<<<< HEAD
 - [x] **M-7 Real erasure** — `DELETE /api/users/{uname}` (Owner-only) hard-deletes the users.json record AND every derived per-user store (login-throttle counter, transient WebAuthn challenge, egress-consent record, Vertex credentials; the record carries pin/salt/mfa/passkey material), writes a tombstone (`data/erased_accounts.json`) that blocks re-register/invite/rename-into the id, and appends an owner-auditable receipt (`data/erasure_receipts.jsonl`, viewable at `GET /api/erasures`) carrying only the subject id + names of the stores cleared. Message content (issue #70): sessions are single-owner and typed messages are author-tagged at write time, so the cascade also deletes the member's own sessions (event logs + history + index rows) whole, content-scrubs any author-tagged message of theirs inside a session they don't own, and deletes their isolated `user_<uname>/` workspace subtree (uploads, blackboards, per-user KB, clones) — never touching other accounts' data. Residual: pre-attribution records (legacy `username=None` sessions, pre-#70 workspace-root blackboard/KB writes) carry no author and stay; anonymous-by-design feedback reports are not attributable. Backups: CM's only backup notion is the Fly volume snapshot, which ages out of its window naturally (stated retention exception); no backup-deletion is built (Owner-reserved, Phase-4 crypto-shred target). _(gate + test + receipt)_
 - [ ] **M-8 Backup posture** — data-holding repos document + verify a backup path (snapshots and/or encrypted off-site vault, keys held by Owner). _(test: restore drill + receipt)_
+=======
+- [x] **M-7 Real erasure** — `DELETE /api/users/{uname}` (Owner-only) hard-deletes the users.json record AND every derived per-user store (login-throttle counter, transient WebAuthn challenge; the record carries pin/salt/mfa/passkey material), writes a tombstone (`data/erased_accounts.json`) that blocks re-register/invite/rename-into the id, and appends an owner-auditable receipt (`data/erasure_receipts.jsonl`, viewable at `GET /api/erasures`) carrying only the subject id. Sessions/uploads/blackboard/KB are workspace-global (not per-user) so they are out of per-user cascade scope by design — see the architectural note below. Backups: CM's only backup notion is the Fly volume snapshot, which ages out of its window naturally (stated retention exception); no backup-deletion is built (Owner-reserved, Phase-4 crypto-shred target). _(gate + test + receipt)_
+- [x] **M-8 Backup posture** — backup path documented (`docs/RECOVERY.md` Scenario G; Fly volume `cm_data` at `/data` + automatic daily volume snapshots) AND verified: a restore drill (`run_backup_drill`) reads back + validates every structured store CM writes under `DATA_DIR` (JSON parse + expected shape, JSONL line-parse, CMENC1 decrypt under the current master key, S-3 chain integrity via `verify_audit_chain`, sessions tree), runnable against the live tree or a restored snapshot copy (Owner-only `POST /api/backup/drill`, or `scripts/backup_drill.py [dir]` via `fly ssh console`), and appends a timestamped pass/fail-per-store receipt to `data/backup_drill_receipts.jsonl` (Owner view: `GET /api/backup/drill-history`; live-run summaries also committed to the S-3 hash chain). An encrypted OFF-SITE vault (keys held by Owner) is NOT built — Owner-reserved infra decision; snapshots satisfy the "snapshots and/or" letter. _(test: restore drill + receipt — `tests/test_backup_drill.py`)_
+>>>>>>> c9d94c8 (feat: M-8 backup posture - restore drill + receipt)
 - [x] **M-10 Serialized atomic writes** — all mutators of shared user state are serialized (single-writer) and write atomically; no slow I/O in the critical section. _(test)_
 - [ ] **M-12 Minors + likeness consent** — no human imagery / minors' data without documented consent; public-surface images need a consent-log entry or a SAMPLE_ prefix (CI filename-check). _(hook + gate + receipt)_
 - [ ] **T-2 (spirit)** — where progress mechanics exist, money must not gate or accelerate them. _(test where applicable)_
@@ -147,6 +152,7 @@ be able to read the latest entry and know exactly what is and isn't satisfied.
   money code surface changed). The MISSING/PARTIAL fixes (esp. M-7 erasure) are
   follow-up work that WILL need an S-4 red-team pass when implemented.
 
+<<<<<<< HEAD
 ### 2026-07-13 — M-7 follow-up: per-user attribution + message-content erasure (issue #70)
 - **Scope correction vs the 2026-06-07 note:** since S6 Layer 1/2 (session
   ownership + per-user workspace subdirs) landed, sessions are SINGLE-OWNER
@@ -177,6 +183,55 @@ be able to read the latest entry and know exactly what is and isn't satisfied.
 - Red-team pass (S-4): recorded in the PR body (spoofed-attribution,
   over-deletion via crafted username/symlink, under-deletion via in-flight
   runs, and cross-account blast-radius cases checked).
+=======
+### 2026-07-13 — M-8 backup posture: restore drill + receipt
+- **M-8 PARTIAL → PRESENT** (PR "M-8: restore drill + receipt"). The 2026-06-07
+  gap was the verification half: volume + runbook documented, but "no encrypted
+  off-site vault and no recorded restore drill/receipt". The drill/receipt half
+  now exists as a mechanism (test + receipt), not prose:
+  - `run_backup_drill()` (server.py) reads back + validates every structured
+    store CM writes under `DATA_DIR` — JSON parse + expected top-level shape,
+    JSONL line-parse, CMENC1 configs must DECRYPT under the current master key
+    (strict, unlike the fail-soft runtime readers), S-3 audit chain must VERIFY
+    (`verify_audit_chain`), sessions tree read back — plus a generic sweep of
+    any unlisted top-level `*.json`/`*.jsonl` so future stores can't silently
+    escape coverage. A drill that finds NOTHING to check reports not-ok (an
+    empty tree is what restoring the wrong volume looks like).
+  - Receipt: every drill appends `{ts, event, by, ok, checked, absent, failed,
+    stores[]}` to `data/backup_drill_receipts.jsonl` (append-only JSONL, the
+    M-7 receipt idiom); live-tree drills also commit a summary to the S-3 hash
+    chain, so "a drill ran and said X" is itself tamper-evident.
+  - Triggers: Owner-only `POST /api/backup/drill` (live tree) and
+    `scripts/backup_drill.py [data_dir]` for `fly ssh console` / restored-
+    snapshot copies (exit 0/1). History: Owner-only `GET /api/backup/drill-history`.
+    Runbook: `docs/RECOVERY.md` Scenario G (quick live drill + full
+    restore-a-snapshot drill).
+  - Drill EXECUTED as part of this audit (2026-07-13, local, via
+    `scripts/backup_drill.py` against a seeded /data-shaped tree): healthy tree
+    → ok=true, 8 stores checked, receipt appended; deliberately corrupted
+    `users.json` → ok=false, `failed=["users.json"]`, exit 1, second receipt
+    appended. Tests: `tests/test_backup_drill.py` (12 — healthy pass+receipt,
+    corrupted JSON/JSONL/CMENC1/chain/session artifacts each detected,
+    wrong-shape detected, unknown-store sweep, 401/403 fail-closed endpoints,
+    corrupted-store contents never echoed into result or receipt).
+- **Still open on M-8's spirit (disclosed):** no encrypted OFF-SITE vault with
+  Owner-held keys — Owner-reserved infra decision (likely aws-infra), NOT built
+  here. Fly's automatic daily `cm_data` snapshots + this drill satisfy the
+  checklist letter ("snapshots and/or encrypted off-site vault"); a snapshot
+  still lives with the same provider as the primary. If the Owner wants the
+  off-site half, a candidate shape is an Owner-triggered encrypted export the
+  Owner copies off-box — proposal only, separate decision.
+- Red-team pass (S-4, low-risk Tier B surface — read-only verification):
+  checked that drill failure reasons never carry file bytes (exception class +
+  line/column/offset only; locked by test), that both endpoints sit behind
+  `verify_owner` (deny-by-default 401/403, locked by tests), that the drill
+  writes nothing into user-facing stores (only its own receipt file), and that
+  the CMENC1 check is side-effect-free (doesn't flip the fail-soft
+  `_DECRYPT_FAILED` UI flag or rewrite configs).
+- Auditor: governance M-8 lane (Fable, dispatched session), verified locally:
+  full suite green on Linux-equivalent set (Windows-only pre-existing failures
+  unchanged vs clean main), `import server` clean.
+>>>>>>> c9d94c8 (feat: M-8 backup posture - restore drill + receipt)
 
 ## Amendments
 

@@ -186,6 +186,42 @@ volume restores or multi-machine deploys (see Scenario D above). Env wins over
 
 ---
 
+## Scenario G — Prove your backups actually restore (M-8 restore drill)
+
+**When:** after any restore, after anything touches the volume, and periodically
+(a drill alongside the quarterly GOVERNANCE re-audit is plenty).
+
+Your data survives on the Fly volume `cm_data` (`/data`), and Fly takes
+**automatic daily snapshots** of it (kept ~5 days). A snapshot you've never
+restored is a hope, not a backup — so CodeMonkeys ships a **restore drill**: it
+reads back every store the app writes (accounts, consent records, erasure
+receipts, encrypted key configs, the tamper-evident audit chain, saved
+sessions) and appends a timestamped pass/fail **receipt** to
+`/data/backup_drill_receipts.jsonl` (GOVERNANCE.md M-8: "restore drill + receipt").
+
+**Quick drill — does the LIVE volume read back? (easiest):**
+1. `fly ssh console -a codemonkeys`
+2. `python scripts/backup_drill.py`  → prints per-store results; exit 0 = clean.
+3. `exit`. (Owner API equivalents: trigger `POST /api/backup/drill`, review past
+   receipts `GET /api/backup/drill-history` — or just ask the AI to call them.)
+
+**Full drill — does the SNAPSHOT itself restore? (do this at least once):**
+1. List snapshots: `fly volumes list -a codemonkeys`, then
+   `fly volumes snapshots list <volume-id>`.
+2. Restore into a **new** volume (never overwrite the live one):
+   `fly volumes create cm_data_drill --snapshot-id <snapshot-id> -a codemonkeys`
+   — or copy the data down instead: `fly ssh sftp shell -a codemonkeys` → `get /data`.
+3. Drill the restored copy: `python scripts/backup_drill.py <path-to-restored-data>`.
+   Exit 0 = every store read back clean; exit 1 names exactly which store failed
+   (reasons never include file contents). The receipt lands inside the drilled copy.
+4. Clean up: destroy the drill volume / delete the local copy when done.
+
+**If a restored copy fails ONLY on `model_config.json` / `mcp_tokens.json`:**
+those decrypt under the *current* master key — that's a rotated/lost
+`CM_MASTER_KEY` (Scenarios A/E), not data loss.
+
+---
+
 ## Where everything lives (for you or the AI)
 - App: **`codemonkeys`** on Fly · dashboard: https://fly.io/apps/codemonkeys
 - Data volume: **`cm_data`** → **`/data`** (survives deploys/restarts):
@@ -198,7 +234,11 @@ volume restores or multi-machine deploys (see Scenario D above). Env wins over
     **FAIL-SOFT** — wrong/missing key = empty config + banner (Scenario E), app keeps running
   - `/data/mcp_tokens.json` — MCP OAuth tokens (encrypted if `CM_MASTER_KEY` is set);
     same fail-soft behaviour as model_config
-- Recovery script: `scripts/reset_access.py` (run via `fly ssh console`)
+  - `/data/backup_drill_receipts.jsonl` — restore-drill receipts (Scenario G;
+    Owner view: `GET /api/backup/drill-history`)
+- Recovery scripts (run via `fly ssh console`): `scripts/reset_access.py`
+  (lockout), `scripts/backup_drill.py` (Scenario G restore drill),
+  `scripts/verify_audit_chain.py` (S-3 tamper check)
 - Deeper context: `SECURITY.md`, `docs/STATE.md`
 
 ## When in doubt
