@@ -133,6 +133,23 @@ keep that radius away from everything else.
   `<workspace>/.codemonkeys/specs/<slug>/<artifact>.md` (tighter than the general
   workspace jail; realpath-checked + `O_NOFOLLOW`, slug sanitized & length-capped).
 
+## Cloud-egress consent (M-4, issue #67)
+
+- Every outbound LLM call funnels through `call_model`; it is gated on the
+  session owner's **recorded, revocable, per-user consent**
+  (`data/egress_consent.json` — status, timestamp, bounded grant/revoke
+  history). The gate raises **before any bytes leave the box** (fail closed);
+  the debate-verify panel carries the same check. Erasing an account (M-7)
+  cascades the consent record away.
+- Self-service: `GET/POST /api/me/consent/egress` (any active account).
+  Revocation takes effect on the **next** model call, including mid-run.
+- `EGRESS_CONSENT_MODE` decides what an ABSENT record means:
+  `byok-implied` (default — owner BYO keys read as org-level consent, absent →
+  allowed, explicit revocation still always blocks) or `explicit` (affirmative
+  grant required, absent → blocked). An unrecognised value falls back to
+  `explicit`, never open. **Owner decision pending** on which interpretation is
+  ratified — see issue #67 "Owner-reserved".
+
 ## MCP connectors
 
 - MCP server config (`/api/mcp` CRUD, `mcp_config.json`) is **Owner-only**, same
