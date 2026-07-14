@@ -34,6 +34,17 @@ if (-not $SkipInstall) {
     if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 }
 
+# static/forge/tailwind.css is gitignored (Docker/CI compile it via npx); the
+# packaged .exe ships static/ as-is via desktop/codemonkeys.spec, so without
+# this the shipped app would render completely unstyled. Requires Node on the
+# *build* machine only — end users never need it.
+Write-Host "==> Building vendored Tailwind CSS"
+if (-not (Get-Command npx -ErrorAction SilentlyContinue)) {
+    throw "npx not found - install Node.js to build the vendored CSS before packaging"
+}
+npx --yes tailwindcss@3.4.17 -i static/forge/tailwind.input.css -o static/forge/tailwind.css --minify
+if ($LASTEXITCODE -ne 0) { throw "Tailwind CSS build failed" }
+
 $Dist = Join-Path $Root "dist\CodeMonkeys"
 $Build = Join-Path $Root "build\codemonkeys"
 if (Test-Path $Dist) { Remove-Item -Recurse -Force $Dist }
