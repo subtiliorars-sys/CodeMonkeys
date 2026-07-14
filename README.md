@@ -30,7 +30,15 @@ switch models in the UI and keep coding.
 
 ## Quickstart
 
-Full idiot-proof walkthrough: **[docs/SETUP.md](docs/SETUP.md)**. Short version:
+**Windows desktop (recommended on a PC):** see **[docs/DESKTOP.md](docs/DESKTOP.md)**.
+
+```powershell
+pip install -r requirements-desktop.txt
+python -m desktop          # native window; data in %APPDATA%\codemonkeys
+# package:  pwsh scripts/build-windows.ps1
+```
+
+Full Fly / Chromebook walkthrough: **[docs/SETUP.md](docs/SETUP.md)**. Short version:
 
 ```bash
 fly launch --copy-config --no-deploy     # claim an app name
@@ -41,24 +49,28 @@ fly deploy
 # → ⚙ Models & keys → paste a Gemini/OpenRouter/Anthropic key → clone a repo → code
 ```
 
-Local dev:
+Local web (browser against uvicorn):
 
 ```bash
 python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
 DATA_DIR=./data ./.venv/bin/uvicorn server:app --reload --port 8080
 ```
 
+**Keys:** paste your own provider keys in the UI (BYOK). Owner can optionally
+grant Vertex/GCP credits to invited accounts — that path is the only shared-credit
+surface that needs strong auth.
 ## Repo layout
 
 | Path | What |
 |---|---|
 | `server.py` | Entire backend: auth, providers, agent loop, corps runtime, sessions, API |
 | `static/forge/` | Frontend: console, swarm viz (vanilla JS + vendored Tailwind — see `docs/FORGE_HYGIENE.md`) |
+| `desktop/` | Windows desktop shell (pywebview + PyInstaller) — see `docs/DESKTOP.md` |
 | `corps/` | Daystrom agent definitions + doctrine (vendored) |
 | `scripts/reset_access.py` | Lockout recovery via `fly ssh console` |
-| `docs/` | Setup, architecture, **[docs/README.md](docs/README.md)** index |
+| `scripts/build-windows.ps1` | Package `dist/CodeMonkeys/CodeMonkeys.exe` |
+| `docs/` | Setup, architecture, desktop, **[docs/README.md](docs/README.md)** index |
 | `Dockerfile`, `fly.toml` | Deploy |
-
 ## Updating the UI
 
 All UI changes are committed to `main`. The Fly.io deployment **does not auto-deploy** on git push — you must run:

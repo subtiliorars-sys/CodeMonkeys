@@ -17,6 +17,17 @@ new waves until Owner adds a `pending` entry here or unblocks an item below.
 Next buildable candidate: **S5 notify-on-done** (`docs/STATE.md`). Maintainer
 checklist: `docs/FORGE_HYGIENE.md` §6.
 
+## Parallel track — Windows desktop (manual)
+
+**Docs:** `docs/DESKTOP.md` · **Run:** `python -m desktop` · **Package:** `pwsh scripts/build-windows.ps1`
+
+| Wave | Status | Scope |
+|------|--------|--------|
+| CM-DESK-W1 | `shipped` | Loopback launcher + pywebview shell + PyInstaller onedir build |
+| CM-DESK-W2 | pending | Installer polish (Start Menu shortcut, optional NSIS/MSIX), icon |
+| CM-DESK-W3 | pending | Linux packaging (AppImage/build-linux.sh) |
+| CM-DESK-W4 | pending | Public BYOK web tier (after desktop is solid) |
+
 ## Parallel track — Forge UI / Cursor parity (manual)
 
 **Branch:** `work/frontend-polish` · deploy: owner runs `fly deploy` (not automation PR).  
