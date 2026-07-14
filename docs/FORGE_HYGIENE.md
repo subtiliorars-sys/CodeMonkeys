@@ -1,7 +1,7 @@
 # Forge UI — Maintainer Hygiene Checklist
 
 **Lane:** `forge-streaming` · **Scope:** `static/forge/*` and forge-related docs.  
-**Read first:** `docs/STATE.md`, `WAVES.md`, `OFFICE_HOURS.md`.
+**Read first:** `docs/STATE.md`, `docs/README.md`, `WAVES.md`, `OFFICE_HOURS.md`.
 
 Use this before editing the Forge console, landing a UI wave, or reviewing an
 automation PR that touches streaming or frontend assets.

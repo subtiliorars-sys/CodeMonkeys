@@ -53,10 +53,10 @@ DATA_DIR=./data ./.venv/bin/uvicorn server:app --reload --port 8080
 | Path | What |
 |---|---|
 | `server.py` | Entire backend: auth, providers, agent loop, corps runtime, sessions, API |
-| `static/forge/` | Frontend: console, swarm viz (vanilla JS + Tailwind CDN) |
+| `static/forge/` | Frontend: console, swarm viz (vanilla JS + vendored Tailwind — see `docs/FORGE_HYGIENE.md`) |
 | `corps/` | Daystrom agent definitions + doctrine (vendored) |
 | `scripts/reset_access.py` | Lockout recovery via `fly ssh console` |
-| `docs/` | Setup + architecture |
+| `docs/` | Setup, architecture, **[docs/README.md](docs/README.md)** index |
 | `Dockerfile`, `fly.toml` | Deploy |
 
 ## Updating the UI
