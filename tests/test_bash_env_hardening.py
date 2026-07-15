@@ -17,6 +17,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pytest  # noqa: E402
 
 import server  # noqa: E402
+from conftest import BASH_AVAILABLE  # noqa: E402
+
+# The `bash` tool shells out to `bash -c`; on a bare Windows host bash is at best
+# the non-functional WSL relay shim, so skip the end-to-end bash assertions
+# there. The env-scrubbing logic itself is still unit-tested above.
+requires_bash = pytest.mark.skipif(
+    not BASH_AVAILABLE, reason="bash -c not functional on this host")
 
 
 # ---- the env-name matcher ----------------------------------------------------
@@ -72,6 +79,7 @@ def test_subprocess_env_keeps_path_drops_secrets(monkeypatch):
 
 # ---- end-to-end: the bash tool can't exfiltrate a secret via transform --------
 
+@requires_bash
 def test_bash_cannot_read_secret_env_even_with_transform(monkeypatch):
     # base64 of the value evades the literal-substring redactor; the env scrub is
     # what actually stops it. Value chosen to have no secret-ish name collision.
@@ -83,12 +91,14 @@ def test_bash_cannot_read_secret_env_even_with_transform(monkeypatch):
     assert b64 not in out                 # the var simply isn't in the env
 
 
+@requires_bash
 def test_bash_still_sees_nonsecret_env(monkeypatch):
     monkeypatch.setenv("MY_PUBLIC_VAR", "publicvalue42")
     out = server.t_bash({"command": "printenv MY_PUBLIC_VAR"})
     assert "publicvalue42" in out
 
 
+@requires_bash
 def test_bash_path_intact(monkeypatch):
     # commands must still resolve — proves we didn't nuke PATH
     out = server.t_bash({"command": "echo hello-from-bash"})

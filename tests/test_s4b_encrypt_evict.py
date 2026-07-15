@@ -25,6 +25,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import server  # noqa: E402 — import after env setup
 import pytest  # noqa: E402
+from conftest import IS_WINDOWS  # noqa: E402
+
+# POSIX permission bits (0o600) aren't honoured on Windows ACLs.
+posix_mode = pytest.mark.skipif(
+    IS_WINDOWS, reason="POSIX file mode bits (0o600) don't apply on Windows")
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +111,7 @@ def test_mcp_tokens_encrypted_roundtrip(tmp_path, monkeypatch):
     assert loaded["my-server"]["access_token"] == "tok-abc123"
 
 
+@posix_mode
 def test_mcp_tokens_mode_600(tmp_path, monkeypatch):
     """_save_mcp_tokens must write at mode 0600 even with encryption."""
     monkeypatch.setattr(server, "CM_MASTER_KEY", "s4b-test-key-mode600")

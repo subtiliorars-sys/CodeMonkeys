@@ -22,6 +22,7 @@ import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 import server  # noqa: E402
+from conftest import IS_WINDOWS  # noqa: E402
 
 
 client = TestClient(server.app, raise_server_exceptions=False)
@@ -52,6 +53,8 @@ def test_readyz_all_green(monkeypatch, tmp_path):
 # data_writable = False → 503
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(IS_WINDOWS, reason="POSIX chmod read-only dir has no "
+                      "reliable equivalent in Windows ACLs")
 def test_readyz_data_not_writable(monkeypatch, tmp_path):
     """503 + data_writable False when DATA_DIR is not writable."""
     # Make the dir non-writable

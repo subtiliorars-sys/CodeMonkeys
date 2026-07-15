@@ -22,6 +22,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import server  # noqa: E402 — import after env setup
 import pytest   # noqa: E402
+from conftest import IS_WINDOWS  # noqa: E402
+
+# POSIX permission bits (0o600) aren't honoured on Windows ACLs, so skip the
+# strict-mode assertions there; the encrypt-at-rest behaviour is still covered.
+posix_mode = pytest.mark.skipif(
+    IS_WINDOWS, reason="POSIX file mode bits (0o600) don't apply on Windows")
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +78,7 @@ def test_session_secret_encrypted_roundtrip(tmp_path, monkeypatch):
     assert secret2 == secret1, "secret must be stable across reads"
 
 
+@posix_mode
 def test_session_secret_file_is_mode_600(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "CM_MASTER_KEY", "test-master-key-mode")
     monkeypatch.setattr(server, "SECRET_FILE", str(tmp_path / "session_secret.key"))
@@ -336,8 +343,8 @@ def test_eviction_removes_github_token():
 
 def test_eviction_preserves_path_and_home():
     """Operational vars like PATH and HOME must not be touched by eviction."""
-    path_before = os.environ.get("PATH", "")
-    home_before = os.environ.get("HOME", "")
+    path_before = os.environ.get("PATH")
+    home_before = os.environ.get("HOME")
     server._evict_env_secrets()
     assert os.environ.get("PATH") == path_before
     assert os.environ.get("HOME") == home_before

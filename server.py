@@ -5051,6 +5051,21 @@ def call_cost(provider, in_tokens, out_tokens):
 
 # ----------------------------------------------------------------- workspace tools
 
+def _norm_fs(p: str) -> str:
+    """Normalize a filesystem path for safe comparison and return.
+
+    os.path.realpath on Windows appends the extended-length ``\\\\?\\`` prefix to
+    some paths but not others — e.g. a not-yet-existing file under a freshly
+    created dir gets the prefix while the dir itself does not, and the prefix
+    appears inconsistently under concurrent first-write load. Naive string
+    ops (``==``, ``startswith``) then false-positive into "path escapes" errors.
+    Strip that prefix and normalize case (Windows is case-insensitive) so the
+    jail checks behave identically across platforms."""
+    if p and p.startswith("\\\\?\\"):
+        p = p[4:]
+    return os.path.normcase(p)
+
+
 def _jail(path: str, username: Optional[str] = None) -> str:
     """Resolve path inside WORKSPACE_DIR (or isolated user subdir) or raise."""
     base_dir = WORKSPACE_DIR
@@ -5059,7 +5074,8 @@ def _jail(path: str, username: Optional[str] = None) -> str:
     os.makedirs(base_dir, exist_ok=True)
     full = os.path.realpath(os.path.join(base_dir, path.lstrip("/")))
     root = os.path.realpath(base_dir)
-    if full != root and not full.startswith(root + os.sep):
+    nf, nr = _norm_fs(full), _norm_fs(root)
+    if nf != nr and not nf.startswith(nr + os.sep):
         raise ValueError(f"Path escapes workspace: {path}")
     return full
 
@@ -5075,7 +5091,7 @@ def _jail_specs(slug: str, artifact: str, username: Optional[str] = None) -> str
         os.path.join(base_dir, ".codemonkeys", "specs"))
     candidate = os.path.realpath(
         os.path.join(specs_root, slug, artifact + ".md"))
-    if not candidate.startswith(specs_root + os.sep):
+    if not _norm_fs(candidate).startswith(_norm_fs(specs_root) + os.sep):
         raise ValueError(f"Path escapes specs dir: {slug}/{artifact}")
     return candidate
 
@@ -5429,7 +5445,10 @@ def _lint_command(rel_path: str):
     if ext == ".py":
         if shutil.which("ruff"):
             return (["ruff", "check", "--no-cache", rel_path], "ruff")
-        return (["python3", "-m", "py_compile", rel_path], "py_compile")
+        # Use the interpreter that is actually running (portable across
+        # Linux/macOS/Windows — `python3` is absent on many Windows installs
+        # where only `python`/the active interpreter resolves).
+        return ([sys.executable, "-m", "py_compile", rel_path], "py_compile")
     if ext in (".ts", ".tsx", ".js", ".jsx", ".mts", ".cts"):
         if shutil.which("tsc"):
             return (["tsc", "--noEmit", "--skipLibCheck", rel_path], "tsc")
@@ -5686,7 +5705,7 @@ def _jail_blackboard(slug: str, username: Optional[str] = None) -> str:
         base_dir = os.path.join(WORKSPACE_DIR, f"user_{username}")
     root = os.path.realpath(os.path.join(base_dir, ".codemonkeys"))
     candidate = os.path.realpath(os.path.join(root, f"blackboard-{slug}.md"))
-    if os.path.dirname(candidate) != root:
+    if _norm_fs(os.path.dirname(candidate)) != _norm_fs(root):
         raise ValueError(f"Path escapes .codemonkeys dir: {slug}")
     return candidate
 
@@ -9301,6 +9320,16 @@ def _evict_env_secrets() -> None:
 
 
 _evict_env_secrets()
+
+# ---- visual inspector (tools/visual-inspector) -------------------------------
+try:
+    from tools.visual_inspector import VisualInspector, register_routes
+    _vis_inspector = VisualInspector(data_dir=DATA_DIR)
+    register_routes(app, _vis_inspector)
+except (ImportError, Exception) as _vis_exc:
+    # Visual inspector is optional; silently degrade if tools package not importable.
+    pass
+
 
 
 if __name__ == "__main__":

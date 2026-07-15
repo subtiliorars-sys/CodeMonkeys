@@ -14,8 +14,14 @@ import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 import server  # noqa: E402
+from conftest import BASH_AVAILABLE  # noqa: E402
 
 client = TestClient(server.app)
+
+# Owner-only exec shells out to `bash -c`; skip end-to-end exec assertions when
+# bash isn't functional (e.g. bare Windows host with only the WSL relay shim).
+requires_bash = pytest.mark.skipif(
+    not BASH_AVAILABLE, reason="bash -c not functional on this host")
 
 
 @pytest.fixture
@@ -94,6 +100,7 @@ def test_exec_rejects_non_owner(monkeypatch):
 
 # ---- gates 2+4: session binding, caps, bounded execution ----------------------
 
+@requires_bash
 def test_exec_runs_and_leaves_receipts(armed):
     r = client.post("/api/terminal/exec",
                     json={"sid": armed["id"], "command": "echo receipt-me"})
@@ -142,6 +149,7 @@ def test_exec_concurrency_cap(armed, monkeypatch):
     assert server._active_terminal_execs == 0
 
 
+@requires_bash
 def test_exec_nonzero_exit_reported(armed):
     r = client.post("/api/terminal/exec",
                     json={"sid": armed["id"], "command": "exit 3"})
@@ -151,6 +159,7 @@ def test_exec_nonzero_exit_reported(armed):
 
 # ---- gate 3: risky-command confirm round-trip (F2 receipts) --------------------
 
+@requires_bash
 def test_risky_command_needs_confirm_and_receipts(armed, monkeypatch):
     monkeypatch.setattr(server, "_is_risky", lambda c: True)
     r = client.post("/api/terminal/exec",
@@ -169,6 +178,7 @@ def test_risky_command_needs_confirm_and_receipts(armed, monkeypatch):
 
 # ---- gate 5: response redaction (F3) -------------------------------------------
 
+@requires_bash
 def test_exec_output_is_redacted(armed, monkeypatch):
     monkeypatch.setattr(server, "_SECRET_CACHE", {"hunter2secret"})
     r = client.post("/api/terminal/exec",
