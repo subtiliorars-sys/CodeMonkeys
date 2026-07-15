@@ -3,6 +3,52 @@
 **Read this first when picking the project back up.** Last updated 2026-07-15
 (post CM-W1-CM-W7, governance/security follow-ups, and desktop W2 merge).
 
+## ⏭️ HANDOFF — resolve in next session (2026-07-15, end of "Windows/web deployment + test" session)
+
+The work below was left intentionally open. Please address it before/with the
+next chunk of work. Repo is clean and green at `main == 9de4b34` (synced with
+`origin/main`, no in-progress rebase/merge, `757 passed / 16 skipped / 0 failed`).
+
+1. **Rebase `feat/governance-m8-backup-posture` onto current `main`.**
+   - The branch still exists (tip `b2fef71`, "feat: M-8 backup posture - restore
+     drill + receipt"). An earlier `git rebase` of it onto `origin/main` was found
+     mid-conflict (`GOVERNANCE.md`, both-modified) and was **aborted** (not
+     resolved) to keep the tree clean — it just sits un-rebased on the old base.
+   - Its work appears to have also landed on `main` separately as `#165`
+     (`61a30e2`, "feat: M-8 backup posture - restore drill + receipt") and `#171`
+     (`04128bc`, "docs: refresh wave worker state"). So this branch may now be
+     redundant / already merged. **Verify before rebasing** — if `#165` already
+     contains it, just delete the branch; otherwise rebase it and resolve the
+     `GOVERNANCE.md` conflict. Do NOT silently continue/rebase without checking.
+
+2. **Unstaged pre-existing edit left in the working tree:**
+   `static/forge/index.html` has a small untracked modification (adds the
+   `<script src="/static/forge/visual-inspector.js"></script>` tag). It is
+   intentional (wires up the visual inspector) but was never committed. Decide
+   whether to commit it (with the `tools/visual_inspector/` + `static/forge/
+   visual-inspector.js` additions) or revert it in the next session.
+
+3. **`build-windows` CI job is unverified by execution.**
+   - Added in `16bd6aa`. It runs `scripts/build-windows.ps1` (PyInstaller onedir)
+     then `scripts/build-installer.ps1 -SkipPyInstaller` (NSIS), installs NSIS via
+     Chocolatey, Node 20 for the Tailwind `npx` step. YAML validated; all build
+     inputs exist (`desktop/codemonkeys.spec`, `desktop/launcher.py`,
+     `desktop/pyi_rth_codemonkeys.py`, `feedback_triage.py`, `desktop/installer.nsi`,
+     `desktop/codemonkeys.ico`, `requirements-desktop.txt`); `import server` +
+     `pytest` pass. But NSIS/PyInstaller are not installed on this Windows host, so
+     the job has NOT actually executed end-to-end. **First CI run of `build-windows`
+     is the real verification** — watch for Chocolatey NSIS + `npx` step issues.
+
+4. **(Optional, offered not done) Add a `paths:` filter to `build-windows`** so it
+   only triggers on changes to `desktop/`, `scripts/`, or `requirements-desktop.txt`
+   (keeps fast-feedback for pure-server PRs, since the build job is heavy).
+
+5. **Untracked dirs to triage in next session** (created/added during work, none
+   committed by me): `tools/visual_inspector/` (+ `tools/__init__.py`),
+   `static/forge/visual-inspector.js`, `browser-extension/`, `desktop/codemonkeys.ico`,
+   `desktop/mac/`, `make_icon.py`, `monkey_preview.png`, `monkey_ref.png`. Confirm
+   which belong in the repo vs. which are scratch and should be `.gitignore`d.
+
 ## What it is
 Self-hosted web coding console (Claude Code-style agent). Single-file FastAPI
 backend (`server.py`), vanilla-JS frontend (`static/forge/`), JSON-on-volume,
