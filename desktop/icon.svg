@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!--
+    CodeMonkeys app icon — monkey face mark.
+    Forge theme accent: #d97706 (amber-600).
+    NOTE: Convert to .ico for PyInstaller / NSIS:
+      Inkscape:  File → Export as PNG (256×256), then
+                 ImageMagick: magick convert icon-256.png -define icon:auto-resize=256,64,48,32,16 codemonkeys.ico
+      or use  https://icoconverter.com  (256×256 → .ico with all sizes).
+  -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fbbf24" />
+      <stop offset="100%" stop-color="#d97706" />
+    </linearGradient>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="128" cy="128" r="120" fill="url(#bg)" />
+
+  <!-- Face -->
+  <ellipse cx="128" cy="148" rx="64" ry="56" fill="#4b2e1c" />
+
+  <!-- Eyes -->
+  <circle cx="100" cy="108" r="14" fill="#1c1c1c" />
+  <circle cx="156" cy="108" r="14" fill="#1c1c1c" />
+  <!-- Eye highlights -->
+  <circle cx="94" cy="102" r="5" fill="#ffffff" />
+  <circle cx="150" cy="102" r="5" fill="#ffffff" />
+
+  <!-- Nostrils -->
+  <ellipse cx="118" cy="150" rx="6" ry="4" fill="#1c1c1c" />
+  <ellipse cx="138" cy="150" rx="6" ry="4" fill="#1c1c1c" />
+
+  <!-- Mouth -->
+  <path d="M 108 168 Q 128 188 148 168" fill="none" stroke="#1c1c1c" stroke-width="3" stroke-linecap="round" />
+
+  <!-- Ears -->
+  <circle cx="60" cy="100" r="24" fill="#4b2e1c" />
+  <circle cx="196" cy="100" r="24" fill="#4b2e1c" />
+  <circle cx="60" cy="100" r="14" fill="#6b3f2a" />
+  <circle cx="196" cy="100" r="14" fill="#6b3f2a" />
+</svg>
