@@ -34,7 +34,7 @@ not when you intend to add it.
 ### Tier B — Holds people's data (adds to A)
 - [ ] **M-4 Consent before cloud egress** — no user content leaves to a third-party model/service without recorded, revocable consent. _(gate + test)_
 - [ ] **M-5 PII gates + scrubbing** — surfaces that publish/share user-derived content refuse high-confidence identifiers (fail-closed), with a scrubber beneath. _(gate + test)_
-- [x] **M-7 Real erasure** — `DELETE /api/users/{uname}` (Owner-only) hard-deletes the users.json record AND every derived per-user store (login-throttle counter, transient WebAuthn challenge; the record carries pin/salt/mfa/passkey material), writes a tombstone (`data/erased_accounts.json`) that blocks re-register/invite/rename-into the id, and appends an owner-auditable receipt (`data/erasure_receipts.jsonl`, viewable at `GET /api/erasures`) carrying only the subject id. Sessions/uploads/blackboard/KB are workspace-global (not per-user) so they are out of per-user cascade scope by design — see the architectural note below. Backups: CM's only backup notion is the Fly volume snapshot, which ages out of its window naturally (stated retention exception); no backup-deletion is built (Owner-reserved, Phase-4 crypto-shred target). _(gate + test + receipt)_
+- [x] **M-7 Real erasure** — `DELETE /api/users/{uname}` (Owner-only) hard-deletes the users.json record AND every derived per-user store (login-throttle counter, transient WebAuthn challenge, egress-consent record, Vertex credentials; the record carries pin/salt/mfa/passkey material), writes a tombstone (`data/erased_accounts.json`) that blocks re-register/invite/rename-into the id, and appends an owner-auditable receipt (`data/erasure_receipts.jsonl`, viewable at `GET /api/erasures`) carrying only the subject id + names of the stores cleared. Message content (issue #70): sessions are single-owner and typed messages are author-tagged at write time, so the cascade also deletes the member's own sessions (event logs + history + index rows) whole, content-scrubs any author-tagged message of theirs inside a session they don't own, and deletes their isolated `user_<uname>/` workspace subtree (uploads, blackboards, per-user KB, clones) — never touching other accounts' data. Residual: pre-attribution records (legacy `username=None` sessions, pre-#70 workspace-root blackboard/KB writes) carry no author and stay; anonymous-by-design feedback reports are not attributable. Backups: CM's only backup notion is the Fly volume snapshot, which ages out of its window naturally (stated retention exception); no backup-deletion is built (Owner-reserved, Phase-4 crypto-shred target). _(gate + test + receipt)_
 - [ ] **M-8 Backup posture** — data-holding repos document + verify a backup path (snapshots and/or encrypted off-site vault, keys held by Owner). _(test: restore drill + receipt)_
 - [x] **M-10 Serialized atomic writes** — all mutators of shared user state are serialized (single-writer) and write atomically; no slow I/O in the critical section. _(test)_
 - [ ] **M-12 Minors + likeness consent** — no human imagery / minors' data without documented consent; public-surface images need a consent-log entry or a SAMPLE_ prefix (CI filename-check). _(hook + gate + receipt)_
@@ -146,6 +146,37 @@ be able to read the latest entry and know exactly what is and isn't satisfied.
 - Red-team verdict: n/a for this PR (additive scaffolding only — no auth/exec/data/
   money code surface changed). The MISSING/PARTIAL fixes (esp. M-7 erasure) are
   follow-up work that WILL need an S-4 red-team pass when implemented.
+
+### 2026-07-13 — M-7 follow-up: per-user attribution + message-content erasure (issue #70)
+- **Scope correction vs the 2026-06-07 note:** since S6 Layer 1/2 (session
+  ownership + per-user workspace subdirs) landed, sessions are SINGLE-OWNER
+  (`session["username"]`; only the owner can type into one) and uploads/
+  blackboards/per-user KB live under `WORKSPACE_DIR/user_<uname>/` — the
+  "workspace-global, unattributable" framing no longer matched the code. The
+  one true commingling found: the `blackboard_write` tool dispatch dropped the
+  session owner and wrote to the workspace-ROOT board (its read path was
+  already per-user) — fixed; member boards now land in their own workspace.
+- **Mechanism (gate + test + receipt):** typed `user` events are tagged
+  `author=<owner>` at write time in `emit()`. The erasure cascade
+  (`_erase_user_data`) now also: deletes the member's own sessions whole
+  (events JSONL + history + index row; in-flight runs are stopped and can no
+  longer re-persist), content-scrubs any author-tagged event of theirs inside
+  sessions they do NOT own (other members'/Owner's lines byte-identical),
+  and deletes their isolated `user_<uname>/` workspace subtree (realpath-
+  guarded to a direct `user_` child — can never reach shared data). Receipt
+  `stores` records `sessions` / `session_events_scrubbed` / `workspace` when
+  content erasure occurred; absence means no such content existed.
+  Tests: `tests/test_erasure_attribution.py`.
+- **Remaining residual (disclosed):** records that PRE-DATE attribution —
+  legacy `username=None` sessions and pre-#70 writes on the workspace-root
+  blackboard/KB — carry no author and cannot be selectively attributed to an
+  erased member; deleting those shared records would destroy other accounts'
+  data, so they stay. Feedback reports are anonymous by design (no username
+  stored) and are not attributable. Fly volume-snapshot retention exception
+  unchanged.
+- Red-team pass (S-4): recorded in the PR body (spoofed-attribution,
+  over-deletion via crafted username/symlink, under-deletion via in-flight
+  runs, and cross-account blast-radius cases checked).
 
 ## Amendments
 
