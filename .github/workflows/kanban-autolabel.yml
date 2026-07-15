@@ -1,0 +1,38 @@
+name: Kanban Auto-label
+on:
+  pull_request:
+    types: [opened, ready_for_review, closed]
+  issues:
+    types: [assigned, unassigned]
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Label opened PRs as "status:review"
+        if: github.event_name == 'pull_request' && github.event.action == 'opened'
+        run: |
+          gh pr edit ${{ github.event.pull_request.number }} --add-label "status:review"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Label merged PRs as "status:done"
+        if: github.event_name == 'pull_request' && github.event.action == 'closed' && github.event.pull_request.merged == true
+        run: |
+          gh pr edit ${{ github.event.pull_request.number }} --add-label "status:done"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Label assigned issues as "status:in-progress"
+        if: github.event_name == 'issues' && github.event.action == 'assigned'
+        run: |
+          gh issue edit ${{ github.event.issue.number }} --add-label "status:in-progress" --remove-label "status:todo"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Label unassigned issues back to "status:todo"
+        if: github.event_name == 'issues' && github.event.action == 'unassigned'
+        run: |
+          gh issue edit ${{ github.event.issue.number }} --add-label "status:todo" --remove-label "status:in-progress"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
