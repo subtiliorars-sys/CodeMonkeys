@@ -101,6 +101,71 @@ jobs:
           fi
           exit $code
 
+  # Windows desktop BUILD verification. Actually runs the real packaging path
+  # (PyInstaller onedir bundle -> NSIS installer) on windows-latest so a
+  # broken desktop spec, missing data file, or NSIS script regression fails the
+  # build in CI — not on the user's machine. NSIS isn't on the default runner,
+  # so it's installed via Chocolatey first. The .exe/installer ship as artifacts.
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Set up Node 20 (for vendored Tailwind build via npx)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install NSIS (makensis) via Chocolatey
+        run: choco install nsis --no-progress -y
+
+      - name: Install desktop requirements
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-desktop.txt
+
+      - name: Build PyInstaller bundle
+        run: |
+          # build-windows.ps1 installs requirements again (harmless) and runs npx
+          # Tailwind + PyInstaller. Invoke via PowerShell with the standard bypass.
+          powershell -ExecutionPolicy Bypass -File scripts/build-windows.ps1
+
+      - name: Build NSIS installer
+        run: |
+          # PyInstaller output already exists; skip the re-build and only pack.
+          powershell -ExecutionPolicy Bypass -File scripts/build-installer.ps1 -SkipPyInstaller
+
+      - name: Verify artifacts exist
+        run: |
+          test -f dist/CodeMonkeys/CodeMonkeys.exe
+          test -n "$(ls dist/installers/*.exe 2>/dev/null)"
+          echo "build outputs:"
+          ls -lh dist/CodeMonkeys/CodeMonkeys.exe
+          ls -lh dist/installers/*.exe
+
+      - name: Upload desktop bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: codemonkeys-windows-bundle
+          path: dist/CodeMonkeys
+          if-no-files-found: error
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: codemonkeys-windows-installer
+          path: dist/installers/*.exe
+          if-no-files-found: error
+
   # Wave 4 #3 — prove the vendored Tailwind build compiles. The dev host has no
   # Node, so CI is the verification that the config + the app's arbitrary-value
   # classes resolve. The Dockerfile runs the same build at image time.
