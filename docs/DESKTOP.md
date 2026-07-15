@@ -35,13 +35,46 @@ Workspace: `%APPDATA%\codemonkeys\data\workspace`
 
 ## Package a deployable app
 
+### Quick zip (no installer)
+
 ```powershell
 pwsh scripts/build-windows.ps1
 # → dist\CodeMonkeys\CodeMonkeys.exe
 Compress-Archive -Path dist\CodeMonkeys -DestinationPath dist\CodeMonkeys-windows.zip
 ```
 
-Requires **Microsoft Edge WebView2 Runtime** (already on most Win10/11 installs).
+### Windows installer (NSIS) — recommended
+
+```powershell
+pwsh scripts/build-installer.ps1
+# → dist\CodeMonkeys\CodeMonkeys.exe       (PyInstaller onedir)
+# → dist\installers\CodeMonkeys-Desktop-Setup-0.2.0.exe  (NSIS setup)
+```
+
+The installer:
+- Copies `dist/CodeMonkeys/` to `%PROGRAMFILES64%\CodeMonkeys`
+- Creates **Start Menu** → CodeMonkeys → CodeMonkeys Desktop
+- Creates a **Desktop** shortcut
+- Registers in **Add/Remove Programs** (for clean uninstall)
+- Writes `HKLM\Software\Microsoft\Windows\CurrentVersion\App Paths`
+- Embeds version info (`0.2.0`) in the setup .exe
+
+Requires **NSIS 3.x** ([nsis.sourceforge.io](https://nsis.sourceforge.io)) and
+**Microsoft Edge WebView2 Runtime** (already on most Win10/11 installs).
+
+### Icon conversion (PNG → ICO)
+
+The source icon lives at `desktop/icon.svg`.  Convert to `.ico` for PyInstaller
+and NSIS packaging:
+
+```powershell
+# Inkscape → PNG, then ImageMagick → ICO with multiple sizes:
+inkscape desktop/icon.svg --export-filename desktop/icon-256.png -w 256
+magick convert desktop/icon-256.png -define icon:auto-resize=256,64,48,32,16 desktop/codemonkeys.ico
+```
+
+Drop the resulting `desktop/codemonkeys.ico` file — the `.spec` and `.nsi`
+files reference it by that name.
 
 ## First run
 
