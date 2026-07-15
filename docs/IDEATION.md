@@ -49,7 +49,7 @@ MERGED 2026-06-07 (stays OFF: double env gate, owner enables post-deploy).
 | ~~S2~~ | ~~**Fleet Deck `GET /fleet-status.json`**~~ ✅ **PR #41** (read-only Bearer `FLEET_TOKEN` ops feed; fail-closed no-route-when-unset; red-teamed; deploy owner-gated). | fleet integration | med — red-team |
 | ~~S3~~ | ~~**Fractal memory phase 2**~~ ✅ **PR #43** (scrubbed tier-1 digest + cross-session pattern library `GET /api/memory/patterns`, owner-only; red-teamed, broadened `_scan_secrets`). | memory | low |
 | S4 | **Secrets-at-rest / bash sandbox.** Part A ✅ **PR #44** (strip secret-named env vars from bash/terminal/MCP subprocesses — defense-in-depth). Part B (encrypt `/data` secrets at rest incl. the original OAuth `client_secret`/`refresh_token` + `session_secret.key`; sandbox bash) is **OWNER-GATED** — red-team found the bash exfil surface is broader than env (see `SECURITY.md` + questions.md). | security | high — owner decision |
-| S5 | **Notify-on-done** — webhook/run completion ping (OmniVerse pattern); pairs with #5. | ux/ops | low |
+| ~~S5~~ | ~~**Notify-on-done** — webhook/run completion ping (OmniVerse pattern); pairs with #5.~~ ✅ **PR #45** (off until owner sets `NOTIFY_WEBHOOK_URL`; HMAC supported via `NOTIFY_WEBHOOK_SECRET`). | ux/ops | low |
 | S6 | **Per-user workspace isolation** — biggest known gap; large, design-first. | security | high — design+red-team |
 
 **Standing-list status (consolidation Wave 14, 2026-06-07 ~11:16 UTC):** S1–S5 all

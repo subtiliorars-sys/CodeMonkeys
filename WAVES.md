@@ -12,10 +12,10 @@ Read `docs/STATE.md` + `docs/IDEATION.md` before each wave. Never merge your own
 
 _(none — safe automation backlog exhausted; next items are owner-gated below.)_
 
-**N-backlog status (2026-07-13):** CM-W1–W7 shipped. Automation must **not** pick up
-new waves until Owner adds a `pending` entry here or unblocks an item below.
-Next buildable candidate: **S5 notify-on-done** (`docs/STATE.md`). Maintainer
-checklist: `docs/FORGE_HYGIENE.md` §6.
+**N-backlog status (2026-07-13):** CM-W1–W7 shipped, and S5 notify-on-done
+shipped earlier via PR #45 (inert until `NOTIFY_WEBHOOK_URL` is set).
+Automation must **not** pick up new waves until Owner adds a `pending` entry
+here or unblocks an item below. Maintainer checklist: `docs/FORGE_HYGIENE.md` §6.
 
 ## Parallel track — Windows desktop (manual)
 
