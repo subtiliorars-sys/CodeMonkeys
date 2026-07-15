@@ -2,9 +2,9 @@
 # Re-sync:  corps-vendor-sync ../CodeMonkeys/corps
 # Audit:    corps-drift-check ../CodeMonkeys/corps
 source_repo: subtiliorars-sys/agent-corps
-source_sha: 460b66bc2bb6749074894d85464d8a122de1c273
-source_short: 460b66b
-synced_utc: 2026-07-13T08:58:40Z
+source_sha: 5823f94676605bc4340f533c617ca8dc0aca6f44
+source_short: 5823f94
+synced_utc: 2026-07-15T03:09:27Z
 mode: --docs-only
 files:
   d3fa3ea6e6d215f261a0724f07087af89accba9f  AGENT_DOCTRINE.md

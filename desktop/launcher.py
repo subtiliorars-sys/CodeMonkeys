@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import atexit
 import os
+import shutil
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -20,6 +22,53 @@ def _repo_root() -> Path:
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
         return Path(sys._MEIPASS)
     return Path(__file__).resolve().parent.parent
+
+
+def _ensure_tailwind_css(root: Path) -> None:
+    """Vendored Tailwind CSS (static/forge/tailwind.css) is a gitignored build
+    artifact — Docker/CI compile it via `npx tailwindcss`, but a plain
+    `python -m desktop` from a fresh checkout never runs that step, so the UI
+    loads with zero CSS (blank page). Build it here for source (non-frozen)
+    runs; a packaged build is expected to already have it baked in by
+    scripts/build-windows.ps1.
+    """
+    if getattr(sys, "frozen", False):
+        return
+    css = root / "static" / "forge" / "tailwind.css"
+    if css.exists():
+        return
+    npx = shutil.which("npx")
+    if not npx:
+        print(
+            "CodeMonkeys: static/forge/tailwind.css is missing and `npx` was not "
+            "found, so the UI will render unstyled. Install Node.js, then run:\n"
+            "  npx --yes tailwindcss@3.4.17 -i static/forge/tailwind.input.css "
+            "-o static/forge/tailwind.css --minify",
+            file=sys.stderr,
+        )
+        return
+    print("CodeMonkeys: building vendored Tailwind CSS (first run)...")
+    try:
+        subprocess.run(
+            [
+                npx, "--yes", "tailwindcss@3.4.17",
+                "-i", str(root / "static" / "forge" / "tailwind.input.css"),
+                "-o", str(css),
+                "--minify",
+            ],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        print("CodeMonkeys: Tailwind CSS build complete.")
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        detail = getattr(exc, "stderr", None) or str(exc)
+        print(
+            f"CodeMonkeys: Tailwind CSS build failed, UI will render unstyled:\n{detail}",
+            file=sys.stderr,
+        )
 
 
 def _default_data_dir() -> Path:
@@ -105,6 +154,8 @@ def main(argv: list[str] | None = None) -> int:
     root = _repo_root()
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
+
+    _ensure_tailwind_css(root)
 
     server, _thread = _start_server(host, port)
     url = f"http://{host}:{port}/"
