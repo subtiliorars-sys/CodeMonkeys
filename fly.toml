@@ -6,6 +6,7 @@ app = "codemonkeys"
 primary_region = "dfw"
 
 [build]
+  dockerfile = "Dockerfile"
 
 [env]
   DATA_DIR = "/data"
