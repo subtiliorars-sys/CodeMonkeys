@@ -20,7 +20,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _read(rel):
-    with open(os.path.join(_ROOT, rel)) as f:
+    with open(os.path.join(_ROOT, rel), encoding="utf-8") as f:
         return f.read()
 
 
