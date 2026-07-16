@@ -1,10 +1,12 @@
-/* swarm-viz.js — CodeMonkeys Colony Visualizer, Phase 1
+/* swarm-viz.js — CodeMonkeys Colony Visualizer, Phase 2
    Canvas 2D renderer, self-contained ES module.
    No game engine, no external deps, no build step.
 
    Public API:
      initSwarmViz(bgCanvasId, agentCanvasId)  → starts rAF loop
      setSwarmState(agents)                    → push new state array
+     setTreeState(treeData)                   → push hierarchical tree
+     setLayoutMode(\"ring\"|\"tree\")             → switch layout
      destroySwarmViz()                        → tears down loop + listeners
 */
 "use strict";
@@ -35,6 +37,10 @@ let _agents = [];
 let _projectiles = [];
 // track previous states to detect handoffs
 let _prevStates = {};
+// tree mode: hierarchical tree data { id, label, state, children: [...] }
+let _treeData = null;
+let _layoutMode = \"ring\";   // \"ring\" | \"tree\"
+let _hoveredId = null;       // mouse-over agent id for tooltip
 
 // ── Layout helpers ─────────────────────────────────────────────────────────
 
@@ -49,6 +55,67 @@ function _agentPosition(index, total, W, H) {
     x: W / 2 + Math.cos(angle) * rx,
     y: H / 2 + Math.sin(angle) * ry,
   };
+}
+
+// ── Tree layout (Phase 2 — Claude Code-style sub-agent hierarchy) ─────────
+
+/** Recursively compute {x,y} for each node in a hierarchical tree.
+ *  Root at top-centre, children fan out below.  Returns a flat array
+ *  of positioned nodes with depth info. */
+function _treeLayout(node, depth, x, y, W, H) {
+  const positions = [];
+  const nodeW = 120;  // horizontal spacing per child
+  const nodeH = 72;   // vertical spacing per level
+  const py = y + (depth === 0 ? 0 : nodeH);
+
+  positions.push({ id: node.id, x: x, y: py, depth: depth,
+                   label: node.label, state: node.state,
+                   task: node.task, tier: node.tier, progress: node.progress,
+                   summary: node.summary, model: node.model,
+                   children: node.children });
+
+  if (node.children && node.children.length) {
+    const totalW = (node.children.length - 1) * nodeW;
+    const startX = x - totalW / 2;
+    for (let i = 0; i < node.children.length; i++) {
+      const cx = startX + i * nodeW;
+      const childPositions = _treeLayout(node.children[i], depth + 1, cx, py, W, H);
+      positions.push(...childPositions);
+    }
+  }
+
+  return positions;
+}
+
+/** Flatten tree into the _agents array with computed positions. */
+function _applyTreeLayout(W, H) {
+  if (!_treeData) { _agents = []; return; }
+  const cx = W / 2;
+  const rootY = H * 0.10;  // root near top
+
+  const flat = _treeLayout(_treeData, 0, cx, rootY, W, H);
+  // Build _agents with position data
+  const prevById = {};
+  for (const a of _agents) prevById[a.id] = a;
+
+  _agents = flat.map((n, i) => {
+    const prev = prevById[n.id] || {};
+    return {
+      id:          n.id,
+      label:       n.label,
+      state:       n.state || "IDLE",
+      progress:    n.progress || 0,
+      task:        n.task || "",
+      tier:        n.tier || "t1",
+      model:       n.model || "",
+      summary:     n.summary || "",
+      depth:       n.depth,
+      children:    n.children,
+      _x:          prev._x !== undefined ? prev._x + (n.x - prev._x) * 0.08 : n.x,
+      _y:          prev._y !== undefined ? prev._y + (n.y - prev._y) * 0.08 : n.y,
+      _pulsePhase: prev._pulsePhase !== undefined ? prev._pulsePhase : i * 0.7,
+    };
+  });
 }
 
 // ── Background canvas ──────────────────────────────────────────────────────
@@ -143,8 +210,34 @@ function _renderAgents(W, H) {
 
   const total = _agents.length;
 
+  // ── Tree-mode: draw branch edges before nodes ──────────────────────────
+  if (_layoutMode === "tree") {
+    const byId = {};
+    for (const a of _agents) byId[a.id] = a;
+    for (const agent of _agents) {
+      if (!agent.children) continue;
+      for (const child of agent.children) {
+        const childAgent = byId[child.id];
+        if (!childAgent) continue;
+        c.strokeStyle = "rgba(34,211,238,0.14)";
+        c.lineWidth = 1.2;
+        c.beginPath();
+        c.moveTo(agent._x, agent._y);
+        const midY = (agent._y + childAgent._y) / 2;
+        c.bezierCurveTo(agent._x, midY, childAgent._x, midY, childAgent._x, childAgent._y);
+        c.stroke();
+      }
+    }
+  }
+
   _agents.forEach((agent, i) => {
-    const pos = _agentPosition(i, total, W, H);
+    let pos;
+    if (_layoutMode === "tree") {
+      pos = { x: agent._x !== undefined ? agent._x : W / 2,
+              y: agent._y !== undefined ? agent._y : H / 2 };
+    } else {
+      pos = _agentPosition(i, total, W, H);
+    }
     // Smooth position lerp (first frame: snap)
     if (agent._x === undefined) { agent._x = pos.x; agent._y = pos.y; }
     agent._x += (pos.x - agent._x) * 0.08;
@@ -163,10 +256,12 @@ function _renderAgents(W, H) {
     const glowAlpha = Math.round(pulse * 0.35 * 255).toString(16).padStart(2, "0");
     _drawGlow(c, x, y, ringR + 8, `${color}${glowAlpha}`);
 
-    // Connection line to centre
-    c.strokeStyle = "rgba(34,211,238,0.18)";
-    c.lineWidth = 0.8;
-    c.beginPath(); c.moveTo(cx, cy); c.lineTo(x, y); c.stroke();
+    // Connection line to centre (ring mode only)
+    if (_layoutMode !== "tree") {
+      c.strokeStyle = "rgba(34,211,238,0.18)";
+      c.lineWidth = 0.8;
+      c.beginPath(); c.moveTo(cx, cy); c.lineTo(x, y); c.stroke();
+    }
 
     // Outer ring
     c.strokeStyle = color;
@@ -213,6 +308,34 @@ function _renderAgents(W, H) {
     c.globalAlpha = state === "DONE" ? 0.5 : 0.85;
     c.fillText(state, x, y + ringR + 19);
     c.globalAlpha = 1;
+
+    // ── Tooltip on hover (tree mode shows task/model) ──────────────────
+    if (_layoutMode === "tree" && _hoveredId === agent.id && agent.task) {
+      const tipW = 160, tipH = 42;
+      const tipX = Math.min(Math.max(x - tipW / 2, 4), W - tipW - 4);
+      const tipY = Math.max(y - ringR - tipH - 12, 4);
+      c.fillStyle = "rgba(5,5,7,0.92)";
+      c.strokeStyle = "rgba(212,175,55,0.5)";
+      c.lineWidth = 1;
+      c.beginPath();
+      c.roundRect(tipX, tipY, tipW, tipH, 4);
+      c.fill();
+      c.stroke();
+      c.fillStyle = "#a5f3fc";
+      c.font = "7px ui-monospace,monospace";
+      c.textAlign = "left";
+      c.fillText((agent.task || "").slice(0, 48), tipX + 6, tipY + 12);
+      c.fillStyle = "#64748b";
+      c.font = "6px ui-monospace,monospace";
+      c.fillText(agent.model || agent.tier || "", tipX + 6, tipY + 26);
+      c.textAlign = "center";
+      c.fillStyle = "rgba(5,5,7,0.92)";
+      c.beginPath();
+      c.moveTo(x - 4, tipY + tipH);
+      c.lineTo(x, tipY + tipH + 5);
+      c.lineTo(x + 4, tipY + tipH);
+      c.fill();
+    }
   });
 
   // Projectiles (banana arcs)
@@ -372,6 +495,10 @@ function _loop() {
     _agCanvas.width  = dw; _agCanvas.height = dh;
     _bgCanvas.width  = dw; _bgCanvas.height = dh;
     _drawBackground();   // redraw static bg on resize
+    // Re-layout tree on resize
+    if (_layoutMode === "tree" && _treeData) {
+      _applyTreeLayout(dw, dh);
+    }
   }
 
   _renderAgents(_agCanvas.width, _agCanvas.height);
@@ -419,6 +546,9 @@ export function initSwarmViz(bgCanvasId, agentCanvasId) {
   // Start rAF loop
   _rafId = requestAnimationFrame(_loop);
 
+  // Register mouse hover for tooltips (tree mode)
+  _agCanvas.addEventListener("mousemove", _onMouseMove);
+
   // Poll window.__swarmState every 500ms (GDD §8b: poll async, render sync)
   _pollInterval = setInterval(() => {
     if (Array.isArray(window.__swarmState)) {
@@ -451,5 +581,49 @@ export function destroySwarmViz() {
   _agents = [];
   _projectiles = [];
   _prevStates = {};
+  _treeData = null;
+  _hoveredId = null;
   _frame = 0;
+  if (_agCanvas) {
+    _agCanvas.removeEventListener("mousemove", _onMouseMove);
+  }
+}
+
+// ── Mouse hover → tooltip on agent nodes ────────────────────────────────────
+
+function _onMouseMove(e) {
+  if (!_agCanvas || _layoutMode !== "tree") { _hoveredId = null; return; }
+  const rect = _agCanvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) * (_agCanvas.width / rect.width);
+  const my = (e.clientY - rect.top) * (_agCanvas.height / rect.height);
+
+  let found = null;
+  for (const agent of _agents) {
+    const dx = mx - agent._x, dy = my - agent._y;
+    if (dx * dx + dy * dy < 20 * 20) { // 20px hit radius
+      found = agent.id;
+      break;
+    }
+  }
+  _hoveredId = found;
+}
+
+/** Push hierarchical tree data for tree-layout mode.
+ *  treeData: { id, label, state, tier, task, progress, children: [...] } */
+export function setTreeState(treeData) {
+  _treeData = treeData;
+  _layoutMode = "tree";
+  if (_agCanvas) {
+    _applyTreeLayout(_agCanvas.width, _agCanvas.height);
+  }
+}
+
+/** Switch between ring and tree layout.
+ *  mode: "ring" | "tree" */
+export function setLayoutMode(mode) {
+  _layoutMode = mode === "tree" ? "tree" : "ring";
+  if (_layoutMode === "ring") {
+    _treeData = null;
+    _hoveredId = null;
+  }
 }

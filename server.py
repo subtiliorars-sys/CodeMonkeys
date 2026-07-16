@@ -6453,6 +6453,8 @@ def new_session(title="", repo="", budget_usd=None, username=None, tags=None):
             "approvals": {}, "lock": threading.Lock(),
             "username": username,
             "tags": _normalize_session_tags(tags),
+            "subagents": {},   # {agent_name: {state, task, model, tier, started_at, events[]}}
+            "subagent_order": [],  # ordered list of agent_names as they spawn
         }
         _persist_index()
     return SESSIONS[sid]
@@ -6520,6 +6522,8 @@ def restore_sessions():
             "approvals": {}, "lock": threading.Lock(),
             "username": meta.get("username"),
             "tags": meta.get("tags", []),
+            "subagents": {},   # {agent_name: {state, task, model, tier, started_at, events[]}}
+            "subagent_order": [],  # ordered list of agent_names as they spawn
         }
         try:
             with open(_events_path(sid)) as f:
@@ -7278,6 +7282,19 @@ def run_subagent(session, agent_name, task):
         tool_names = _plan_filter_subagent_tools(tool_names)
     emit(session, "agent_start", agent=agent_name, tier=tier,
          model=provider["model"], task=task[:300])
+
+    # ── sub-agent live-state tracking (swarm viz feed) ──────────────────
+    started = int(time.time())
+    with session["lock"]:
+        session["subagents"][agent_name] = {
+            "state": "running", "task": task[:200],
+            "model": provider["model"], "tier": tier,
+            "started_at": started,
+            "activity": [],
+        }
+        if agent_name not in session["subagent_order"]:
+            session["subagent_order"].append(agent_name)
+
     bb_hint = ""
     if "blackboard_read" in tool_names:
         bb_hint = (
@@ -7297,6 +7314,13 @@ def run_subagent(session, agent_name, task):
     history = [{"role": "user", "text": task}]
     text = agent_loop(session, provider, system, history, tool_names,
                       SUBAGENT_MAX_TURNS, agent_label=agent_name, depth=1)
+
+    # ── finalize sub-agent state ────────────────────────────────────────
+    with session["lock"]:
+        sa = session["subagents"].get(agent_name, {})
+        sa["state"] = "done" if text else "error"
+        sa["summary"] = (text or "(no report)")[:400]
+
     emit(session, "agent_end", agent=agent_name, ok=bool(text),
          summary=(text or "(no report)")[:400])
     return text or "(subagent returned no report)"
@@ -9479,12 +9503,15 @@ def repos_clone(req: RepoClone, username: str = Depends(verify_user)):
 # ----------------------------------------------------------------- swarm viz feed
 
 @app.get("/api/swarm/state")
-def swarm_state():
+def swarm_state(sid: str = ""):
     """Live backend feed for the Colony swarm visualizer.
 
     No auth required — mirrors the open /swarm page (demo-safe; no keys or PII
     in the response).  One agent entry per session; activity pulled from recent
     events so the visualizer can animate banana projectiles between nodes.
+
+    Optional ?sid=<session_id> returns sub-agent hierarchy for that session
+    (tree view mode).  Without sid, returns the top-level session ring.
 
     State mapping (per session fields):
       stop_flag set or status=="interrupted"  → "blocked"
@@ -9509,9 +9536,11 @@ def swarm_state():
 
         agents.append({
             "id":      f"session-{s['id']}",
+            "sid":     s["id"],
             "name":    s["title"],
             "status":  status,
             "tier":    "t1",
+            "subagent_count": len(s.get("subagents", {})),
         })
 
         # Collect activity packets from recent events (last 40)
@@ -9533,7 +9562,7 @@ def swarm_state():
     active = sum(1 for a in agents if a["status"] == "running")
     done   = sum(1 for a in agents if a["status"] == "done")
 
-    return {
+    result = {
         "orchestrator": {"id": "core", "name": "CodeMonkeys", "tier": "orchestrate"},
         "agents": agents,
         "activity": activity[-30:],
@@ -9544,6 +9573,92 @@ def swarm_state():
             "budget_per_session_usd": SESSION_BUDGET_USD,
             "model":                 model_label,
         },
+    }
+
+    # ── If ?sid= is provided, attach the sub-agent tree for that session ──
+    if sid:
+        target = SESSIONS.get(sid)
+        if target:
+            with target["lock"]:
+                sub_raw = dict(target.get("subagents", {}))
+                sub_order = list(target.get("subagent_order", []))
+            sub_agents = []
+            for aname in sub_order:
+                sa = sub_raw.get(aname, {})
+                sa_state = sa.get("state", "idle")
+                sub_agents.append({
+                    "id":       f"sub-{sid}-{aname}",
+                    "parent":   f"session-{sid}",
+                    "label":    aname,
+                    "state":    (sa_state.upper() if sa_state in ("running", "done", "error") else "IDLE"),
+                    "task":     sa.get("task", "")[:120],
+                    "model":    sa.get("model", ""),
+                    "tier":     sa.get("tier", "t1"),
+                    "progress": 1.0 if sa_state == "done" else 0.5 if sa_state == "running" else 0,
+                    "summary":  sa.get("summary", ""),
+                })
+            result["subagents"] = sub_agents
+            result["session_title"] = target.get("title", "")
+            result["session_status"] = target.get("status", "idle")
+
+    return result
+
+
+@app.get("/api/swarm/session/{sid}")
+def swarm_session_tree(sid: str):
+    """Returns the hierarchical agent tree for a specific session.
+
+    Top-level node = the commander (session itself).
+    Children = all sub-agents spawned by run_subagent(), with live state,
+    task description, model, tier, and a compact recent-activity feed.
+    Designed for the tree-layout mode in swarm-viz.js.
+    """
+    s = SESSIONS.get(sid)
+    if not s:
+        raise HTTPException(404, "Session not found")
+
+    with s["lock"]:
+        sub_raw = dict(s.get("subagents", {}))
+        sub_order = list(s.get("subagent_order", []))
+
+    children = []
+    for aname in sub_order:
+        sa = sub_raw.get(aname, {})
+        sa_state = sa.get("state", "idle")
+        children.append({
+            "id":       f"sub-{sid}-{aname}",
+            "label":    aname,
+            "state":    (sa_state.upper() if sa_state in ("running", "done", "error") else "IDLE"),
+            "task":     sa.get("task", "")[:200],
+            "model":    sa.get("model", ""),
+            "tier":     sa.get("tier", "t1"),
+            "progress": 1.0 if sa_state == "done" else 0.5 if sa_state == "running" else 0,
+            "summary":  sa.get("summary", ""),
+            "started_at": sa.get("started_at", 0),
+        })
+
+    # Status mapping for the commander
+    if s["stop_flag"].is_set() or s.get("status") == "interrupted":
+        cmd_status = "BLOCKED"
+    elif s.get("status") == "running":
+        cmd_status = "RUNNING"
+    elif s.get("status") == "idle" and s.get("spent_usd", 0) > 0:
+        cmd_status = "DONE"
+    else:
+        cmd_status = "IDLE"
+
+    return {
+        "tree": {
+            "id":       f"session-{sid}",
+            "label":    s["title"],
+            "state":    cmd_status,
+            "tier":     "commander",
+            "children": children,
+        },
+        "session_title":  s["title"],
+        "session_status": s.get("status", "idle"),
+        "spawned_count":  len(children),
+        "max_subagents":  MAX_SUBAGENTS,
     }
 
 

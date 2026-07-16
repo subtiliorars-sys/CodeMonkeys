@@ -115,6 +115,8 @@
     <span id="active-count">0</span>&nbsp;active
   </div>
   <button id="mode-btn">demo mode</button>
+  <button id="layout-btn" style="font-size:.7rem;padding:3px 10px;border-radius:4px;border:1px solid rgba(212,175,55,0.4);color:var(--gold-bright);background:rgba(212,175,55,0.07);cursor:pointer;margin-left:6px">ring</button>
+  <select id="session-select" style="font-size:.7rem;padding:2px 8px;border-radius:4px;border:1px solid rgba(212,175,55,0.3);color:var(--cyan-soft);background:rgba(5,5,7,0.8);max-width:140px;display:none"><option value="">-- sessions --</option></select>
 </div>
 
 <!-- HUD panel -->
@@ -136,7 +138,7 @@
 <div id="demo-notice">demo mode &#8212; mock colony data</div>
 
 <script type="module">
-import { initSwarmViz, setSwarmState } from "/static/forge/swarm-viz.js";
+import { initSwarmViz, setSwarmState, setTreeState, setLayoutMode } from "/static/forge/swarm-viz.js";
 
 // ── Mock dataset: 6 agents that cycle through states ──────────────────────
 const MOCK_AGENTS = [
@@ -183,28 +185,80 @@ function _updateHUD(agents, modelLabel) {
 
 // ── Live-mode polling ─────────────────────────────────────────────────────
 let _liveInterval = null;
+let _selectedSid = "";
 
 async function _fetchLiveState() {
   const token = localStorage.getItem("cm_token") || "";
   try {
+    // If a session is selected and in tree mode, fetch tree data
+    if (_selectedSid && !_isDemo) {
+      const tr = await fetch(`/api/swarm/session/${_selectedSid}`, {
+        headers: { Authorization: "Bearer " + token }
+      });
+      if (tr.ok) {
+        const treeData = await tr.json();
+        if (treeData.tree) {
+          setTreeState(treeData.tree);
+          // Also update HUD with the session sub-agent counts
+          const activeChildren = (treeData.tree.children || [])
+            .filter(c => c.state === "RUNNING" || c.state === "THINKING").length;
+          const doneChildren = (treeData.tree.children || [])
+            .filter(c => c.state === "DONE").length;
+          document.getElementById("hud-active").textContent = activeChildren;
+          document.getElementById("hud-done").textContent = doneChildren;
+          document.getElementById("active-count").textContent = activeChildren;
+          document.getElementById("hud-model").textContent =
+            (treeData.tree.children || [])[0]?.model || "\u2014";
+        }
+      }
+    }
+
+    // Also fetch top-level swarm state for session list
     const r = await fetch("/api/swarm/state", {
       headers: { Authorization: "Bearer " + token }
     });
     if (!r.ok) return;
     const data = await r.json();
-    const agents = (data.agents || []).map(a => ({
-      id:       a.id || a.name || "unknown",
-      label:    (a.name || a.id || "agent").slice(0, 14),
-      state:    a.status === "running" ? "RUNNING"
-              : a.status === "done"    ? "DONE"
-              : a.status === "blocked" ? "BLOCKED"
-              : "IDLE",
-      progress: 0,
-    }));
-    window.__swarmState = agents;
-    const stats = data.stats || {};
-    _updateHUD(agents, stats.model || null);
-  } catch (_) { /* network error — keep showing last state */ }
+
+    // Populate session selector
+    const sel = document.getElementById("session-select");
+    const sessions = (data.agents || []).filter(a => a.sid);
+    if (sessions.length > 0 && !_isDemo) {
+      sel.style.display = "";
+      let opts = '<option value="">-- sessions --</option>';
+      for (const s of sessions) {
+        const selAttr = s.sid === _selectedSid ? " selected" : "";
+        const sc = s.subagent_count ? ` (${s.subagent_count})` : "";
+        opts += `<option value="${s.sid}"${selAttr}>${s.name.slice(0, 18)}${sc}</option>`;
+      }
+      sel.innerHTML = opts;
+      // If no session selected and there's a running one with sub-agents, auto-select it
+      if (!_selectedSid) {
+        const running = sessions.find(s => s.status === "running" && s.subagent_count > 0);
+        if (running) {
+          _selectedSid = running.sid;
+          sel.value = _selectedSid;
+        }
+      }
+    }
+
+    // In ring mode, use agents array
+    if (!_selectedSid) {
+      setLayoutMode("ring");
+      const agents = (data.agents || []).map(a => ({
+        id:       a.id || a.name || "unknown",
+        label:    (a.name || a.id || "agent").slice(0, 14),
+        state:    a.status === "running" ? "RUNNING"
+                : a.status === "done"    ? "DONE"
+                : a.status === "blocked" ? "BLOCKED"
+                : "IDLE",
+        progress: 0,
+      }));
+      window.__swarmState = agents;
+      const stats = data.stats || {};
+      _updateHUD(agents, stats.model || null);
+    }
+  } catch (_) { /* network error */ }
 }
 
 // ── Demo ticker ───────────────────────────────────────────────────────────
@@ -243,6 +297,64 @@ function startLive() {
 
 document.getElementById("mode-btn").addEventListener("click", () => {
   if (_isDemo) startLive(); else startDemo();
+});
+
+// ── Layout toggle (ring ↔ tree) ──────────────────────────────────────────
+document.getElementById("layout-btn").addEventListener("click", () => {
+  if (_layoutMode === "tree") {
+    setLayoutMode("ring");
+    document.getElementById("layout-btn").textContent = "ring";
+    _selectedSid = "";
+    const sel = document.getElementById("session-select");
+    sel.value = "";
+    if (_isDemo) startDemo();
+    // Re-fetch for ring mode
+    if (!_isDemo) _fetchLiveState();
+  } else {
+    // Try to auto-select a session with sub-agents
+    setLayoutMode("tree");
+    document.getElementById("layout-btn").textContent = "tree";
+    if (_isDemo) {
+      // Show a demo tree
+      setTreeState({
+        id: "demo-root", label: "commander", state: "RUNNING", tier: "commander",
+        children: [
+          { id: "sub-recon", label: "recon-scout", state: "DONE", tier: "t0",
+            task: "Scan repo structure and find relevant files", model: "haiku",
+            progress: 1, children: [] },
+          { id: "sub-eng", label: "field-engineer", state: "RUNNING", tier: "t1",
+            task: "Implement the planned changes across 3 files", model: "sonnet",
+            progress: 0.6, children: [] },
+          { id: "sub-qa", label: "provost-qa", state: "THINKING", tier: "t1",
+            task: "Review changes for correctness and edge cases", model: "sonnet",
+            progress: 0, children: [] },
+          { id: "sub-red", label: "red-team", state: "IDLE", tier: "t3",
+            task: "Security audit before merge", model: "opus",
+            progress: 0, children: [] },
+        ]
+      });
+      document.getElementById("hud-active").textContent = "2";
+      document.getElementById("hud-done").textContent = "1";
+      document.getElementById("active-count").textContent = "2";
+      document.getElementById("demo-notice").textContent = "tree demo — sub-agent hierarchy";
+    }
+  }
+});
+let _layoutMode = "ring";  // track current layout
+
+// ── Session selector ─────────────────────────────────────────────────────
+document.getElementById("session-select").addEventListener("change", (e) => {
+  _selectedSid = e.target.value;
+  if (_selectedSid) {
+    setLayoutMode("tree");
+    document.getElementById("layout-btn").textContent = "tree";
+    _layoutMode = "tree";
+  } else {
+    setLayoutMode("ring");
+    document.getElementById("layout-btn").textContent = "ring";
+    _layoutMode = "ring";
+  }
+  if (!_isDemo) _fetchLiveState();
 });
 
 // ── Boot ──────────────────────────────────────────────────────────────────
