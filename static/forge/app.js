@@ -63,26 +63,42 @@ window.api = api;
 
 /* ---------------- viewport lock ---------------- */
 function _lockViewport() {
-  const vm = document.getElementById("view-main");
-  if (!vm || vm.classList.contains("hidden")) return;
-  const h = window.innerHeight;
-  // Account for #tab-bar above view-main (38px desktop, 36px mobile)
-  const tabBar = document.getElementById("tab-bar");
-  const tabH = tabBar ? tabBar.offsetHeight : 38;
-  vm.style.position = "fixed";
-  vm.style.top = tabH + "px";
-  vm.style.left = "0";
-  vm.style.width = "100%";
-  vm.style.height = (h - tabH) + "px";
-  vm.style.maxHeight = (h - tabH) + "px";
-  vm.style.overflow = "hidden";
-  // Also constrain the main content pane
-  const main = vm.querySelector("main");
-  if (main) {
-    main.style.overflow = "hidden";
-    main.style.minHeight = "0";
-  }
+  try {
+    const vm = document.getElementById("view-main");
+    if (!vm || vm.classList.contains("hidden")) return;
+    const h = window.innerHeight;
+    const tabBar = document.getElementById("tab-bar");
+    const tabH = tabBar ? tabBar.offsetHeight : 38;
+    vm.style.position = "fixed";
+    vm.style.top = tabH + "px";
+    vm.style.left = "0";
+    vm.style.width = "100%";
+    vm.style.height = (h - tabH) + "px";
+    vm.style.maxHeight = (h - tabH) + "px";
+    vm.style.overflow = "hidden";
+    const main = vm.querySelector("main");
+    if (main) {
+      main.style.overflow = "hidden";
+      main.style.minHeight = "0";
+    }
+  } catch(e) { console.warn("_lockViewport:", e); }
 }
+
+/* ---------------- diagnostics ---------------- */
+window._cmDiag = function() {
+  const checks = [
+    "btn-settings","btn-logout","btn-send","btn-stop","btn-new-session",
+    "btn-attach","btn-mic","modal-settings","modal-settings-backdrop",
+    "view-main","tab-bar","sidebar","stream","composer","left-taskbar"
+  ];
+  const results = checks.map(id => {
+    const el = document.getElementById(id);
+    return { id, found: !!el, hidden: el ? el.classList.contains("hidden") : null, display: el ? getComputedStyle(el).display : null };
+  });
+  console.table(results);
+  return results;
+};
+console.log("%c Run _cmDiag() in console to check all UI elements %c", "color:gold", "");
 
 /* ---------------- auth ---------------- */
 
