@@ -28,6 +28,7 @@
   #view-main.h-full {
     height: 100dvh !important;
     max-height: 100dvh !important;
+    overflow: hidden !important;
   }
   /* Critical: flex children default to min-height:auto which defeats the
      viewport constraint. Force min-height:0 so flex-1 actually shrinks. */
@@ -36,6 +37,7 @@
   #wb-body,
   #panel-chat {
     min-height: 0 !important;
+    overflow: hidden;
   }
   @media (max-width: 767px) {
     body.h-screen,
