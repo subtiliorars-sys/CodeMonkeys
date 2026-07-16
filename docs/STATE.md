@@ -1,31 +1,68 @@
 # CodeMonkeys — Current State (jumping-off point)
 
 **Read this first when picking the project back up.** Last updated 2026-07-16
-(post swarm-viz Phase 2 tree visualization + handoff triage).
+(post-UI-fix session: viewport, budget removal, username remember, tab-bar offset).
 
-## ✅ Handoff items resolved (2026-07-16)
+Tests: **769 passed / 16 skipped / 0 failures**. Working tree clean.
 
-1. **`feat/governance-m8-backup-posture`** — Confirmed redundant: identical content already landed on `main` via PR #165 (`61a30e2`). Branch deleted locally.
+## Recent work (this session, all on main / deployed)
 
-2. **`index.html` visual-inspector.js script tag** — The actual diff was a WebView2 viewport fix (100dvh) + an `app.js` budget bar no-nag fix. Both committed as `665da84` on `work/swarm-viz-tree-layout`.
-
-3. **`build-windows` CI verification** — No changes needed; first real CI run will be the verification. The YAML is valid and all inputs exist.
-
-4. **`paths:` filter for `build-windows`** — Added via lightweight `git diff` check (zero third-party actions). Job now skips entirely when no `desktop/`, `scripts/`, or `requirements-desktop.txt` files changed. Committed as `d2b816a`.
-
-5. **Untracked dirs triage** — All previously untracked items (`tools/visual_inspector/`, `browser-extension/`, desktop icons, `make_icon.py`, monkey images) are no longer present in the working tree (resolved in prior sessions).
-
-## Current branch: `work/swarm-viz-tree-layout`
-
-3 commits ahead of `main`, ready for PR:
-
-| Commit | Description |
+| Commit | What |
 |---|---|
-| `7f55e56` | **feat: Claude Code-style sub-agent tree visualization (swarm-viz Phase 2)** — backend sub-agent state tracking, `/api/swarm/session/{sid}` endpoint, tree layout mode with branch edges + hover tooltips, session selector |
-| `665da84` | **fix: WebView2 viewport (100dvh) + budget bar no-nag when cap unset** |
-| `d2b816a` | **ci: add paths filter to build-windows** |
+| `890b2b8` | Remember username checkbox on login form |
+| `c7c62e0` | try/catch on _lockViewport + _cmDiag() diagnostic |
+| `2a36598` | Offset view-main below 38px tab-bar |
+| `280dc35` | inline min-height:0 on #stream + flex-shrink:0 on composer |
+| `68382e9` | JS-enforced viewport lock (_lockViewport) |
+| `4ad92a8` | Removed spend display from header |
+| `fc797c2` | Removed budget alert banner + viewport fixes |
+| `7f55e56` | Swarm-viz Phase 2 tree visualization (sub-agent hierarchy) |
 
-Tests: 769 passed / 16 skipped / 0 failures. Working tree clean.
+## ⚠️ OPEN — Needs attention
+
+### 1. Buttons/UI not fully functional
+Some UI buttons reportedly "don't do anything." A diagnostic function `_cmDiag()` was added — open browser console (F12) and run `_cmDiag()` to see which elements exist/are hidden. The `_lockViewport` JS function was wrapped in try/catch to prevent it from breaking other init code. Needs investigation with console open to find root cause.
+
+### 2. Session token may not survive deploys
+Session secret is persisted at `/data/session_secret.key` on the Fly volume, but tokens may become invalid after deploys. User needs to re-login after each deploy. May be expected (server restart) or a volume mount issue.
+
+### 3. Docker cache-bust hack
+The Dockerfile has a `# cache-bust: YYYY-MM-DD-HHMM` comment at line 2 that gets updated on every deploy to force a clean rebuild of static files. This is a workaround — the Depot builder was caching old `COPY static/` layers. Consider a proper fix (e.g., `--no-cache` flag or build args).
+
+## Key files
+
+| File | Role |
+|---|---|
+| `server.py` | Entire backend (single file, ~10k lines) |
+| `static/forge/index.html` | Main UI + inline CSS (viewport overrides) |
+| `static/forge/app.js` | All frontend logic, auth, sessions, viewport lock |
+| `static/forge/swarm-viz.js` | Canvas 2D colony visualizer (ring + tree modes) |
+| `static/forge/swarm_viz.html` | Swarm viz page with session selector + layout toggle |
+| `static/forge/index-shell.js` | Shell UI: tab bar, taskbar, keyboard handling |
+| `static/forge/jungle-theme.css` | Theme: tab bar (38px), sidebar (52px), colors, layout |
+| `desktop/launcher.py` | PyWebView desktop window (1280x860, may not fit 1280x800 screens) |
+| `corps/` | 15+ Daystrom agent definitions |
+| `docs/STATE.md` | This file |
+| `docs/ARCHITECTURE.md` | Architecture overview |
+| `docs/RECOVERY.md` | Lockout/emergency runbook |
+
+## Deploy
+
+```bash
+fly deploy --app codemonkeys --remote-only
+```
+
+Deploy takes ~90s (remote Depot build). The 30s shell timeout may kill it — use `Start-Process fly -ArgumentList 'deploy --app codemonkeys --remote-only' -WindowStyle Minimized` to detach.
+
+Live at: https://codemonkeys.fly.dev
+
+## Viewport layout (critical context)
+
+The viewport was a recurring issue. Current solution:
+- `_lockViewport()` in app.js sets `#view-main` to `position: fixed`, offset below the 38px `#tab-bar`, with `height = innerHeight - tabH`
+- `#stream` has inline `min-height:0`, `#composer` has inline `flex-shrink:0`
+- These inline styles bypass CSS cascade conflicts
+- If the bottom gets cut off again, check that `_lockViewport` is running and the tab bar height is correct
 
 ## What it is
 Self-hosted web coding console (Claude Code-style agent). Single-file FastAPI
