@@ -21,13 +21,21 @@
      never pushed below the visible edge (100vh includes the OS taskbar / IME
      area under WebView2 + Chromium). Applied at ALL widths, not just mobile —
      desktop WebView2 hits the same 100vh overflow. */
-  html, body { height: 100%; }
+  html, body { height: 100%; overflow: hidden; }
   body.h-screen,
   #view-login.h-full,
   #view-setup.h-full,
   #view-main.h-full {
     height: 100dvh !important;
     max-height: 100dvh !important;
+  }
+  /* Critical: flex children default to min-height:auto which defeats the
+     viewport constraint. Force min-height:0 so flex-1 actually shrinks. */
+  #view-main > main,
+  #view-main > .flex.flex-col,
+  #wb-body,
+  #panel-chat {
+    min-height: 0 !important;
   }
   @media (max-width: 767px) {
     body.h-screen,
@@ -43,8 +51,7 @@
       min-height: 0 !important;
     }
     html.cm-kb-active #landing-welcome { display: none !important; }
-    html.cm-kb-active #enc-banner,
-    html.cm-kb-active #budget-alert { display: none !important; }
+    html.cm-kb-active #enc-banner { display: none !important; }
     html.cm-kb-active #stream { flex: 1 1 auto !important; min-height: 0 !important; }
     #fb-fab {
       bottom: calc(env(safe-area-inset-bottom, 0px) + 5rem) !important;
@@ -551,11 +558,6 @@
       <span id="hdr-spend" class="text-[var(--gold)]"></span>
       <button id="btn-agents-hub" type="button" class="gold-border rounded px-2 py-1 text-[.65rem] text-[var(--gold)] hover:bg-yellow-900/20 hidden" title="Agents &amp; automations (Ctrl+Shift+A)">🤖 Agents</button>
     </header>
-    <!-- budget alert banner (only when session budget nears cap) -->
-    <div id="budget-alert" class="hidden owner-only px-4 py-1 text-xs bg-red-900/30 border-b border-red-700/50 text-red-300 flex items-center gap-2">
-      <span id="budget-alert-msg"></span>
-      <button id="budget-alert-close" class="ml-auto text-red-500 hover:text-red-200">✕</button>
-    </div>
     <!-- encryption banner: shown when keys are unencrypted or failed to decrypt -->
     <div id="enc-banner" class="hidden owner-only px-4 py-2 text-xs bg-yellow-900/30 border-b border-yellow-700/50 text-yellow-300 flex items-center gap-2">
       <span id="enc-banner-msg"></span>

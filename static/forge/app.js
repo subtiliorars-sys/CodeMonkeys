@@ -9,7 +9,7 @@ const state = {
   token: localStorage.getItem("cm_token") || "",
   username: localStorage.getItem("cm_username") || "",
   role: localStorage.getItem("cm_role") || "",
-  sid: null, after: -1, status: "idle", timer: null, pollMs: 0, budget_usd: null,
+  sid: null, after: -1, status: "idle", timer: null, pollMs: 0,
   files: [], registering: false,
   mode: localStorage.getItem("cm_mode") || "default",
   // N5 streaming: live div for partial assistant text (text_delta events).
@@ -126,7 +126,6 @@ async function checkEncryptionBanner() {
   }
 }
 $("enc-banner-close").onclick = () => $("enc-banner").classList.add("hidden");
-$("budget-alert-close").onclick = () => $("budget-alert").classList.add("hidden");
 function clearStoredSession() {
   ["cm_token", "cm_username", "cm_role"].forEach((k) => localStorage.removeItem(k));
   state.token = "";
@@ -640,7 +639,6 @@ async function refreshSessions() {
     const d = await api("/api/sessions");
     if (state.sid) {
       const cur = d.sessions.find((s) => s.id === state.sid);
-      if (cur) state.budget_usd = cur.budget_usd || null;
     }
     // Compute today's total spend from sessions
     const todaySpend = d.sessions.reduce((sum, s) => sum + (s.spent_usd || 0), 0);
@@ -793,9 +791,7 @@ function _clearStreamState() {
 }
 
 function openSession(sid) {
-  state.sid = sid; state.after = -1; state.budget_usd = null;
-  _budgetAlertShownAt = 0;
-  $("budget-alert")?.classList.add("hidden");
+  state.sid = sid; state.after = -1;
   $("stream").innerHTML = "";
   _clearStreamState();
   hideProviderWait();
@@ -1049,10 +1045,7 @@ async function poll() {
     state.status = d.status;
     $("hdr-dot").className = "dot " + d.status;
     $("hdr-status").textContent = d.status;
-    $("hdr-spend").textContent = state.budget_usd
-      ? `$${d.spent_usd} / $${state.budget_usd}`
-      : `$${d.spent_usd}`;
-    _updateBudgetBar(d.spent_usd, state.budget_usd);
+    $("hdr-spend").textContent = "$" + d.spent_usd.toFixed(4);
     const sess = document.querySelector(`[data-sid="${state.sid}"]`);
     $("hdr-title").textContent = sess ? sess.textContent.split("$")[0].trim() : state.sid;
     $("btn-stop").classList.toggle("hidden", d.status === "idle");
@@ -1953,27 +1946,6 @@ document.getElementsByName("route-mode").forEach((r) => {
     loadProviders();
   };
 });
-
-/* ---------------- session budget bar ---------------- */
-let _budgetAlertShownAt = 0; // pct threshold at which alert was last shown (75 or 95)
-
-function _updateBudgetBar(spent, cap) {
-  // No active cap configured (e.g. SESSION_BUDGET_USD unset/0): never show the
-  // banner. The budget bar is opt-in; a default non-zero cap is NOT a reason to
-  // nag the user. (Was a stale leftover from earlier cost-cap experiments.)
-  if (!cap || cap <= 0) return;
-  const pct = Math.min(100, (spent / cap) * 100);
-  const alertEl = $("budget-alert");
-  const alertMsg = $("budget-alert-msg");
-  if (alertEl && alertMsg) {
-    const threshold = pct >= 95 ? 95 : pct >= 75 ? 75 : 0;
-    if (threshold && threshold > _budgetAlertShownAt) {
-      _budgetAlertShownAt = threshold;
-      alertMsg.textContent = `Budget ${Math.round(pct)}% used — $${spent.toFixed(4)} / $${cap.toFixed(2)}`;
-      alertEl.classList.remove("hidden");
-    }
-  }
-}
 
 /* ---------------- cost calculator ---------------- */
 function _renderCostCalc(providers) {
