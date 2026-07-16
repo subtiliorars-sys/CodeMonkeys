@@ -66,12 +66,15 @@ function _lockViewport() {
   const vm = document.getElementById("view-main");
   if (!vm || vm.classList.contains("hidden")) return;
   const h = window.innerHeight;
+  // Account for #tab-bar above view-main (38px desktop, 36px mobile)
+  const tabBar = document.getElementById("tab-bar");
+  const tabH = tabBar ? tabBar.offsetHeight : 38;
   vm.style.position = "fixed";
-  vm.style.top = "0";
+  vm.style.top = tabH + "px";
   vm.style.left = "0";
   vm.style.width = "100%";
-  vm.style.height = h + "px";
-  vm.style.maxHeight = h + "px";
+  vm.style.height = (h - tabH) + "px";
+  vm.style.maxHeight = (h - tabH) + "px";
   vm.style.overflow = "hidden";
   // Also constrain the main content pane
   const main = vm.querySelector("main");
