@@ -22,23 +22,7 @@
      area under WebView2 + Chromium). Applied at ALL widths, not just mobile —
      desktop WebView2 hits the same 100vh overflow. */
   html, body { height: 100%; overflow: hidden; }
-  /* Use position:fixed inset:0 instead of 100dvh — works everywhere
-     including WebView2 where dvh units can be unreliable. */
-  #view-main.h-full {
-    position: fixed !important;
-    inset: 0 !important;
-    height: auto !important;
-    max-height: none !important;
-    overflow: hidden !important;
-  }
-  #view-login.h-full,
-  #view-setup.h-full {
-    height: 100dvh !important;
-    max-height: 100dvh !important;
-    overflow: hidden !important;
-  }
-  /* Critical: flex children default to min-height:auto which defeats the
-     viewport constraint. Force min-height:0 so flex-1 actually shrinks. */
+  /* view-main sizing handled by JS (_lockViewport) to bypass dvh/vh quirks */
   #view-main > main,
   #view-main > .flex.flex-col,
   #wb-body,
@@ -47,12 +31,7 @@
     overflow: hidden;
   }
   @media (max-width: 767px) {
-    #view-main.h-full {
-      position: fixed !important;
-      inset: 0 !important;
-      height: auto !important;
-      max-height: none !important;
-    }
+    /* view-main sizing handled by JS (_lockViewport) — no CSS dvh/vh needed */
     #view-login.h-full,
     #view-setup.h-full {
       height: var(--cm-vvh, 100dvh) !important;

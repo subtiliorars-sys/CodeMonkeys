@@ -61,6 +61,26 @@ async function api(path, method = "GET", body = null) {
 window.state = state;
 window.api = api;
 
+/* ---------------- viewport lock ---------------- */
+function _lockViewport() {
+  const vm = document.getElementById("view-main");
+  if (!vm || vm.classList.contains("hidden")) return;
+  const h = window.innerHeight;
+  vm.style.position = "fixed";
+  vm.style.top = "0";
+  vm.style.left = "0";
+  vm.style.width = "100%";
+  vm.style.height = h + "px";
+  vm.style.maxHeight = h + "px";
+  vm.style.overflow = "hidden";
+  // Also constrain the main content pane
+  const main = vm.querySelector("main");
+  if (main) {
+    main.style.overflow = "hidden";
+    main.style.minHeight = "0";
+  }
+}
+
 /* ---------------- auth ---------------- */
 
 function hideAll() {
@@ -83,6 +103,9 @@ function showSetup() {
 function showMain() {
   hideAll(); $("view-main").classList.remove("hidden");
   $("who").textContent = state.username;
+  // Lock viewport — JS-enforced, bypasses all CSS dvh/vh/% quirks
+  _lockViewport();
+  window.addEventListener("resize", _lockViewport);
   // Owner-only controls hidden for invited Members
   document.querySelectorAll(".owner-only").forEach((el) =>
     el.classList.toggle("hidden", state.role !== "Owner"));
