@@ -1958,6 +1958,9 @@ document.getElementsByName("route-mode").forEach((r) => {
 let _budgetAlertShownAt = 0; // pct threshold at which alert was last shown (75 or 95)
 
 function _updateBudgetBar(spent, cap) {
+  // No active cap configured (e.g. SESSION_BUDGET_USD unset/0): never show the
+  // banner. The budget bar is opt-in; a default non-zero cap is NOT a reason to
+  // nag the user. (Was a stale leftover from earlier cost-cap experiments.)
   if (!cap || cap <= 0) return;
   const pct = Math.min(100, (spent / cap) * 100);
   const alertEl = $("budget-alert");

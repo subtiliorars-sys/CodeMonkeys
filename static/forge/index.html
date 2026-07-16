@@ -17,7 +17,18 @@
 <link rel="stylesheet" href="/static/forge/three-card-triage.css">
 <link rel="stylesheet" href="/static/forge/jungle-theme.css">
 <style id="cm-mobile-overrides">
-  /* After Tailwind — dynamic viewport must win over h-screen / h-full */
+  /* Dynamic viewport must win over h-screen / h-full so the bottom composer is
+     never pushed below the visible edge (100vh includes the OS taskbar / IME
+     area under WebView2 + Chromium). Applied at ALL widths, not just mobile —
+     desktop WebView2 hits the same 100vh overflow. */
+  html, body { height: 100%; }
+  body.h-screen,
+  #view-login.h-full,
+  #view-setup.h-full,
+  #view-main.h-full {
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+  }
   @media (max-width: 767px) {
     body.h-screen,
     #view-login.h-full,
