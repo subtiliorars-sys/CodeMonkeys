@@ -48,11 +48,18 @@ The Dockerfile has a `# cache-bust: YYYY-MM-DD-HHMM` comment at line 2 that gets
 
 ## Deploy
 
-```bash
-fly deploy --app codemonkeys --remote-only
+```powershell
+./scripts/deploy.ps1
 ```
 
-Deploy takes ~90s (remote Depot build). The 30s shell timeout may kill it — use `Start-Process fly -ArgumentList 'deploy --app codemonkeys --remote-only' -WindowStyle Minimized` to detach.
+This wraps `fly deploy --app codemonkeys --remote-only` and always passes a
+fresh `--build-arg CACHEBUST=<unix-timestamp>`, which the Dockerfile uses
+right before `COPY static/ static/` to force that layer to rebuild every
+time (Depot's remote builder was observed serving a stale static/ layer
+otherwise — see PR #186 / the old "cache-bust: YYYY-MM-DD" comment this
+replaced). No more hand-editing a date comment before each deploy.
+
+Deploy takes ~90s (remote Depot build). The 30s shell timeout may kill it — use `Start-Process pwsh -ArgumentList '-File scripts/deploy.ps1' -WindowStyle Minimized` to detach.
 
 Live at: https://codemonkeys.fly.dev
 
