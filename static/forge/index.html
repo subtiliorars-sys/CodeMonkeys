@@ -22,10 +22,17 @@
      area under WebView2 + Chromium). Applied at ALL widths, not just mobile —
      desktop WebView2 hits the same 100vh overflow. */
   html, body { height: 100%; overflow: hidden; }
-  body.h-screen,
-  #view-login.h-full,
-  #view-setup.h-full,
+  /* Use position:fixed inset:0 instead of 100dvh — works everywhere
+     including WebView2 where dvh units can be unreliable. */
   #view-main.h-full {
+    position: fixed !important;
+    inset: 0 !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: hidden !important;
+  }
+  #view-login.h-full,
+  #view-setup.h-full {
     height: 100dvh !important;
     max-height: 100dvh !important;
     overflow: hidden !important;
@@ -40,10 +47,14 @@
     overflow: hidden;
   }
   @media (max-width: 767px) {
-    body.h-screen,
-    #view-login.h-full,
-    #view-setup.h-full,
     #view-main.h-full {
+      position: fixed !important;
+      inset: 0 !important;
+      height: auto !important;
+      max-height: none !important;
+    }
+    #view-login.h-full,
+    #view-setup.h-full {
       height: var(--cm-vvh, 100dvh) !important;
       max-height: var(--cm-vvh, 100dvh) !important;
     }
