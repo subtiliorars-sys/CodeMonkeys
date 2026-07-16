@@ -554,7 +554,7 @@
       <span id="enc-banner-msg"></span>
       <button id="enc-banner-close" class="ml-auto text-yellow-500 hover:text-yellow-200">✕</button>
     </div>
-    <div id="stream" class="flex-1 overflow-y-auto px-4 py-3 space-y-2 text-sm">
+    <div id="stream" class="flex-1 overflow-y-auto px-4 py-3 space-y-2 text-sm" style="min-height:0">
       <!-- Empty-state landing: shown only when no session is active -->
       <div id="landing-welcome" class="flex flex-col items-center justify-center h-full text-center px-6">
         <div class="text-5xl monkey mb-4">🐒</div>
@@ -572,7 +572,7 @@
         <p class="text-slate-600 text-xs mt-6">mode: <span id="landing-mode" class="text-[var(--gold)]">default</span></p>
       </div>
     </div>
-    <div id="composer" class="border-t border-yellow-900/40 p-3">
+    <div id="composer" class="border-t border-yellow-900/40 p-3" style="flex-shrink:0">
       <div class="flex items-center gap-2 mb-1 text-xs">
         <span class="text-slate-500">mode:</span>
         <button data-mode="plan" class="mode-btn rounded px-2 py-0.5 gold-border text-slate-400">📋 plan</button>
