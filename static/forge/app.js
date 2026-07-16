@@ -115,7 +115,7 @@ function showLogin() {
     $("lg-user").value = lastUser;
     if (cb) cb.checked = true;
   }
-  FeedbackFab.syncWithAuthScreen?.();
+  if (typeof FeedbackFab !== "undefined") FeedbackFab.syncWithAuthScreen?.();
   api("/api/registration-status").then(d => {
     if (d.open) $("lg-toggle").classList.remove("hidden");
     else $("lg-toggle").classList.add("hidden");
@@ -124,7 +124,7 @@ function showLogin() {
 function showSetup() {
   hideAll();
   $("view-setup").classList.remove("hidden");
-  FeedbackFab.syncWithAuthScreen?.();
+  if (typeof FeedbackFab !== "undefined") FeedbackFab.syncWithAuthScreen?.();
 }
 function showMain() {
   hideAll(); $("view-main").classList.remove("hidden");
@@ -144,7 +144,7 @@ function showMain() {
   if (document.documentElement.classList.contains("cm-lite") && MobileDrawer.isMobile() && !state.sid) {
     MobileDrawer.setOpen(true);
   }
-  FeedbackFab.syncWithAuthScreen?.();
+  if (typeof FeedbackFab !== "undefined") FeedbackFab.syncWithAuthScreen?.();
   $("btn-agents-hub")?.classList.remove("hidden");
 }
 

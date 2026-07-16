@@ -917,19 +917,6 @@
   </div>
 </div>
 
-<script src="/static/forge/agents-hub.js"></script>
-<script src="/static/forge/omni-search.js"></script>
-<script src="/static/forge/fleet-store.js"></script>
-<script src="/static/forge/workbench.js"></script>
-<script src="/static/forge/cursor-desk.js"></script>
-<script src="/static/forge/gremlins.js"></script>
-<script src="/static/forge/push.js"></script>
-<script src="/static/forge/three-card-triage.js"></script>
-<script src="/static/forge/egress-consent.js"></script>
-<script src="/static/forge/app.js"></script>
-<script src="/static/forge/field-report.js"></script>
-<script src="/static/forge/feedback.js"></script>
-<script src="/static/forge/pwa.js"></script>
 <!-- ============ JUNGLE MENU (collapsible bottom-left) ============ -->
 <button id="jungle-menu-btn" class="jungle-menu-trigger" aria-label="Open menu" aria-haspopup="true" aria-expanded="false" aria-controls="jungle-menu">🐒</button>
 <div id="jungle-menu" class="jungle-menu-panel" role="menu" aria-label="App menu">
@@ -1088,6 +1075,23 @@
 <p id="passkey-msg" class="hidden" style="display:none" aria-hidden="true"></p>
 <div id="passkey-list" class="hidden" style="display:none" aria-hidden="true"></div>
 
+<!-- Scripts load last, after all DOM elements they reference exist (a proxy-element
+     block above this point used to sit AFTER these tags, which meant getElementById
+     returned null for elements declared later in the document, threw, and silently
+     aborted the rest of app.js's top-level button wiring — see docs/STATE.md). -->
+<script src="/static/forge/agents-hub.js"></script>
+<script src="/static/forge/omni-search.js"></script>
+<script src="/static/forge/fleet-store.js"></script>
+<script src="/static/forge/workbench.js"></script>
+<script src="/static/forge/cursor-desk.js"></script>
+<script src="/static/forge/gremlins.js"></script>
+<script src="/static/forge/push.js"></script>
+<script src="/static/forge/three-card-triage.js"></script>
+<script src="/static/forge/egress-consent.js"></script>
+<script src="/static/forge/app.js"></script>
+<script src="/static/forge/field-report.js"></script>
+<script src="/static/forge/feedback.js"></script>
+<script src="/static/forge/pwa.js"></script>
 <script src="/static/forge/index-shell.js"></script>
 
 
