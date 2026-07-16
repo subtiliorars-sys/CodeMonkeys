@@ -1,5 +1,4 @@
 FROM python:3.12-slim
-# cache-bust: 2026-07-16-0945 — force rebuild for viewport fixes
 
 # nodejs + npm enable stdio MCP servers (e.g. npx @modelcontextprotocol/server-filesystem)
 # Cost: ~80 MB added to image; acceptable for stdio MCP support.
@@ -14,8 +13,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY server.py .
 COPY feedback_triage.py .
 COPY corps/ corps/
-COPY static/ static/
 COPY scripts/ scripts/
+
+# Depot's remote builder was observed serving a stale `COPY static/` layer even
+# after the source content changed, requiring a hand-edited date comment above
+# this line before every deploy to force a rebuild. Replaced with an ARG that
+# `fly deploy` supplies automatically (see fly.toml / docs/STATE.md "Deploy") —
+# every deploy gets a fresh value, so the static layer's cache key always
+# changes and no one has to remember to bump anything by hand.
+ARG CACHEBUST=dev
+RUN echo "$CACHEBUST" > /tmp/.cachebust
+COPY static/ static/
 
 # Vendor Tailwind (Wave 4 #3): compile the utility CSS the frontend uses into a
 # static file (Node/npm already present for stdio MCP). This is what lets us drop
