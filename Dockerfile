@@ -1,4 +1,5 @@
 FROM python:3.12-slim
+# cache-bust: 2026-07-16-0815 — force rebuild for viewport fixes
 
 # nodejs + npm enable stdio MCP servers (e.g. npx @modelcontextprotocol/server-filesystem)
 # Cost: ~80 MB added to image; acceptable for stdio MCP support.
