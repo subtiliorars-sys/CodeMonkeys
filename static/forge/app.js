@@ -108,9 +108,13 @@ function hideAll() {
 function showLogin() {
   hideAll();
   $("view-login").classList.remove("hidden");
-  // Pre-fill the last username
+  // Pre-fill the last username if saved
   const lastUser = localStorage.getItem("cm_last_user");
-  if (lastUser) $("lg-user").value = lastUser;
+  const cb = document.getElementById("lg-remember-user");
+  if (lastUser) {
+    $("lg-user").value = lastUser;
+    if (cb) cb.checked = true;
+  }
   FeedbackFab.syncWithAuthScreen?.();
   api("/api/registration-status").then(d => {
     if (d.open) $("lg-toggle").classList.remove("hidden");
@@ -199,8 +203,13 @@ function saveAuth(d) {
   localStorage.setItem("cm_token", d.token);
   localStorage.setItem("cm_username", d.username);
   localStorage.setItem("cm_role", d.role);
-  // Remember the last username for login form pre-fill
-  localStorage.setItem("cm_last_user", d.username);
+  // Remember username only if checkbox is checked
+  const remember = document.getElementById("lg-remember-user");
+  if (remember && remember.checked) {
+    localStorage.setItem("cm_last_user", d.username);
+  } else {
+    localStorage.removeItem("cm_last_user");
+  }
 }
 
 $("lg-toggle").onclick = () => {

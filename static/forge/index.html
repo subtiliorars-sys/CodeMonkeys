@@ -388,6 +388,10 @@
     <div class="space-y-3">
       <input id="lg-user" class="input w-full rounded px-3 py-2 text-sm" placeholder="username" autocomplete="username">
       <input id="lg-mfa" class="input w-full rounded px-3 py-2 text-sm" placeholder="6-digit authenticator code" inputmode="numeric" autocomplete="one-time-code">
+      <label class="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
+        <input type="checkbox" id="lg-remember-user" class="accent-[var(--gold)]">
+        Remember username
+      </label>
       <button id="lg-submit" class="gold-btn w-full rounded py-2 text-sm">Log in</button>
       <button id="lg-bio" class="w-full rounded py-2 text-sm gold-border text-[var(--gold-bright)] hover:bg-yellow-900/20">👆 Sign in with biometrics / passkey</button>
       <button id="lg-toggle" class="w-full text-xs text-slate-400 hover:text-slate-200">First time? Register the Owner account</button>
