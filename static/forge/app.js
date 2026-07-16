@@ -1045,7 +1045,6 @@ async function poll() {
     state.status = d.status;
     $("hdr-dot").className = "dot " + d.status;
     $("hdr-status").textContent = d.status;
-    $("hdr-spend").textContent = "$" + d.spent_usd.toFixed(4);
     const sess = document.querySelector(`[data-sid="${state.sid}"]`);
     $("hdr-title").textContent = sess ? sess.textContent.split("$")[0].trim() : state.sid;
     $("btn-stop").classList.toggle("hidden", d.status === "idle");
