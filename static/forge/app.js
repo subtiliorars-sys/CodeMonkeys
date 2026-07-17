@@ -24,6 +24,7 @@ const MODE_HINTS = {
 
 const PUBLIC_API = new Set([
   "/api/login", "/api/register", "/api/registration-status",
+  "/api/billing/status", "/api/billing/checkout",
   "/api/webauthn/login/begin", "/api/webauthn/login/complete",
   "/api/webauthn/register/begin", "/api/webauthn/register/complete",
 ]);
@@ -120,7 +121,39 @@ function showLogin() {
     if (d.open) $("lg-toggle").classList.remove("hidden");
     else $("lg-toggle").classList.add("hidden");
   }).catch(() => {});
+  // Commercial offer (docs/COMMERCIAL.md) — only show Checkout when live.
+  const box = $("lg-subscribe-box");
+  if (box) {
+    api("/api/billing/status").then((b) => {
+      if (!b || !b.enabled) { box.classList.add("hidden"); return; }
+      box.classList.remove("hidden");
+      const blurb = $("lg-subscribe-blurb");
+      if (blurb) {
+        const seller = b.seller ? ` · sold by ${b.seller}` : "";
+        blurb.textContent = `${b.product} · $${Number(b.price_usd).toFixed(0)}/${b.interval} · free models wired for you${seller}`;
+      }
+      const btn = $("lg-subscribe");
+      if (btn) btn.textContent = `Subscribe — $${Number(b.price_usd).toFixed(0)}/mo`;
+    }).catch(() => { box.classList.add("hidden"); });
+  }
 }
+
+$("lg-subscribe")?.addEventListener("click", async () => {
+  const msg = $("sub-msg");
+  if (msg) msg.textContent = "";
+  const username = ($("sub-user")?.value || $("lg-user")?.value || "").trim();
+  if (!username) {
+    if (msg) msg.textContent = "Pick a username first";
+    return;
+  }
+  try {
+    const d = await api("/api/billing/checkout", "POST", { username });
+    if (d.url) location.href = d.url;
+    else if (msg) msg.textContent = "No checkout URL returned";
+  } catch (e) {
+    if (msg) msg.textContent = e.message || String(e);
+  }
+});
 function showSetup() {
   hideAll();
   $("view-setup").classList.remove("hidden");
@@ -478,6 +511,18 @@ $("inv-create").onclick = async () => {
     $("inv-user").value = "";
     loadUsers();
   } catch (e) { alert(e.message); }
+};
+
+$("inv-copy").onclick = async () => {
+  const u = $("inv-u").textContent.trim();
+  const text = `CodeMonkeys invite\nURL: ${location.origin}\nusername: ${u}\n\nLog in with just the username (leave the code field blank), then scan your authenticator. You can add a passkey for biometric login right after.`;
+  try {
+    await navigator.clipboard.writeText(text);
+    const btn = $("inv-copy");
+    const prev = btn.textContent;
+    btn.textContent = "Copied!";
+    setTimeout(() => { btn.textContent = prev; }, 1500);
+  } catch (e) { alert("Copy failed — share the username manually."); }
 };
 
 async function loadUsers() {

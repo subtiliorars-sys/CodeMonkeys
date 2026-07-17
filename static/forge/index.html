@@ -383,7 +383,8 @@
     <div class="text-center mb-6">
       <div class="text-4xl monkey mb-2">🐒</div>
       <h1 class="wordmark text-2xl font-bold">CodeMonkeyz</h1>
-      <p class="text-xs text-slate-500 mt-1">Username + authenticator only — no PIN.</p>
+      <p class="text-xs text-slate-500 mt-1">Your agents. Any model. Playful console.</p>
+      <p class="text-[.65rem] text-slate-600 mt-2">$1/mo hosted seats when subscriptions are live · free models wired for you</p>
     </div>
     <div class="space-y-3">
       <input id="lg-user" class="input w-full rounded px-3 py-2 text-sm" placeholder="username" autocomplete="username">
@@ -395,6 +396,12 @@
       <button id="lg-submit" class="gold-btn w-full rounded py-2 text-sm">Log in</button>
       <button id="lg-bio" class="w-full rounded py-2 text-sm gold-border text-[var(--gold-bright)] hover:bg-yellow-900/20">👆 Sign in with biometrics / passkey</button>
       <button id="lg-toggle" class="w-full text-xs text-slate-400 hover:text-slate-200">First time? Register the Owner account</button>
+      <div id="lg-subscribe-box" class="hidden border-t border-slate-800 pt-3 mt-1 space-y-2">
+        <p id="lg-subscribe-blurb" class="text-[.7rem] text-slate-500 text-center leading-relaxed"></p>
+        <input id="sub-user" class="input w-full rounded px-3 py-2 text-sm" placeholder="pick a username" autocomplete="username">
+        <button id="lg-subscribe" type="button" class="gold-btn w-full rounded py-2 text-sm">Subscribe — $1/mo</button>
+        <p id="sub-msg" class="text-xs text-red-400 min-h-[1rem]"></p>
+      </div>
       <p id="lg-msg" class="text-xs text-red-400 min-h-[1rem]"></p>
       <button id="lg-clear-session" type="button" class="w-full text-xs text-slate-500 hover:text-slate-300 mt-1">Stuck? Clear saved session &amp; reload</button>
     </div>
@@ -468,16 +475,19 @@
       <h2 class="wordmark font-bold">Invite developers</h2>
       <button id="invite-close" class="text-slate-400 hover:text-white">✕</button>
     </div>
-    <p class="text-xs text-slate-500 mb-3">Mint a username for your dev — they log in once with that name only, then scan an authenticator. Invited devs share this workspace, the GitHub token, and can run commands — invite only people you trust.</p>
+    <p class="text-xs text-slate-500 mb-3">Mint a username for your dev — they log in once with that name only (leave the code field blank), then scan an authenticator. Invited devs share this workspace, the GitHub token, and can run commands — invite only people you trust.</p>
     <p class="text-xs text-slate-500 mb-3">Use the <strong class="text-slate-400">Vertex</strong> dropdown per user to grant your GCP credits: <em>automatic</em> (no setup) or <em>paste key</em>. Or click <strong class="text-slate-400">⚡ key</strong> to create a GCP service account + JSON in one click (shown once for your PA).</p>
     <div class="flex gap-2 mb-3">
       <input id="inv-user" class="input flex-1 rounded px-2 py-1 text-xs" placeholder="username (optional — auto if blank)">
       <button id="inv-create" class="gold-btn rounded px-3 text-xs">Create invite</button>
     </div>
     <div id="inv-result" class="hidden gold-border rounded p-3 mb-3 text-xs bg-yellow-900/10">
-      <p class="text-[var(--gold-bright)] font-bold mb-1">Share this username once:</p>
-      <p>username: <code id="inv-u" class="bg-black/50 px-1 rounded"></code></p>
-      <p class="text-slate-500 mt-1">They log in with that username (no MFA yet), then set up their authenticator.</p>
+      <p class="text-[var(--gold-bright)] font-bold mb-1">Share this with your dev:</p>
+      <p>URL: <code class="bg-black/50 px-1 rounded">https://codemonkeys.fly.dev</code></p>
+      <p class="mt-1">username: <code id="inv-u" class="bg-black/50 px-1 rounded"></code>
+        <button type="button" id="inv-copy" class="ml-2 px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-white rounded text-[10px]">Copy invite</button>
+      </p>
+      <p class="text-slate-500 mt-1">They log in with just that username (code field blank), then scan an authenticator — and can add a passkey for biometric login.</p>
     </div>
     <div class="text-slate-500 uppercase tracking-wider text-[.65rem] mb-1">People</div>
     <div id="user-rows" class="space-y-1 text-xs"></div>

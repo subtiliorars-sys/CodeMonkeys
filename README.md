@@ -7,6 +7,10 @@ agent you control from any browser (Chromebook included), powered by **any** mod
 provider via API keys. Built as credit-outage insurance: if one provider runs dry,
 switch models in the UI and keep coding.
 
+**Hosted commercial seats** (optional): **$1/month**, product brand **CodeMonkeys**,
+sold by **OmniTender Systems LLC** — free-model pack wired for you, BYOK optional.
+Self-host stays free. Details: [`docs/COMMERCIAL.md`](docs/COMMERCIAL.md).
+
 ## Features
 
 - **Agent loop** — read/write/edit/glob/grep/bash tools, jailed to a workspace volume

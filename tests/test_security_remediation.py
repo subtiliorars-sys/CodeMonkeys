@@ -57,21 +57,15 @@ def _make_full_user(username="alice", role="Owner"):
 
 
 def _make_invited_user(username="invitee"):
-    """Create an invited (must_reset) user with pin_hash."""
-    setup_pin = "ABCDEF"
-    salt = "deadbeef" * 4          # 32 hex chars = 16 bytes
-    pin_h = server.hash_pin(setup_pin, salt)
+    """Create an invited (must_reset) user — username-only invite (no PIN)."""
     users = server.load_users()
     users[username] = {
         "role": "Member",
         "mfa_secret": "",
         "must_reset": True,
         "created": 2,
-        "pin_hash": pin_h,
-        "salt": salt,
     }
     server.save_users(users)
-    return setup_pin
 
 
 @pytest.fixture(autouse=True)
@@ -107,46 +101,32 @@ def test_c1_re_module_used_correctly():
 
 
 # ---------------------------------------------------------------------------
-# C-2 — must_reset PIN + verify_token gate
+# C-2 — invite flow + verify_token gate
+# (Owner-ratified 2026-07-17: invites are username-only, no setup PIN.  The
+# scope-limited must_reset token — rejected by verify_token everywhere except
+# account/setup + WebAuthn enrol — is the surviving C-2 mitigation.)
 # ---------------------------------------------------------------------------
 
-def test_c2_invite_creates_pin_hash():
-    """New invites must produce a setup_pin and store pin_hash in users.json."""
+def test_c2_invite_has_no_pin():
+    """New invites are username-only: no setup_pin returned, no pin_hash stored."""
     # Need an Owner to call invite
     _make_full_user("boss", role="Owner")
     result = server.invite(
         server.InviteRequest(username="newdev"),
         _="boss",  # dependency override not needed for direct call
     )
-    assert "setup_pin" in result, "invite response must include setup_pin"
+    assert "setup_pin" not in result, "invite response must not include a PIN"
     assert "username" in result
     uname = result["username"]
     users = server.load_users()
-    assert "pin_hash" in users[uname], "pin_hash must be stored for invited user"
-    assert "salt" in users[uname], "salt must be stored for invited user"
+    assert "pin_hash" not in users[uname], "no pin_hash stored for invited user"
+    assert users[uname]["must_reset"] is True
 
 
-def test_c2_must_reset_login_requires_pin():
-    """Login for a must_reset account must 401 when the setup PIN is missing."""
+def test_c2_must_reset_login_username_only():
+    """Login for a must_reset account succeeds with just the username."""
     _make_invited_user("invitee")
-    with pytest.raises(server.HTTPException) as ei:
-        server.login(server.LoginRequest(username="invitee", mfa_code=""))
-    assert ei.value.status_code == 401
-    assert "PIN" in ei.value.detail or "pin" in ei.value.detail.lower()
-
-
-def test_c2_must_reset_login_rejects_bad_pin():
-    """Login for a must_reset account must 401 on a wrong PIN."""
-    _make_invited_user("invitee")
-    with pytest.raises(server.HTTPException) as ei:
-        server.login(server.LoginRequest(username="invitee", mfa_code="ZZZZZZ"))
-    assert ei.value.status_code == 401
-
-
-def test_c2_must_reset_login_accepts_correct_pin():
-    """Login for a must_reset account must succeed with the correct setup PIN."""
-    pin = _make_invited_user("invitee")
-    result = server.login(server.LoginRequest(username="invitee", mfa_code=pin))
+    result = server.login(server.LoginRequest(username="invitee", mfa_code=""))
     assert "token" in result
     assert result.get("must_reset") is True
 
@@ -155,7 +135,6 @@ def test_c2_verify_token_blocks_must_reset_accounts():
     """verify_token must raise 403 for must_reset accounts (C-2 gate)."""
     _make_invited_user("invitee")
     # Obtain a valid must_reset token
-    pin = "ABCDEF"  # matches _make_invited_user default
     token = server.make_token("invitee")
     # verify_token must refuse it
     with pytest.raises(server.HTTPException) as ei:

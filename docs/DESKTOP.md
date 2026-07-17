@@ -9,6 +9,7 @@ Native Windows shell around the existing FastAPI + Forge console.
 | **Windows desktop (this)** | You / trusted machines | Owner pastes keys; optional Vertex credit grants | Full agent + local workspace; admin control |
 | **Public web (later)** | Anyone | **Bring-your-own-key (BYOK)** | Free to use — no shared credits to protect |
 | **Hosted Fly (today)** | Owner + invited members | Shared Owner keys on volume | Keep for remote/Chromebook until desktop is solid |
+| **Hosted commercial** | Paying subscribers | **Free-model pack** + optional BYOK | **$1/mo** CodeMonkeys sold by **OmniTender Systems LLC** — see `docs/COMMERCIAL.md` |
 
 Security that actually matters for credits: **Owner auth** (PIN + TOTP) so only
 you can attach Vertex/GCP credits or invite people onto a credit-backed instance.
