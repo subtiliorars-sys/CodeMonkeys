@@ -480,6 +480,18 @@ $("inv-create").onclick = async () => {
   } catch (e) { alert(e.message); }
 };
 
+$("inv-copy").onclick = async () => {
+  const u = $("inv-u").textContent.trim();
+  const text = `CodeMonkeys invite\nURL: ${location.origin}\nusername: ${u}\n\nLog in with just the username (leave the code field blank), then scan your authenticator. You can add a passkey for biometric login right after.`;
+  try {
+    await navigator.clipboard.writeText(text);
+    const btn = $("inv-copy");
+    const prev = btn.textContent;
+    btn.textContent = "Copied!";
+    setTimeout(() => { btn.textContent = prev; }, 1500);
+  } catch (e) { alert("Copy failed — share the username manually."); }
+};
+
 async function loadUsers() {
   const d = await api("/api/users");
   const vertexLabel = (u) => {

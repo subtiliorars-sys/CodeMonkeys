@@ -35,10 +35,15 @@ keep that radius away from everything else.
   bounded across *all* usernames it tries, and a system-wide global ceiling
   (`LOGIN_GLOBAL_MAX_FAILS`) as a circuit-breaker for distributed guessing. The
   state is **persisted** (`data/login_throttle.json`, write-through) so locks and
-  counters survive a restart. Invited (`must_reset`) accounts log in PIN-only
-  (MFA not yet enrolled) — the throttle is their sole barrier and is deliberately
-  not cleared until `/api/account/setup` completes. See "Known limitations" for
-  tunables and residuals.
+  counters survive a restart. Invited (`must_reset`) accounts log in
+  username-only (owner-ratified 2026-07-17, replacing the C-2 setup PIN; MFA
+  not yet enrolled) — the throttle bounds username guessing and is deliberately
+  not cleared until `/api/account/setup` completes. The token issued to a
+  pending account is scope-limited: `verify_token` rejects `must_reset`
+  accounts, so it only works for `/api/account/setup`. Residual (accepted):
+  someone who learns a pending invite username before its owner first logs in
+  can claim that account; auto-generated `dev-<hex>` names keep the window
+  unguessable. See "Known limitations" for tunables and residuals.
 - Passkeys are self-service revocable: `GET /api/webauthn/credentials` lists the
   caller's own passkeys (handles only — no key material) and `DELETE
   /api/webauthn/credentials/{cred_id}` removes one. The filter only ever touches
