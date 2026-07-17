@@ -6077,7 +6077,7 @@ def t_bash(args, session=None):
         base_dir = os.path.join(WORKSPACE_DIR, f"user_{session.get('username')}")
     os.makedirs(base_dir, exist_ok=True)
     try:
-        r = subprocess.run(["bash", "-c", cmd], cwd=base_dir, env=env,
+        r = subprocess.run([_bash_executable(), "-c", cmd], cwd=base_dir, env=env,
                            capture_output=True, text=True, timeout=BASH_TIMEOUT)
     except subprocess.TimeoutExpired:
         return f"ERROR: command timed out after {BASH_TIMEOUT}s"
@@ -6993,6 +6993,17 @@ def _subprocess_env():
     this layer. PATH/HOME/etc. are preserved so normal tooling still works."""
     return {k: v for k, v in os.environ.items()
             if k in _ENV_KEEP or not _env_name_is_secret(k)}
+
+
+def _bash_executable() -> str:
+    """Resolve Bash once through PATH instead of Windows' WSL app-path shim.
+
+    On GitHub's Windows runner, ``bash`` in a bare CreateProcess call can resolve
+    to ``System32\bash.exe`` (the non-functional WSL relay), even though Git Bash
+    is first on PATH and is what the test probe found. An absolute executable
+    keeps the probe and runtime on the same Bash. Linux behavior is unchanged.
+    """
+    return shutil.which("bash") or "bash"
 
 
 def _redact(text):
@@ -9750,7 +9761,7 @@ def terminal_exec(req: TerminalExec, owner: str = Depends(verify_owner)):
     try:
         emit(s, "terminal_exec", by=owner, command=cmd, status="run")
         try:
-            r = subprocess.run(["bash", "-c", cmd], cwd=WORKSPACE_DIR,
+            r = subprocess.run([_bash_executable(), "-c", cmd], cwd=WORKSPACE_DIR,
                                env=_subprocess_env(), capture_output=True,
                                text=True, timeout=BASH_TIMEOUT)
             out = (r.stdout or "")
