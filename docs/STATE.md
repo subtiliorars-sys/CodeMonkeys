@@ -1,15 +1,18 @@
 # CodeMonkeys — Current State (jumping-off point)
 
-**Read this first when picking the project back up.** Last updated 2026-07-16
-(post-button-fix session: root-caused "buttons do nothing", automated the
-Docker cache-bust, merged + deployed).
+**Read this first when picking the project back up.** Last updated 2026-07-17
+(commercial product ratified: CodeMonkeys brand, OmniTender seller, $1/mo).
 
-Tests: **769 passed / 16 skipped / 0 failures** (1 known-flaky test,
-`test_mcp_tokens_no_key_plaintext_compat`, fails only under full-suite
-ordering, passes in isolation — pre-existing, not a regression). Working
-tree clean.
+Tests: see latest PR / local `pytest`. Working tree may include commercial branch.
 
-## Recent work (this session, all on main / deployed)
+## Commercial (ratified 2026-07-17)
+
+See **`docs/COMMERCIAL.md`**. Brand = CodeMonkeys (entertainment-framed IP).
+Seller = OmniTender Systems LLC. Price = $1/mo. Free-model pack + optional BYOK.
+Stripe Checkout + webhook are **inert until** `BILLING_ENABLED` + `STRIPE_*`
+secrets are set. Login shows Subscribe CTA only when billing is live.
+
+## Recent work (prior session, on main / deployed)
 
 | Commit | What |
 |---|---|

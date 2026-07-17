@@ -197,6 +197,28 @@ _OAUTH_STATE_TTL = 600
 
 SESSION_TTL = 7 * 24 * 3600
 OPEN_ENROLLMENT = os.environ.get("OPEN_ENROLLMENT", "false").lower() == "true"
+# Commercial hosted seats (docs/COMMERCIAL.md): $1/mo CodeMonkeys sold by
+# OmniTender Systems LLC. Fail-closed OFF until Stripe secrets are set AND
+# BILLING_ENABLED=true — self-host / desktop unchanged.
+STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "").strip()
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
+STRIPE_PRICE_ID = os.environ.get("STRIPE_PRICE_ID", "").strip()
+BILLING_ENABLED = (
+    os.environ.get("BILLING_ENABLED", "false").lower() == "true"
+    and bool(STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET and STRIPE_PRICE_ID)
+)
+BILLING_PRICE_USD = float(os.environ.get("BILLING_PRICE_USD", "1.00"))
+BILLING_SELLER = os.environ.get(
+    "BILLING_SELLER", "OmniTender Systems LLC"
+).strip() or "OmniTender Systems LLC"
+BILLING_PRODUCT = os.environ.get("BILLING_PRODUCT", "CodeMonkeys").strip() or "CodeMonkeys"
+SUBSCRIPTIONS_FILE = os.path.join(DATA_DIR, "subscriptions.json")
+_SUBSCRIPTIONS_LOCK = threading.Lock()
+_FREE_PACK_MODELS = [
+    "qwen/qwen3-coder:free",
+    "deepseek/deepseek-r1:free",
+    "openai/gpt-oss-120b:free",
+]
 # Login brute-force throttle (fail2ban-style; SECURITY.md "no login rate-limit"):
 # after LOGIN_MAX_FAILS bad attempts within LOGIN_WINDOW_SEC, lock that account
 # for LOGIN_LOCKOUT_SEC. PBKDF2+TOTP already make brute force slow; this bounds it.
@@ -1222,6 +1244,12 @@ def verify_user(username: str = Depends(verify_token)):
         raise HTTPException(403, "Finish first-time setup (authenticator) first")
     if user.get("role") not in ("Owner", "Member"):
         raise HTTPException(403, "Not authorized")
+    # Commercial gate: when billing is live, Members need an active sub.
+    # Owner is always exempt (runs the house). Invited comps can set
+    # subscription_status=active manually / via Owner tools later.
+    if BILLING_ENABLED and user.get("role") == "Member":
+        if (user.get("subscription_status") or "") != "active":
+            raise HTTPException(402, "Active $1/mo subscription required")
     return username
 
 
@@ -1528,6 +1556,10 @@ def me(username: str = Depends(verify_token)):
         "must_reset": bool(u.get("must_reset")),
         "vertex_access": mode,
         "vertex_ready": _user_can_use_vertex(username),
+        "subscription_status": u.get("subscription_status") or (
+            "active" if u.get("role") == "Owner" else "none"
+        ),
+        "billing_enabled": BILLING_ENABLED,
     }
 
 
@@ -1569,12 +1601,277 @@ def invite(req: InviteRequest, _: str = Depends(verify_owner)):
     return {"username": uname, "setup_pin": setup_pin}
 
 
+# ------------------------------------------------- commercial billing (OmniTender → CodeMonkeys)
+# Ratified docs/COMMERCIAL.md. Fail-closed: routes that need Stripe raise 503
+# unless BILLING_ENABLED (secrets present). Public status always answers.
+
+def _load_subscriptions() -> dict:
+    if not os.path.exists(SUBSCRIPTIONS_FILE):
+        return {}
+    try:
+        with open(SUBSCRIPTIONS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_subscriptions(data: dict) -> None:
+    os.makedirs(DATA_DIR, exist_ok=True)
+    tmp = SUBSCRIPTIONS_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+    os.replace(tmp, SUBSCRIPTIONS_FILE)
+    try:
+        os.chmod(SUBSCRIPTIONS_FILE, 0o600)
+    except OSError:
+        pass
+
+
+def _billing_public_info() -> dict:
+    return {
+        "enabled": BILLING_ENABLED,
+        "product": BILLING_PRODUCT,
+        "seller": BILLING_SELLER,
+        "price_usd": BILLING_PRICE_USD,
+        "interval": "month",
+        "tagline": "Coding agents as entertainment - free models wired for you.",
+    }
+
+
+def _stripe_form_post(path: str, data: dict) -> dict:
+    if not STRIPE_SECRET_KEY:
+        raise HTTPException(503, "Billing not configured")
+    r = requests.post(
+        f"https://api.stripe.com/v1/{path}",
+        auth=(STRIPE_SECRET_KEY, ""),
+        data=data,
+        timeout=30,
+    )
+    if r.status_code >= 400:
+        detail = "Stripe error"
+        try:
+            detail = r.json().get("error", {}).get("message") or detail
+        except Exception:
+            pass
+        raise HTTPException(502, detail)
+    return r.json()
+
+
+def _verify_stripe_webhook(payload: bytes, sig_header: str) -> dict:
+    """Verify Stripe-Signature (t=…,v1=…) without the stripe SDK."""
+    if not STRIPE_WEBHOOK_SECRET:
+        raise HTTPException(503, "Billing not configured")
+    if not sig_header:
+        raise HTTPException(400, "Missing Stripe-Signature")
+    parts = {}
+    for item in sig_header.split(","):
+        if "=" in item:
+            k, v = item.split("=", 1)
+            parts.setdefault(k.strip(), []).append(v.strip())
+    try:
+        ts = parts["t"][0]
+        candidates = parts.get("v1") or []
+    except (KeyError, IndexError):
+        raise HTTPException(400, "Bad Stripe-Signature")
+    try:
+        if abs(time.time() - int(ts)) > 300:
+            raise HTTPException(400, "Webhook timestamp too old")
+    except ValueError:
+        raise HTTPException(400, "Bad Stripe-Signature timestamp")
+    signed = f"{ts}.".encode() + payload
+    expected = hmac.new(
+        STRIPE_WEBHOOK_SECRET.encode(), signed, hashlib.sha256
+    ).hexdigest()
+    if not any(hmac.compare_digest(expected, c) for c in candidates):
+        raise HTTPException(400, "Bad Stripe signature")
+    try:
+        return json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(400, "Bad JSON body")
+
+
+def _activate_subscriber(username: str, *, customer_id: str = "",
+                         subscription_id: str = "", status: str = "active") -> None:
+    """Create or refresh a Member seat for a paid username; seed free pack."""
+    uname = (username or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{2,32}", uname):
+        _log.warning("billing: ignoring bad username %r", username)
+        return
+    if _is_erased(uname):
+        _log.warning("billing: refusing erased username %s", uname)
+        return
+    with _USERS_LOCK:
+        users = load_users()
+        user = users.get(uname)
+        if user and user.get("role") == "Owner":
+            # Never demote / overwrite the Owner via Stripe metadata.
+            user["subscription_status"] = "active"
+            users[uname] = user
+        elif user:
+            user["subscription_status"] = status
+            if customer_id:
+                user["stripe_customer_id"] = customer_id
+            if subscription_id:
+                user["stripe_subscription_id"] = subscription_id
+            users[uname] = user
+        else:
+            users[uname] = {
+                "role": "Member",
+                "mfa_secret": "",
+                "must_reset": True,
+                "created": int(time.time()),
+                "subscription_status": status,
+                "stripe_customer_id": customer_id,
+                "stripe_subscription_id": subscription_id,
+                "source": "stripe",
+            }
+        save_users(users)
+    with _SUBSCRIPTIONS_LOCK:
+        subs = _load_subscriptions()
+        key = subscription_id or f"user:{uname}"
+        subs[key] = {
+            "username": uname,
+            "customer_id": customer_id,
+            "subscription_id": subscription_id,
+            "status": status,
+            "updated": int(time.time()),
+        }
+        _save_subscriptions(subs)
+    if status == "active":
+        try:
+            ensure_free_pack_ready()
+        except Exception as e:
+            _log.error("free pack seed failed: %s", e)
+
+
+def _deactivate_subscriber(username: str = "", subscription_id: str = "") -> None:
+    with _USERS_LOCK:
+        users = load_users()
+        target = username
+        if not target and subscription_id:
+            for u, d in users.items():
+                if d.get("stripe_subscription_id") == subscription_id:
+                    target = u
+                    break
+        if target and target in users and users[target].get("role") != "Owner":
+            users[target]["subscription_status"] = "canceled"
+            save_users(users)
+    if subscription_id:
+        with _SUBSCRIPTIONS_LOCK:
+            subs = _load_subscriptions()
+            if subscription_id in subs:
+                subs[subscription_id]["status"] = "canceled"
+                subs[subscription_id]["updated"] = int(time.time())
+                _save_subscriptions(subs)
+
+
+@app.get("/api/billing/status")
+def billing_status():
+    """Public commercial offer — always available (enabled may be false)."""
+    return _billing_public_info()
+
+
+class CheckoutRequest(BaseModel):
+    username: str
+    success_url: str = ""
+    cancel_url: str = ""
+
+
+@app.post("/api/billing/checkout")
+def billing_checkout(req: CheckoutRequest, request: Request):
+    """Start Stripe Checkout for a $1/mo CodeMonkeys seat (OmniTender seller)."""
+    if not BILLING_ENABLED:
+        raise HTTPException(503, "Subscriptions are not enabled on this host")
+    uname = req.username.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{2,32}", uname):
+        raise HTTPException(400, "Bad username")
+    if _is_erased(uname):
+        raise HTTPException(403, "That username was erased and cannot be reused")
+    users = load_users()
+    existing = users.get(uname)
+    if existing and existing.get("role") == "Owner":
+        raise HTTPException(400, "That username is reserved")
+    if existing and not existing.get("must_reset") and (
+            existing.get("subscription_status") == "active"):
+        raise HTTPException(409, "Username already has an active subscription")
+    # Build return URLs from the request host when not supplied.
+    base = str(request.base_url).rstrip("/")
+    success = (req.success_url or f"{base}/?subscribed=1&u={uname}").strip()
+    cancel = (req.cancel_url or f"{base}/?subscribe=cancel").strip()
+    session = _stripe_form_post("checkout/sessions", {
+        "mode": "subscription",
+        "line_items[0][price]": STRIPE_PRICE_ID,
+        "line_items[0][quantity]": "1",
+        "success_url": success,
+        "cancel_url": cancel,
+        "client_reference_id": uname,
+        "metadata[username]": uname,
+        "metadata[product]": BILLING_PRODUCT,
+        "metadata[seller]": BILLING_SELLER,
+        "subscription_data[metadata][username]": uname,
+        "allow_promotion_codes": "true",
+    })
+    url = session.get("url")
+    if not url:
+        raise HTTPException(502, "Stripe did not return a checkout URL")
+    return {"url": url, "session_id": session.get("id"), "username": uname}
+
+
+@app.post("/api/billing/webhook")
+async def billing_webhook(request: Request):
+    if not BILLING_ENABLED:
+        raise HTTPException(503, "Billing not configured")
+    payload = await request.body()
+    sig = request.headers.get("stripe-signature") or request.headers.get("Stripe-Signature") or ""
+    event = _verify_stripe_webhook(payload, sig)
+    etype = event.get("type") or ""
+    obj = (event.get("data") or {}).get("object") or {}
+    if etype == "checkout.session.completed":
+        uname = (obj.get("client_reference_id")
+                 or (obj.get("metadata") or {}).get("username") or "")
+        _activate_subscriber(
+            uname,
+            customer_id=obj.get("customer") or "",
+            subscription_id=obj.get("subscription") or "",
+            status="active",
+        )
+    elif etype in ("customer.subscription.updated", "customer.subscription.created"):
+        meta = obj.get("metadata") or {}
+        uname = meta.get("username") or ""
+        status = obj.get("status") or "active"
+        mapped = "active" if status in ("active", "trialing") else status
+        _activate_subscriber(
+            uname,
+            customer_id=obj.get("customer") or "",
+            subscription_id=obj.get("id") or "",
+            status=mapped,
+        )
+        if mapped not in ("active", "trialing"):
+            _deactivate_subscriber(username=uname, subscription_id=obj.get("id") or "")
+    elif etype == "customer.subscription.deleted":
+        meta = obj.get("metadata") or {}
+        _deactivate_subscriber(
+            username=meta.get("username") or "",
+            subscription_id=obj.get("id") or "",
+        )
+    return {"ok": True}
+
+
+@app.post("/api/billing/seed-free-pack")
+def billing_seed_free_pack(_: str = Depends(verify_owner)):
+    """Owner can re-run free-pack seeding without a Stripe event."""
+    return ensure_free_pack_ready()
+
+
 @app.get("/api/users")
 def users_list(_: str = Depends(verify_owner)):
     return {"users": sorted([
         {"username": u, "role": d.get("role"),
          "pending": bool(d.get("must_reset")),
          "has_mfa": bool(d.get("mfa_secret")),
+         "subscription_status": d.get("subscription_status") or (
+             "active" if d.get("role") == "Owner" else "none"),
          "vertex_access": _user_vertex_access_mode(u),
          "vertex_ready": _user_can_use_vertex(u),
          "vertex_sa_email": d.get("vertex_sa_email", ""),
@@ -2165,6 +2462,7 @@ _BACKUP_DRILL_STORES = (
     ("daily_spend.json",        "DAILY_SPEND_FILE",       "json-dict"),
     ("desk_settings.json",      "DESK_SETTINGS_FILE",     "json-dict"),
     ("push_subscriptions.json", "PUSH_SUBS_FILE",         "json-dict"),
+    ("subscriptions.json",      "SUBSCRIPTIONS_FILE",     "json-dict"),
     ("push_vapid.json",         "PUSH_VAPID_FILE",        "json"),
     ("feedback_status.json",    "FEEDBACK_STATUS_FILE",   "json"),
     ("model_catalog.json",      "MODEL_CATALOG_FILE",     "json"),
@@ -3262,12 +3560,70 @@ def _resolve(prov, pid=None, username=None):
 def _callable_provider(p, username=None):
     """The chat layer can actually call this entry: has a key, and openai-kind
     needs a base_url — blank would hit `requests.post("/chat/completions")`
-    (Invalid URL) and burn the full transient-retry backoff before escalation."""
+    (Invalid URL) and burn the full transient-retry backoff before escalation.
+
+    OpenRouter free-tier exception (docs/COMMERCIAL.md): models ending in
+    `:free` (or catalogued at $0/$0) are callable without a key — rate-limited
+    public free pack so subscribers don't need a client setup to start.
+    """
     if p.get("kind") == "vertex":
         return _user_can_use_vertex(username)
     if not p.get("key"):
-        return False
+        if not _openrouter_free_no_key_ok(p):
+            return False
     return p.get("kind") != "openai" or bool(str(p.get("base_url") or "").strip())
+
+
+def _openrouter_free_no_key_ok(p: dict) -> bool:
+    """True when this provider can use OpenRouter's unauthenticated free tier."""
+    base = (p.get("base_url") or "").lower()
+    if "openrouter.ai" not in base:
+        return False
+    model = (p.get("model") or "").strip()
+    if model.endswith(":free"):
+        return True
+    entry = _catalog_lookup(p, model) if model else None
+    if entry is not None:
+        try:
+            if float(entry.get("in") or 0) == 0 and float(entry.get("out") or 0) == 0:
+                return True
+        except (TypeError, ValueError):
+            pass
+    return False
+
+
+def ensure_free_pack_ready() -> dict:
+    """Seed OpenRouter free models + Auto routing for the commercial free pack.
+
+    Idempotent. Does not touch Owner paid keys. Safe to call from Stripe
+    webhooks and Owner tools.
+    """
+    cfg = load_models()
+    providers = cfg.setdefault("providers", {})
+    base = json.loads(json.dumps(DEFAULT_PROVIDERS.get("openrouter", {})))
+    or_ = providers.get("openrouter") or base
+    models = list(or_.get("models") or [])
+    for mid in _FREE_PACK_MODELS:
+        if mid not in models:
+            models.append(mid)
+    or_["models"] = models
+    or_.setdefault("label", "OpenRouter")
+    or_.setdefault("kind", "openai")
+    or_.setdefault("base_url", "https://openrouter.ai/api/v1")
+    or_["auto"] = True
+    # Prefer a free model when no key is configured.
+    if not or_.get("key"):
+        cur = (or_.get("model") or "").strip()
+        if not cur.endswith(":free"):
+            or_["model"] = _FREE_PACK_MODELS[0]
+        for mid in _FREE_PACK_MODELS:
+            _upsert_catalog_entry(or_, mid, 0.0, 0.0, name=mid)
+    providers["openrouter"] = or_
+    cfg["providers"] = providers
+    cfg["selected"] = "auto"
+    cfg["auto_cheapest"] = True
+    save_models(cfg)
+    return {"ok": True, "models": list(or_.get("models") or [])}
 
 
 def _find_free_provider(cfg, username=None):

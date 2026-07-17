@@ -383,7 +383,8 @@
     <div class="text-center mb-6">
       <div class="text-4xl monkey mb-2">🐒</div>
       <h1 class="wordmark text-2xl font-bold">CodeMonkeyz</h1>
-      <p class="text-xs text-slate-500 mt-1">Username + authenticator only — no PIN.</p>
+      <p class="text-xs text-slate-500 mt-1">Your agents. Any model. Playful console.</p>
+      <p class="text-[.65rem] text-slate-600 mt-2">$1/mo hosted seats when subscriptions are live · free models wired for you</p>
     </div>
     <div class="space-y-3">
       <input id="lg-user" class="input w-full rounded px-3 py-2 text-sm" placeholder="username" autocomplete="username">
@@ -395,6 +396,12 @@
       <button id="lg-submit" class="gold-btn w-full rounded py-2 text-sm">Log in</button>
       <button id="lg-bio" class="w-full rounded py-2 text-sm gold-border text-[var(--gold-bright)] hover:bg-yellow-900/20">👆 Sign in with biometrics / passkey</button>
       <button id="lg-toggle" class="w-full text-xs text-slate-400 hover:text-slate-200">First time? Register the Owner account</button>
+      <div id="lg-subscribe-box" class="hidden border-t border-slate-800 pt-3 mt-1 space-y-2">
+        <p id="lg-subscribe-blurb" class="text-[.7rem] text-slate-500 text-center leading-relaxed"></p>
+        <input id="sub-user" class="input w-full rounded px-3 py-2 text-sm" placeholder="pick a username" autocomplete="username">
+        <button id="lg-subscribe" type="button" class="gold-btn w-full rounded py-2 text-sm">Subscribe — $1/mo</button>
+        <p id="sub-msg" class="text-xs text-red-400 min-h-[1rem]"></p>
+      </div>
       <p id="lg-msg" class="text-xs text-red-400 min-h-[1rem]"></p>
       <button id="lg-clear-session" type="button" class="w-full text-xs text-slate-500 hover:text-slate-300 mt-1">Stuck? Clear saved session &amp; reload</button>
     </div>
