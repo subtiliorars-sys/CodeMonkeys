@@ -1,33 +1,46 @@
 # CodeMonkeys — Current State (jumping-off point)
 
 **Read this first when picking the project back up.** Last updated 2026-07-16
-(post-UI-fix session: viewport, budget removal, username remember, tab-bar offset).
+(post-button-fix session: root-caused "buttons do nothing", automated the
+Docker cache-bust, merged + deployed).
 
-Tests: **769 passed / 16 skipped / 0 failures**. Working tree clean.
+Tests: **769 passed / 16 skipped / 0 failures** (1 known-flaky test,
+`test_mcp_tokens_no_key_plaintext_compat`, fails only under full-suite
+ordering, passes in isolation — pre-existing, not a regression). Working
+tree clean.
 
 ## Recent work (this session, all on main / deployed)
 
 | Commit | What |
 |---|---|
+| `d88aadd` (#187) | Automated Docker `static/` cache-bust (`ARG CACHEBUST` + `scripts/deploy.ps1`), replacing the hand-edited date comment |
+| `b3df3fb` (#186) | **Root-caused "buttons do nothing"**: script tags loaded before DOM elements they referenced, threw on `#btn-invite`, silently killed the rest of app.js's top-level handler wiring. Fixed by moving `<script>` tags to end of `<body>`; also fixed a latent `FeedbackFab` load-order bug it exposed. Verified with headless Playwright (zero JS errors before→after). |
 | `890b2b8` | Remember username checkbox on login form |
-| `c7c62e0` | try/catch on _lockViewport + _cmDiag() diagnostic |
 | `2a36598` | Offset view-main below 38px tab-bar |
 | `280dc35` | inline min-height:0 on #stream + flex-shrink:0 on composer |
 | `68382e9` | JS-enforced viewport lock (_lockViewport) |
-| `4ad92a8` | Removed spend display from header |
-| `fc797c2` | Removed budget alert banner + viewport fixes |
-| `7f55e56` | Swarm-viz Phase 2 tree visualization (sub-agent hierarchy) |
 
 ## ⚠️ OPEN — Needs attention
 
-### 1. Buttons/UI not fully functional
-Some UI buttons reportedly "don't do anything." A diagnostic function `_cmDiag()` was added — open browser console (F12) and run `_cmDiag()` to see which elements exist/are hidden. The `_lockViewport` JS function was wrapped in try/catch to prevent it from breaking other init code. Needs investigation with console open to find root cause.
+### 1. Buttons/UI not fully functional — ✅ FIXED (#186), deployed and verified live
+Root cause found and fixed: see above. Verified live at codemonkeys.fly.dev with a
+headless Playwright check — zero page errors, all button `onclick` handlers wired.
+`tools/fleet-automation/scripts/ui-audit.mjs` (Playwright-based click/overlap sweep,
+`node scripts/ui-audit.mjs --base <url>`) is the tool that should be used to catch
+this class of bug going forward — it doesn't currently assert on `pageerror` events,
+which is how this one slipped through; worth adding.
 
-### 2. Session token may not survive deploys
-Session secret is persisted at `/data/session_secret.key` on the Fly volume, but tokens may become invalid after deploys. User needs to re-login after each deploy. May be expected (server restart) or a volume mount issue.
+### 2. Session token may not survive deploys — investigated, not reproduced in code
+Checked live Fly state (read-only): `CM_MASTER_KEY` secret is set, no stray
+`CM_MASTER_KEY_RESET`, single volume (`cm_data`) correctly attached to the single
+machine. The token mechanism (HMAC + secret persisted/encrypted on `/data`, 7-day
+TTL, no refresh-on-the-fly mechanism by design) looks sound in code — found no bug.
+It's possible this was actually a symptom of #1 (the JS crash could plausibly have
+broken other post-login flows) and is now resolved; needs a real re-login-after-deploy
+check next time a deploy happens to confirm either way.
 
-### 3. Docker cache-bust hack
-The Dockerfile has a `# cache-bust: YYYY-MM-DD-HHMM` comment at line 2 that gets updated on every deploy to force a clean rebuild of static files. This is a workaround — the Depot builder was caching old `COPY static/` layers. Consider a proper fix (e.g., `--no-cache` flag or build args).
+### 3. Docker cache-bust hack — ✅ FIXED (#187), deployed
+See above. `scripts/deploy.ps1` is now the standard deploy entrypoint.
 
 ## Key files
 
