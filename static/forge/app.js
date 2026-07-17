@@ -474,10 +474,24 @@ $("inv-create").onclick = async () => {
   try {
     const d = await api("/api/invite", "POST", { username: $("inv-user").value.trim() });
     $("inv-u").textContent = d.username;
+    $("inv-pin").textContent = d.setup_pin || "";
     $("inv-result").classList.remove("hidden");
     $("inv-user").value = "";
     loadUsers();
   } catch (e) { alert(e.message); }
+};
+
+$("inv-copy").onclick = async () => {
+  const u = $("inv-u").textContent.trim();
+  const pin = $("inv-pin").textContent.trim();
+  const text = `CodeMonkeys invite\nURL: https://codemonkeys.fly.dev\nusername: ${u}\nsetup PIN: ${pin}\n\nLog in with the username and paste the setup PIN into the code field, then scan your authenticator.`;
+  try {
+    await navigator.clipboard.writeText(text);
+    const btn = $("inv-copy");
+    const prev = btn.textContent;
+    btn.textContent = "Copied!";
+    setTimeout(() => { btn.textContent = prev; }, 1500);
+  } catch (e) { alert("Copy failed — select the fields manually."); }
 };
 
 async function loadUsers() {

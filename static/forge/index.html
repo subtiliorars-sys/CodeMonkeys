@@ -383,11 +383,11 @@
     <div class="text-center mb-6">
       <div class="text-4xl monkey mb-2">🐒</div>
       <h1 class="wordmark text-2xl font-bold">CodeMonkeyz</h1>
-      <p class="text-xs text-slate-500 mt-1">Username + authenticator only — no PIN.</p>
+      <p class="text-xs text-slate-500 mt-1">Username + authenticator code. Invited? Use your one-time setup PIN in the code field first.</p>
     </div>
     <div class="space-y-3">
       <input id="lg-user" class="input w-full rounded px-3 py-2 text-sm" placeholder="username" autocomplete="username">
-      <input id="lg-mfa" class="input w-full rounded px-3 py-2 text-sm" placeholder="6-digit authenticator code" inputmode="numeric" autocomplete="one-time-code">
+      <input id="lg-mfa" class="input w-full rounded px-3 py-2 text-sm" placeholder="authenticator code or setup PIN" inputmode="text" autocomplete="one-time-code">
       <label class="flex items-center gap-2 text-xs text-slate-400 cursor-pointer">
         <input type="checkbox" id="lg-remember-user" class="accent-[var(--gold)]">
         Remember username
@@ -468,16 +468,20 @@
       <h2 class="wordmark font-bold">Invite developers</h2>
       <button id="invite-close" class="text-slate-400 hover:text-white">✕</button>
     </div>
-    <p class="text-xs text-slate-500 mb-3">Mint a username for your dev — they log in once with that name only, then scan an authenticator. Invited devs share this workspace, the GitHub token, and can run commands — invite only people you trust.</p>
+    <p class="text-xs text-slate-500 mb-3">Mint a username + one-time setup PIN for your dev. They open <code class="text-slate-400">https://codemonkeys.fly.dev</code>, log in with both, then scan an authenticator. Invited devs share this workspace, the GitHub token, and can run commands — invite only people you trust.</p>
     <p class="text-xs text-slate-500 mb-3">Use the <strong class="text-slate-400">Vertex</strong> dropdown per user to grant your GCP credits: <em>automatic</em> (no setup) or <em>paste key</em>. Or click <strong class="text-slate-400">⚡ key</strong> to create a GCP service account + JSON in one click (shown once for your PA).</p>
     <div class="flex gap-2 mb-3">
       <input id="inv-user" class="input flex-1 rounded px-2 py-1 text-xs" placeholder="username (optional — auto if blank)">
       <button id="inv-create" class="gold-btn rounded px-3 text-xs">Create invite</button>
     </div>
     <div id="inv-result" class="hidden gold-border rounded p-3 mb-3 text-xs bg-yellow-900/10">
-      <p class="text-[var(--gold-bright)] font-bold mb-1">Share this username once:</p>
-      <p>username: <code id="inv-u" class="bg-black/50 px-1 rounded"></code></p>
-      <p class="text-slate-500 mt-1">They log in with that username (no MFA yet), then set up their authenticator.</p>
+      <p class="text-[var(--gold-bright)] font-bold mb-1">Share these once (PIN is shown only here):</p>
+      <p>URL: <code class="bg-black/50 px-1 rounded">https://codemonkeys.fly.dev</code></p>
+      <p class="mt-1">username: <code id="inv-u" class="bg-black/50 px-1 rounded"></code></p>
+      <p class="mt-1">setup PIN: <code id="inv-pin" class="bg-black/50 px-1 rounded text-[var(--gold-bright)]"></code>
+        <button type="button" id="inv-copy" class="ml-2 px-2 py-0.5 bg-slate-800 hover:bg-slate-700 text-white rounded text-[10px]">Copy both</button>
+      </p>
+      <p class="text-slate-500 mt-2">On the login form they enter the username and paste the setup PIN into the code field (instead of an authenticator code). Then they scan TOTP and become a Member.</p>
     </div>
     <div class="text-slate-500 uppercase tracking-wider text-[.65rem] mb-1">People</div>
     <div id="user-rows" class="space-y-1 text-xs"></div>
