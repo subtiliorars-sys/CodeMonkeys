@@ -6448,13 +6448,24 @@ def t_blackboard_write(args, username: Optional[str] = None):
         # survives a crash mid-write, and the rename independently re-closes
         # the realpath→open symlink TOCTOU. O_NOFOLLOW kept as belt-and-braces
         # (falls back to 0 on Windows dev hosts where the flag is absent).
-        tmp = full + ".tmp"
+        # Use a unique temp name so a stale file from an interrupted write (or
+        # another process) cannot collide. Windows virus/indexing scanners can
+        # also hold a just-closed file briefly; retry only that transient
+        # PermissionError before reporting failure.
+        tmp = f"{full}.{secrets.token_hex(4)}.tmp"
         flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0)
         try:
             fd = os.open(tmp, flags, 0o644)
             with os.fdopen(fd, "w") as f:
                 f.write(rendered)
-            os.replace(tmp, full)
+            for attempt in range(5):
+                try:
+                    os.replace(tmp, full)
+                    break
+                except PermissionError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.01 * (attempt + 1))
         except OSError as e:
             try:
                 os.unlink(tmp)
