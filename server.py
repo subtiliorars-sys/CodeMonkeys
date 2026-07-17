@@ -1515,24 +1515,12 @@ def login(req: LoginRequest, request: Request = None):
     if not user:
         _login_register_failure(uname, ip)
         raise HTTPException(401, "Unknown username")
-    # Invited accounts: must supply the one-time setup PIN (stored as pin_hash/salt
-    # at invite time) before receiving a token.  Accounts created before this fix
-    # won't have pin_hash — allow them through but log a warning so operators can
-    # re-invite if needed (backwards-compatible graceful degradation).
+    # Invited accounts: first login is username-only (owner-ratified 2026-07-17,
+    # replacing the C-2 setup PIN).  The token issued here is scope-limited:
+    # verify_token rejects must_reset accounts, so it only works for
+    # /api/account/setup and WebAuthn enrolment.  The login throttle above
+    # bounds username guessing.
     if user.get("must_reset"):
-        pin_hash_stored = user.get("pin_hash", "")
-        salt_stored = user.get("salt", "")
-        if pin_hash_stored and salt_stored:
-            provided = req.mfa_code.strip().upper()
-            if not provided:
-                _login_register_failure(uname, ip)
-                raise HTTPException(401, "Setup PIN required (mfa_code field)")
-            if not hmac.compare_digest(hash_pin(provided, salt_stored), pin_hash_stored):
-                _login_register_failure(uname, ip)
-                raise HTTPException(401, "Bad setup PIN")
-        else:
-            _log.warning("must_reset login for %s: no pin_hash (pre-fix invite) — "
-                         "consider re-inviting to enforce PIN", uname)
         return {"token": make_token(uname), "username": uname,
                 "role": user["role"], "must_reset": True}
     secret = user.get("mfa_secret") or ""
@@ -1584,21 +1572,18 @@ def invite(req: InviteRequest, _: str = Depends(verify_owner)):
             raise HTTPException(409, "Username already exists")
         if _is_erased(uname):                     # M-7 tombstone guard
             raise HTTPException(403, "That username was erased and cannot be reused")
-        # C-2: generate a one-time setup PIN.  The Owner passes this to the
-        # invited user out-of-band.  Login for must_reset accounts requires
-        # mfa_code == setup_pin; the hash is cleared by account/setup on
-        # completion.  Without knowing the PIN an attacker who discovers the
-        # invite username cannot obtain a token.
-        setup_pin = secrets.token_hex(3).upper()      # 6 uppercase hex chars
-        pin_salt = secrets.token_hex(16)
-        pin_h = hash_pin(setup_pin, pin_salt)
+        # Owner-ratified 2026-07-17: invites are username-only (no setup PIN).
+        # The invite token is scope-limited by verify_token's must_reset gate
+        # (only account/setup + WebAuthn enrol accept it), and the login
+        # throttle bounds guessing.  Residual risk — someone who learns a
+        # pending username before its owner logs in can claim it — is accepted;
+        # auto-generated dev-<hex> names keep that window unguessable.
         users[uname] = {
             "role": "Member",
             "mfa_secret": "", "must_reset": True, "created": int(time.time()),
-            "pin_hash": pin_h, "salt": pin_salt,
         }
         save_users(users)
-    return {"username": uname, "setup_pin": setup_pin}
+    return {"username": uname}
 
 
 # ------------------------------------------------- commercial billing (OmniTender → CodeMonkeys)
