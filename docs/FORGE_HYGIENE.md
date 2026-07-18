@@ -105,14 +105,14 @@ streaming text deltas when `STREAM_ENABLED=1`, mobile drawer ≤767px if touched
 
 ## 6. N-backlog / automation queue status
 
-**As of 2026-07-13:** Safe automation backlog is **exhausted**. `WAVES.md` Active queue
+**As of 2026-07-18:** Safe automation backlog is **exhausted**. `WAVES.md` Active queue
 is empty — **do not start blocked automation waves.**
 
 | Category | Status | Next action |
 |----------|--------|-------------|
 | CM-W1–W7 (N5 streaming, N8 compaction, N12 catalog, lint, triage, session ownership) | ✅ merged | — |
 | CM-UI-W1–W3 (Forge parity track) | ✅ done on `work/frontend-polish` | Owner deploy when ready |
-| **S5 notify-on-done** | Next buildable wave (per `docs/STATE.md`) | Add to Active queue when lane free |
+| **S5 notify-on-done** | ✅ merged via PR #45; inert until `NOTIFY_WEBHOOK_URL` is set | Owner enables webhook secret when ready |
 | OAuth app registration, webhook secrets | **owner-gated** | Owner registers apps + sets Fly secrets |
 | Terminal activation (`TERMINAL_ENABLED` + `TERMINAL_EXEC_ENABLED`) | **owner-gated** | Both default OFF → 404 |
 | `fly deploy` / prod config | **owner-gated** | Not automation |

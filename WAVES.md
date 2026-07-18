@@ -12,10 +12,10 @@ Read `docs/STATE.md` + `docs/IDEATION.md` before each wave. Never merge your own
 
 _(none — safe automation backlog exhausted; next items are owner-gated below.)_
 
-**N-backlog status (2026-07-13):** CM-W1–W7 shipped. Automation must **not** pick up
-new waves until Owner adds a `pending` entry here or unblocks an item below.
-Next buildable candidate: **S5 notify-on-done** (`docs/STATE.md`). Maintainer
-checklist: `docs/FORGE_HYGIENE.md` §6.
+**N-backlog status (2026-07-18):** CM-W1–W7 shipped, and S5 notify-on-done
+shipped earlier via PR #45 (inert until `NOTIFY_WEBHOOK_URL` is set).
+Automation must **not** pick up new waves until Owner adds a `pending` entry
+here or unblocks an item below. Maintainer checklist: `docs/FORGE_HYGIENE.md` §6.
 
 ## Parallel track — Windows desktop (manual)
 
@@ -97,4 +97,11 @@ recent `KEEP_RECENT` window preserved; tool-call/result pairing intact;
 server-side; forge + terminal UIs render live partial text; non-streaming
 fallback on error; default-off preserves pre-N5 behaviour.
 
-See `docs/STATE.md` — Waves 1–4, N1–N4, N6–N11 shipped.
+### Wave S5 — Notify-on-done ✅
+**Branch:** merged via PR #45 (pre-automation registry)  
+**Shipped:** Best-effort outbound POST on run completion when `NOTIFY_WEBHOOK_URL`
+is set; ops-metadata only (no prompts/code/secrets); `NOTIFY_ON=all|error` filter;
+optional HMAC via `NOTIFY_WEBHOOK_SECRET`. Default-off preserves pre-S5 behaviour.
+`tests/test_notify_on_done.py`.
+
+See `docs/STATE.md` — Waves 1–4, N1–N4, N6–N11, S5 shipped.
