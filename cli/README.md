@@ -11,7 +11,34 @@ caps, and approval gates. It is unrelated to the web `/terminal` route
 with owner-only raw shell exec; this CLI never runs shell commands on the
 server, it only sends chat messages and renders the agent's tool-use events.
 
+## Install it (any machine, no repo clone)
+
+Once this is deployed, the running server hosts an installable wheel under
+`/static/cli-dist/` — no git clone needed on the machine you're installing to:
+
+```bash
+# macOS / Linux
+curl -fsSL https://codemonkeys.fly.dev/static/cli-dist/install.sh | bash
+```
+
+```powershell
+# Windows
+irm https://codemonkeys.fly.dev/static/cli-dist/install.ps1 | iex
+```
+
+That installs the `codemonkeys` command via `pip install --user` from the
+wheel served by the Fly deployment. Point it at a different server (e.g. a
+self-hosted instance) with `CM_SERVER=https://your-host` before running the
+install command. Re-run `pyproject.toml`'s version bump + rebuild (below)
+and redeploy whenever `cli/` changes, to keep the hosted wheel current.
+
 ## Run it
+
+```
+codemonkeys --server https://codemonkeys.fly.dev   # once installed, from anywhere
+```
+
+Or run from a repo clone without installing:
 
 ```
 python -m desktop --no-window          # in one terminal: boots server.py locally
@@ -42,3 +69,17 @@ Ctrl-C during a run sends `/stop`; `/quit` exits.
 - `config.py` — `~/.codemonkeys/cli.json` (server URL + bearer token).
 - `tests/` — `requests`-mocked tests for `client.py` (no server process
   needed): `python -m pytest cli/tests/ -q`.
+- `pyproject.toml` — packaging (console-script entry point `codemonkeys`).
+
+## Rebuilding the distributed wheel
+
+After changing anything under `cli/` (excluding `tests/`), rebuild and
+re-copy the wheel that `install.sh`/`install.ps1` fetch, then redeploy:
+
+```
+cd cli && python -m build --wheel
+cp dist/codemonkeys_cli-<version>-py3-none-any.whl ../static/cli-dist/
+```
+
+Bump `version` in `cli/pyproject.toml` and update the filename referenced in
+`static/cli-dist/install.sh`/`install.ps1` to match.
