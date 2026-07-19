@@ -1,0 +1,13 @@
+/* content.css — CodeMonkeys Companion */
+/* Most styles are embedded in the shadow DOM via content.js for isolation.
+   This file provides a minimal reset for the extension host element. */
+
+#cm-extension-root {
+  all: initial;
+  position: fixed;
+  z-index: 2147483640;
+  pointer-events: none;
+}
+#cm-extension-root > * {
+  pointer-events: auto;
+}
