@@ -26,16 +26,24 @@ curl -fsSL https://codemonkeys.fly.dev/static/cli-dist/install.sh | bash
 irm https://codemonkeys.fly.dev/static/cli-dist/install.ps1 | iex
 ```
 
-That installs the `codemonkeys` command via `pip install --user` from the
-wheel served by the Fly deployment. Point it at a different server (e.g. a
-self-hosted instance) with `CM_SERVER=https://your-host` before running the
-install command. Re-run `pyproject.toml`'s version bump + rebuild (below)
-and redeploy whenever `cli/` changes, to keep the hosted wheel current.
+That installs both a `codemonkeys` and a shorter `cm` command via
+`pip install --user` from the wheel served by the Fly deployment. Point it at
+a different server (e.g. a self-hosted instance) with
+`CM_SERVER=https://your-host` before running the install command. Re-run
+`pyproject.toml`'s version bump + rebuild (below) and redeploy whenever
+`cli/` changes, to keep the hosted wheel current.
+
+Windows note: if the installer errors with "Python was not found" even though
+Python is on PATH, that's the Microsoft Store `python.exe` app-execution-alias
+stub shadowing a real install — disable it under Settings > Apps > Advanced
+app settings > App execution aliases, or install Python from python.org /
+`winget install Python.Python.3.12`.
 
 ## Run it
 
 ```
-codemonkeys --server https://codemonkeys.fly.dev   # once installed, from anywhere
+cm --server https://codemonkeys.fly.dev             # once installed, from anywhere
+codemonkeys --server https://codemonkeys.fly.dev     # same thing, full name
 ```
 
 Or run from a repo clone without installing:
@@ -69,7 +77,8 @@ Ctrl-C during a run sends `/stop`; `/quit` exits.
 - `config.py` — `~/.codemonkeys/cli.json` (server URL + bearer token).
 - `tests/` — `requests`-mocked tests for `client.py` (no server process
   needed): `python -m pytest cli/tests/ -q`.
-- `pyproject.toml` — packaging (console-script entry point `codemonkeys`).
+- `pyproject.toml` — packaging (console-script entry points `codemonkeys` and
+  `cm`).
 
 ## Rebuilding the distributed wheel
 
@@ -77,7 +86,7 @@ After changing anything under `cli/` (excluding `tests/`), rebuild and
 re-copy the wheel that `install.sh`/`install.ps1` fetch, then redeploy:
 
 ```
-cd cli && python -m build --wheel
+cd cli && uv build --wheel   # or: python -m build --wheel
 cp dist/codemonkeys_cli-<version>-py3-none-any.whl ../static/cli-dist/
 ```
 
