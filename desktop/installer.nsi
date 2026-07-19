@@ -13,7 +13,7 @@
 ;
 
 !define PRODUCT_NAME          "CodeMonkeys Desktop"
-!define PRODUCT_VERSION       "0.2.0"
+!define PRODUCT_VERSION       "0.2.1"
 !define PRODUCT_PUBLISHER     "CodeMonkeys"
 !define PRODUCT_WEB_SITE      "https://github.com/subtiliorars-sys/CodeMonkeys"
 !define PRODUCT_DIR_REGKEY    "Software\Microsoft\Windows\CurrentVersion\App Paths\CodeMonkeys.exe"
@@ -36,7 +36,7 @@ XPStyle on
 !define ICON_FILE "desktop\codemonkeys.ico"
 
 ; ---- Version info ----------------------------------------------------
-VIProductVersion  "0.2.0.0"
+VIProductVersion  "0.2.1.0"
 VIAddVersionKey   "ProductName"      "${PRODUCT_NAME}"
 VIAddVersionKey   "ProductVersion"   "${PRODUCT_VERSION}"
 VIAddVersionKey   "FileDescription"  "${PRODUCT_NAME} installer"
@@ -45,8 +45,13 @@ VIAddVersionKey   "CompanyName"      "${PRODUCT_PUBLISHER}"
 VIAddVersionKey   "LegalCopyright"   "Copyright © ${PRODUCT_PUBLISHER}"
 VIAddVersionKey   "Comments"         "Visit ${PRODUCT_WEB_SITE}"
 
-; ---- Reserved files / solid packaging --------------------------------
-; Let NSIS manage inclusion from APP_DIR.
+; ---- Modern UI 2 -----------------------------------------------------
+!include "MUI2.nsh"
+
+!define MUI_ICON            "${ICON_FILE}"
+!define MUI_UNICON          "${ICON_FILE}"
+!define MUI_ABORTWARNING
+!define MUI_UNABORTWARNING
 
 ; ---- Interface settings ----------------------------------------------
 InstallDir "$PROGRAMFILES64\CodeMonkeys"
@@ -57,10 +62,15 @@ ShowUninstDetails show
 BrandingText "CodeMonkeys Desktop ${PRODUCT_VERSION}"
 
 ; ---- Pages -----------------------------------------------------------
-Page           directory  "" "" ": Install location"
-Page           instfiles  "" "" ": Installing"
-UninstPage     uninstConfirm
-UninstPage     instfiles
+!insertmacro MUI_PAGE_WELCOME
+!insertmacro MUI_PAGE_DIRECTORY
+!insertmacro MUI_PAGE_INSTFILES
+!insertmacro MUI_PAGE_FINISH
+
+!insertmacro MUI_UNPAGE_CONFIRM
+!insertmacro MUI_UNPAGE_INSTFILES
+
+!insertmacro MUI_LANGUAGE "English"
 
 ; ---- Sections --------------------------------------------------------
 
@@ -83,14 +93,18 @@ Section "MainApplication" SEC_MAIN
     CreateShortCut   "$DESKTOP\CodeMonkeys Desktop.lnk"                   "$INSTDIR\CodeMonkeys.exe" "" "$INSTDIR\CodeMonkeys.exe" 0
 
     ; -- Registry: Add/Remove Programs ----------------------------------
-    WriteRegStr ${PRODUCT_UNINST_ROOT} "${PRODUCT_UNINST_KEY}" "DisplayName"       "${PRODUCT_NAME}"
-    WriteRegStr ${PRODUCT_UNINST_ROOT} "${PRODUCT_UNINST_KEY}" "UninstallString"   '"$INSTDIR\unins000.exe"'
-    WriteRegStr ${PRODUCT_UNINST_ROOT} "${PRODUCT_UNINST_KEY}" "DisplayIcon"       "$INSTDIR\CodeMonkeys.exe"
-    WriteRegStr ${PRODUCT_UNINST_ROOT} "${PRODUCT_UNINST_KEY}" "DisplayVersion"    "${PRODUCT_VERSION}"
-    WriteRegStr ${PRODUCT_UNINST_ROOT} "${PRODUCT_UNINST_KEY}" "Publisher"         "${PRODUCT_PUBLISHER}"
-    WriteRegStr ${PRODUCT_UNINST_ROOT} "${PRODUCT_UNINST_KEY}" "URLInfoAbout"      "${PRODUCT_WEB_SITE}"
-    WriteRegDword ${PRODUCT_UNINST_ROOT} "${PRODUCT_UNINST_KEY}" "NoModify"        1
-    WriteRegDword ${PRODUCT_UNINST_ROOT} "${PRODUCT_UNINST_KEY}" "NoRepair"        1
+    ; Compute installed size in KB.
+    SectionGetSize ${SEC_MAIN} $0
+    WriteRegStr   ${PRODUCT_UNINST_ROOT} "${PRODUCT_UNINST_KEY}" "DisplayName"       "${PRODUCT_NAME}"
+    WriteRegStr   ${PRODUCT_UNINST_ROOT} "${PRODUCT_UNINST_KEY}" "UninstallString"   '"$INSTDIR\unins000.exe"'
+    WriteRegStr   ${PRODUCT_UNINST_ROOT} "${PRODUCT_UNINST_KEY}" "DisplayIcon"       "$INSTDIR\CodeMonkeys.exe"
+    WriteRegStr   ${PRODUCT_UNINST_ROOT} "${PRODUCT_UNINST_KEY}" "DisplayVersion"    "${PRODUCT_VERSION}"
+    WriteRegStr   ${PRODUCT_UNINST_ROOT} "${PRODUCT_UNINST_KEY}" "Publisher"         "${PRODUCT_PUBLISHER}"
+    WriteRegStr   ${PRODUCT_UNINST_ROOT} "${PRODUCT_UNINST_KEY}" "URLInfoAbout"      "${PRODUCT_WEB_SITE}"
+    WriteRegStr   ${PRODUCT_UNINST_ROOT} "${PRODUCT_UNINST_KEY}" "InstallLocation"   "$INSTDIR"
+    WriteRegDword ${PRODUCT_UNINST_ROOT} "${PRODUCT_UNINST_KEY}" "EstimatedSize"     $0
+    WriteRegDword ${PRODUCT_UNINST_ROOT} "${PRODUCT_UNINST_KEY}" "NoModify"          1
+    WriteRegDword ${PRODUCT_UNINST_ROOT} "${PRODUCT_UNINST_KEY}" "NoRepair"          1
 
     ; -- Registry: App Paths --------------------------------------------
     WriteRegStr HKLM "${PRODUCT_DIR_REGKEY}" "" "$INSTDIR\CodeMonkeys.exe"
