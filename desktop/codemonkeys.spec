@@ -83,9 +83,9 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    # Temporary True while packaging settles — flip False once startup is solid.
-    # Override: edit this line or rebuild after smoke is green.
-    console=True,
+    # Console window hidden for end users; enable for debugging with --console build flag.
+    # Override: pass -Console to scripts/build-windows.ps1 to flip back temporarily.
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
