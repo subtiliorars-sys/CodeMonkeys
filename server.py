@@ -358,6 +358,7 @@ MAX_UPLOAD_FILES = 20
 MAX_UPLOAD_BYTES = 10_000_000                                    # 10 MB written per file
 # base64 expands ~4/3; cap the ENCODED input so we never decode a huge blob into memory
 MAX_UPLOAD_B64 = MAX_UPLOAD_BYTES * 4 // 3 + 1024
+MAX_REQUEST_BODY_BYTES = 5_000_000   # reject requests with body > 5 MB (DoS guard)
 # Web terminal (docs/TERMINAL_DESIGN.md) — a Claude Code-style REPL fallback.
 # Double env gate, BOTH default OFF (404 when off — don't advertise):
 #   TERMINAL_ENABLED      → serves the /terminal page (REPL over existing,
@@ -628,6 +629,49 @@ async def _security_headers(request, call_next):
         "script-src 'self'; frame-ancestors 'self'; object-src 'none'; "
         "base-uri 'self'")
     return resp
+
+
+@app.middleware("http")
+async def _body_size_limit(request: Request, call_next):
+    """Reject requests whose body exceeds MAX_REQUEST_BODY_BYTES before reading.
+    Checks Content-Length header (best-effort) and falls back to streaming read
+    with a hard cap for chunked Transfer-Encoding or missing Content-Length.
+    Skips GET/HEAD/OPTIONS — they carry no meaningful body."""
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return await call_next(request)
+
+    # Fast path: trust Content-Length when present and within limits
+    cl = request.headers.get("content-length")
+    if cl is not None:
+        try:
+            if int(cl) > MAX_REQUEST_BODY_BYTES:
+                return JSONResponse(
+                    status_code=413,
+                    content={"error": "request body too large",
+                             "max_bytes": MAX_REQUEST_BODY_BYTES})
+        except ValueError:
+            pass  # malformed Content-Length — fall through to streaming cap
+
+    # Slow path: read body with a hard cap (chunked or missing Content-Length)
+    body_chunks: list[bytes] = []
+    total = 0
+    async for chunk in request.stream():
+        total += len(chunk)
+        if total > MAX_REQUEST_BODY_BYTES:
+            return JSONResponse(
+                status_code=413,
+                content={"error": "request body too large",
+                         "max_bytes": MAX_REQUEST_BODY_BYTES})
+        body_chunks.append(chunk)
+
+    # Reconstruct the request body so downstream handlers can read it normally
+    async def _cached_body():
+        for c in body_chunks:
+            yield c
+
+    request._body = b"".join(body_chunks)
+    request._receive = _cached_body  # type: ignore[assignment]
+    return await call_next(request)
 
 
 @app.on_event("startup")
