@@ -249,6 +249,7 @@ _PUSH_LOCK = threading.Lock()
 # owner-auditable erasure RECEIPT. Both live under DATA_DIR (/data) like users.json.
 ERASED_FILE = os.path.join(DATA_DIR, "erased_accounts.json")          # tombstone
 ERASURE_RECEIPTS_FILE = os.path.join(DATA_DIR, "erasure_receipts.jsonl")  # receipts
+ROLE_RECEIPTS_FILE = os.path.join(DATA_DIR, "role_receipts.jsonl")    # promote/demote receipts
 # S-3 (issue #68) — hash-chained tamper-evident audit trail.  Every safelisted
 # security event (see _AUDIT_SAFELIST) and every erasure receipt is ALSO
 # appended to this chain: each entry commits to the previous entry's SHA-256,
@@ -2281,6 +2282,70 @@ def users_delete(uname: str, owner: str = Depends(verify_owner)):
     return {"ok": True, "erased": uname, "stores": stores}
 
 
+def _write_role_receipt(uname: str, by: str, old_role: str, new_role: str) -> None:
+    """Owner-auditable role-change receipt (multi-admin, 2026-07-20): id + role
+    transition + who did it — no pin/salt/secret material. Mirrors _write_receipt's
+    shape and, like erasures, also lands on the S-3 tamper-evident hash chain."""
+    ts = int(time.time())
+    entry = {"ts": ts, "event": "role_change", "user": uname, "by": by,
+              "old_role": old_role, "new_role": new_role}
+    try:
+        with open(ROLE_RECEIPTS_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+    except OSError as e:
+        _log.error("role_change: receipt append failed for %r: %s", uname, e)
+    audit_chain_append(entry)
+    _log.info("role_change receipt: user=%s by=%s %s->%s", uname, by, old_role, new_role)
+
+
+@app.post("/api/users/{uname}/promote")
+def users_promote(uname: str, owner: str = Depends(verify_owner)):
+    """Grant Owner (admin) privileges to an existing Member. Owner-only, so
+    the very first privilege escalation always requires an already-trusted
+    Owner to act — self-service accounts (open enrollment or invite) can
+    never promote themselves.
+
+    Red-team finding (2026-07-20): a pending invite (must_reset=True) is an
+    unclaimed username — the invite doc's own accepted residual risk is that
+    someone who learns a pending username before its real owner first logs in
+    can claim it. That's an accepted risk at Member scope; promoting an
+    unclaimed username straight to Owner would let that same race claim Owner
+    privileges instead, a much bigger blast radius than what was ever
+    accepted. Require the account to have completed setup (must_reset false)
+    before it can be promoted."""
+    with _USERS_LOCK:
+        users = load_users()
+        if uname not in users:
+            raise HTTPException(404, "No such user")
+        if users[uname].get("role") == "Owner":
+            raise HTTPException(400, "Already an Owner")
+        if users[uname].get("must_reset"):
+            raise HTTPException(400, "Can't promote a pending invite that hasn't completed account setup yet")
+        users[uname]["role"] = "Owner"
+        save_users(users)
+    _write_role_receipt(uname, by=owner, old_role="Member", new_role="Owner")
+    return {"ok": True, "username": uname, "role": "Owner"}
+
+
+@app.post("/api/users/{uname}/demote")
+def users_demote(uname: str, owner: str = Depends(verify_owner)):
+    """Revoke Owner privileges from another admin, back to Member. An Owner
+    can never demote themself — prevents an accidental zero-Owner lockout,
+    same guard shape as users_delete's self-delete block."""
+    if uname == owner:
+        raise HTTPException(400, "You can't demote your own Owner account")
+    with _USERS_LOCK:
+        users = load_users()
+        if uname not in users:
+            raise HTTPException(404, "No such user")
+        if users[uname].get("role") != "Owner":
+            raise HTTPException(400, "Not an Owner")
+        users[uname]["role"] = "Member"
+        save_users(users)
+    _write_role_receipt(uname, by=owner, old_role="Owner", new_role="Member")
+    return {"ok": True, "username": uname, "role": "Member"}
+
+
 @app.get("/api/erasures")
 def erasures_list(_: str = Depends(verify_owner)):
     """Owner-only view of the erasure tombstone trail (M-7 receipt audit): the
@@ -2290,6 +2355,26 @@ def erasures_list(_: str = Depends(verify_owner)):
         ({"username": u, "erased_at": d.get("erased_at"), "by": d.get("by")}
          for u, d in erased.items()),
         key=lambda x: x.get("erased_at") or 0, reverse=True)}
+
+
+@app.get("/api/role-changes")
+def role_changes_list(_: str = Depends(verify_owner)):
+    """Owner-only view of the promote/demote receipt trail."""
+    entries = []
+    try:
+        with open(ROLE_RECEIPTS_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        pass
+    entries.sort(key=lambda x: x.get("ts") or 0, reverse=True)
+    return {"role_changes": entries}
 
 
 # ------------------------------------------------- M-4 cloud-egress consent
@@ -2455,6 +2540,7 @@ _BACKUP_DRILL_STORES = (
     ("model_config.json",       "MODELS_FILE",            "enc-json"),
     ("mcp_tokens.json",         "MCP_TOKENS_FILE",        "enc-json"),
     ("erasure_receipts.jsonl",  "ERASURE_RECEIPTS_FILE",  "jsonl"),
+    ("role_receipts.jsonl",     "ROLE_RECEIPTS_FILE",     "jsonl"),
     ("feedback.jsonl",          "FEEDBACK_FILE",          "jsonl"),
     ("backup_drill_receipts.jsonl", "BACKUP_DRILL_RECEIPTS_FILE", "jsonl"),
     ("session_secret.key",      "SECRET_FILE",            "key"),
