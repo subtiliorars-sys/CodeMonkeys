@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=CodeMonkeys
+Comment=Self-hosted AI coding console
+Exec=CodeMonkeys
+Icon=codemonkeys
+Categories=Development;
+Terminal=false

@@ -25,7 +25,7 @@ here or unblocks an item below. Maintainer checklist: `docs/FORGE_HYGIENE.md` §
 |------|--------|--------|
 | CM-DESK-W1 | `shipped` | Loopback launcher + pywebview shell + PyInstaller onedir build |
 | CM-DESK-W2 | `done` | Installer polish (Start Menu shortcut, NSIS installer, icon) — MSIX not done |
-| CM-DESK-W3 | pending | Linux packaging (AppImage/build-linux.sh) |
+| CM-DESK-W3 | `built, untested on Linux` | Linux packaging (AppImage/build-linux.sh) |
 | CM-DESK-W4 | pending | Public BYOK web tier (after desktop is solid) |
 
 ## Parallel track — Forge UI / Cursor parity (manual)

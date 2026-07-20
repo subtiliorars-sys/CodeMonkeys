@@ -81,6 +81,40 @@ magick convert desktop/icon-256.png -define icon:auto-resize=256,64,48,32,16 des
 Drop the resulting `desktop/codemonkeys.ico` file — the `.spec` and `.nsi`
 files reference it by that name.
 
+## Linux packaging
+
+```bash
+scripts/build-linux.sh
+# → dist/CodeMonkeys/CodeMonkeys            (PyInstaller onedir)
+# → dist/installers/CodeMonkeys-Desktop-0.2.0-x86_64.AppImage
+```
+
+Same `desktop/codemonkeys.spec` as Windows (icon embedding is skipped — ELF
+binaries don't carry a Windows `.ico`). The AppImage stage downloads
+`appimagetool` on first run if it isn't already on `PATH` or cached under
+`build/`.
+
+Build-machine deps (Debian/Ubuntu) for pywebview's GTK backend:
+
+```bash
+sudo apt-get install -y python3-gi python3-gi-cairo gir1.2-gtk-3.0 \
+  gir1.2-webkit2-4.1 libcairo2-dev
+```
+
+**End users** also need a WebKitGTK runtime installed (`gir1.2-webkit2-4.1`
+or equivalent) for the native window to open; without it the server still
+starts and the printed `http://127.0.0.1:<port>/` URL works in any browser.
+
+Flags: `--skip-install` (reuse an existing venv), `--no-appimage` (onedir
+tarball only, skip the AppImage stage).
+
+Data directory: `$XDG_CONFIG_HOME/codemonkeys/data` (default
+`~/.config/codemonkeys/data`).
+
+**Untested on real Linux hardware** — this repo's dev machine is Windows;
+the script was written to mirror `build-windows.ps1` exactly but the
+AppImage/WebKitGTK round-trip needs a first real run to confirm.
+
 ## First run
 
 1. Launch `CodeMonkeys.exe` (or `python -m desktop`)
