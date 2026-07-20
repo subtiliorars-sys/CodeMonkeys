@@ -188,6 +188,31 @@ jobs:
           path: dist/installers/*.exe
           if-no-files-found: error
 
+  # security: dependency vulnerability scanning (#183). Fails on ANY known
+  # vulnerability (CVE/GHSA) in a resolved dependency per pip-audit's default
+  # OSV-backed check - that IS the severity threshold: zero-tolerance for
+  # known-vulnerable pinned versions, not a CVSS cutoff. Triage flow for a
+  # real hit: docs/DEPENDENCY_AUDIT.md.
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install pip-audit
+        run: python -m pip install --upgrade pip pip-audit
+
+      - name: Audit server requirements
+        run: pip-audit -r requirements.txt
+
+      - name: Audit desktop requirements
+        run: pip-audit -r requirements-desktop.txt
+
   # Wave 4 #3 — prove the vendored Tailwind build compiles. The dev host has no
   # Node, so CI is the verification that the config + the app's arbitrary-value
   # classes resolve. The Dockerfile runs the same build at image time.
