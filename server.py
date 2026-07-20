@@ -46,6 +46,7 @@ import requests
 from enum import Enum
 from typing import Optional, List, Dict, Union
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
                                PlainTextResponse)
 from fastapi.staticfiles import StaticFiles
@@ -529,6 +530,50 @@ _bootstrap_master_key()
 
 app = FastAPI(title="CodeMonkeys")
 _BOOT_TIME = int(time.time())
+
+# #180 - reject oversized/malformed request bodies before they reach handlers.
+# Default 10 MB covers every legitimate body this API accepts today (chat
+# messages, config saves, MCP config, session events - all small JSON docs;
+# there is no file-upload endpoint). Configurable for a deployment that
+# genuinely needs more headroom.
+MAX_BODY_BYTES = int(os.environ.get("MAX_BODY_BYTES", str(10 * 1024 * 1024)))
+
+
+@app.middleware("http")
+async def _limit_body_size(request: Request, call_next):
+    """413 on a declared Content-Length over the cap, checked before any
+    handler (including auth) touches the body. This checks the DECLARED
+    length, not a streamed byte count - a client using chunked transfer
+    encoding without Content-Length bypasses this check; accepted as a
+    defense-in-depth measure against oversized bodies from normal clients
+    (browser fetch/curl/httpx all set Content-Length), not a hard guarantee
+    against a client deliberately evading it."""
+    cl = request.headers.get("content-length")
+    if cl is not None:
+        try:
+            declared = int(cl)
+        except ValueError:
+            declared = None
+        if declared is not None and declared > MAX_BODY_BYTES:
+            return JSONResponse(
+                {"detail": f"Request body exceeds the {MAX_BODY_BYTES}-byte limit"},
+                status_code=413)
+    return await call_next(request)
+
+
+@app.exception_handler(RequestValidationError)
+async def _malformed_json_handler(request: Request, exc: RequestValidationError):
+    """FastAPI's default is 422 for every validation error, including a body
+    that isn't parseable JSON at all - but 422 (Unprocessable Entity) means
+    "well-formed, semantically invalid"; a body that doesn't parse as JSON is
+    a syntax error, i.e. 400. Only reclassify the JSON-decode case; genuine
+    schema/type validation failures (wrong field type, missing required
+    field, etc.) keep the standard 422 FastAPI already returns for them."""
+    errors = exc.errors()
+    if errors and all(e.get("type") == "json_invalid" for e in errors):
+        return JSONResponse({"detail": "Request body is not valid JSON"},
+                            status_code=400)
+    return JSONResponse({"detail": errors}, status_code=422)
 
 
 @app.get("/healthz")
