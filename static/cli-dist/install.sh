@@ -8,7 +8,7 @@
 set -euo pipefail
 
 CM_SERVER="${CM_SERVER:-https://codemonkeys.fly.dev}"
-WHEEL_URL="${CM_SERVER%/}/static/cli-dist/codemonkeys_cli-0.1.1-py3-none-any.whl"
+WHEEL_URL="${CM_SERVER%/}/static/cli-dist/codemonkeys_cli-0.1.2-py3-none-any.whl"
 
 if ! command -v python3 >/dev/null 2>&1; then
   echo "python3 is required but was not found on PATH." >&2
@@ -25,8 +25,8 @@ python3 -m pip install --user --upgrade "$tmp/codemonkeys_cli.whl"
 
 echo
 echo "Installed. Run:"
-echo "  cm --server $CM_SERVER"
-echo "('codemonkeys' also works, if you prefer the full name)"
+echo "  monkey --server $CM_SERVER"
+echo "('cm' and 'codemonkeys' also work, same command)"
 echo "(first run prompts for username + MFA code, then caches the token in ~/.codemonkeys/cli.json)"
 echo
 echo "If 'codemonkeys' isn't found, make sure your Python user-scripts dir is on PATH"

@@ -7,7 +7,7 @@
 $ErrorActionPreference = "Stop"
 
 $CmServer = if ($env:CM_SERVER) { $env:CM_SERVER } else { "https://codemonkeys.fly.dev" }
-$WheelUrl = "$($CmServer.TrimEnd('/'))/static/cli-dist/codemonkeys_cli-0.1.1-py3-none-any.whl"
+$WheelUrl = "$($CmServer.TrimEnd('/'))/static/cli-dist/codemonkeys_cli-0.1.2-py3-none-any.whl"
 
 # Get-Command finds Windows' python.exe "App Execution Alias" stub even when no
 # real Python is installed, so probe by actually running it rather than trusting
@@ -34,8 +34,8 @@ Write-Host "Installing with pip (--user) ..."
 
 Write-Host ""
 Write-Host "Installed. Run:"
-Write-Host "  cm --server $CmServer"
-Write-Host "('codemonkeys' also works, if you prefer the full name)"
+Write-Host "  monkey --server $CmServer"
+Write-Host "('cm' and 'codemonkeys' also work, same command)"
 Write-Host "(first run prompts for username + MFA code, then caches the token in ~/.codemonkeys/cli.json)"
 Write-Host ""
 Write-Host "If 'codemonkeys' isn't found, make sure your Python user Scripts dir is on PATH"

@@ -26,9 +26,10 @@ curl -fsSL https://codemonkeys.fly.dev/static/cli-dist/install.sh | bash
 irm https://codemonkeys.fly.dev/static/cli-dist/install.ps1 | iex
 ```
 
-That installs both a `codemonkeys` and a shorter `cm` command via
-`pip install --user` from the wheel served by the Fly deployment. Point it at
-a different server (e.g. a self-hosted instance) with
+That installs `monkey` (short), `cm` (shorter), and `codemonkeys` (full name)
+— all the same command — via `pip install --user` from the wheel served by
+the Fly deployment. Point it at a different server (e.g. a self-hosted
+instance) with
 `CM_SERVER=https://your-host` before running the install command. Re-run
 `pyproject.toml`'s version bump + rebuild (below) and redeploy whenever
 `cli/` changes, to keep the hosted wheel current.
@@ -42,8 +43,7 @@ app settings > App execution aliases, or install Python from python.org /
 ## Run it
 
 ```
-cm --server https://codemonkeys.fly.dev             # once installed, from anywhere
-codemonkeys --server https://codemonkeys.fly.dev     # same thing, full name
+monkey --server https://codemonkeys.fly.dev   # once installed, from anywhere
 ```
 
 Or run from a repo clone without installing:
@@ -65,7 +65,11 @@ python -m cli --logout                                # forget the saved token
 
 Inside the REPL: type a message and press enter. Tool calls, diffs, agent
 sub-dispatches, and approval prompts render inline; approve/deny with y/n.
-Ctrl-C during a run sends `/stop`; `/quit` exits.
+Ctrl-C during a run sends `/stop`; `/quit` exits. Press the **left arrow** on
+an empty input line to list all your sessions (idle and currently running)
+and jump into a different one without restarting the process — press
+left-arrow again (or hit enter on an empty line) to cancel out of the
+switcher.
 
 ## Layout
 
@@ -73,12 +77,14 @@ Ctrl-C during a run sends `/stop`; `/quit` exits.
   polling, `approve`, `stop`, `resume`).
 - `repl.py` — the interactive loop; event rendering mirrors
   `static/forge/app.js`'s `renderEvent()` switch so behavior stays identical
-  to the web UI.
+  to the web UI. Input is a `prompt_toolkit` `PromptSession` (not
+  `rich.Prompt`) specifically so a bare left-arrow keypress can be caught and
+  routed to the session switcher rather than always moving the cursor.
 - `config.py` — `~/.codemonkeys/cli.json` (server URL + bearer token).
 - `tests/` — `requests`-mocked tests for `client.py` (no server process
   needed): `python -m pytest cli/tests/ -q`.
-- `pyproject.toml` — packaging (console-script entry points `codemonkeys` and
-  `cm`).
+- `pyproject.toml` — packaging (console-script entry points `codemonkeys`,
+  `cm`, `monkey`).
 
 ## Rebuilding the distributed wheel
 
