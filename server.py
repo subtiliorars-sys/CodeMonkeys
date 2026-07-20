@@ -2303,13 +2303,24 @@ def users_promote(uname: str, owner: str = Depends(verify_owner)):
     """Grant Owner (admin) privileges to an existing Member. Owner-only, so
     the very first privilege escalation always requires an already-trusted
     Owner to act — self-service accounts (open enrollment or invite) can
-    never promote themselves."""
+    never promote themselves.
+
+    Red-team finding (2026-07-20): a pending invite (must_reset=True) is an
+    unclaimed username — the invite doc's own accepted residual risk is that
+    someone who learns a pending username before its real owner first logs in
+    can claim it. That's an accepted risk at Member scope; promoting an
+    unclaimed username straight to Owner would let that same race claim Owner
+    privileges instead, a much bigger blast radius than what was ever
+    accepted. Require the account to have completed setup (must_reset false)
+    before it can be promoted."""
     with _USERS_LOCK:
         users = load_users()
         if uname not in users:
             raise HTTPException(404, "No such user")
         if users[uname].get("role") == "Owner":
             raise HTTPException(400, "Already an Owner")
+        if users[uname].get("must_reset"):
+            raise HTTPException(400, "Can't promote a pending invite that hasn't completed account setup yet")
         users[uname]["role"] = "Owner"
         save_users(users)
     _write_role_receipt(uname, by=owner, old_role="Member", new_role="Owner")

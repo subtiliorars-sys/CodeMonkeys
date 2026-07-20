@@ -65,6 +65,19 @@ def test_promote_unknown_user_404(role_env):
     assert r.status_code == 404
 
 
+def test_cannot_promote_unclaimed_invite(role_env):
+    """Red-team: a pending invite is an unclaimed username (invite.py's own
+    accepted residual risk). Promoting it to Owner would let whoever claims
+    that username first walk away with admin, not just Member access."""
+    users = server.load_users()
+    users["pending-dev"] = {"role": "Member", "mfa_secret": "", "must_reset": True,
+                             "created": 3}
+    server.save_users(users)
+    r = client.post("/api/users/pending-dev/promote")
+    assert r.status_code == 400
+    assert server.load_users()["pending-dev"]["role"] == "Member"
+
+
 def test_promote_already_owner_400(role_env):
     r = client.post("/api/users/boss/promote")
     assert r.status_code == 400
