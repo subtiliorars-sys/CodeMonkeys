@@ -4,16 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codemonkeys-cli"
-version = "0.1.0"
+version = "0.1.2"
 description = "Terminal REPL client for CodeMonkeys — a Cline/Claude-Code-style terminal, pointed at your own server."
 requires-python = ">=3.10"
 dependencies = [
     "requests==2.34.2",
     "rich==14.2.0",
+    "prompt_toolkit==3.0.51",
 ]
 
 [project.scripts]
 codemonkeys = "cli.__main__:main"
+cm = "cli.__main__:main"
+monkey = "cli.__main__:main"
 
 [tool.setuptools]
 packages = ["cli"]

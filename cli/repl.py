@@ -9,13 +9,34 @@ from __future__ import annotations
 import threading
 import time
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.key_binding import KeyBindings
 from rich.console import Console
 from rich.markup import escape
-from rich.prompt import Confirm, Prompt
+from rich.prompt import Confirm
 
 from .client import ApiError, Client
 
 POLL_INTERVAL = 0.6
+
+
+SWITCH_SENTINEL = "\x00SWITCH_SESSION\x00"
+
+
+def _make_key_bindings() -> KeyBindings:
+    """Left-arrow opens the session switcher, but only when the input line is
+    empty — otherwise it's needed for normal cursor movement while editing."""
+    kb = KeyBindings()
+
+    @kb.add("left")
+    def _(event):
+        buf = event.app.current_buffer
+        if buf.cursor_position == 0 and not buf.text:
+            event.app.exit(result=SWITCH_SENTINEL)
+        else:
+            buf.cursor_left()
+
+    return kb
 
 
 class Repl:
@@ -28,6 +49,7 @@ class Repl:
         self._stream_prefix = ""
         self._streaming = False
         self._stop_poll = threading.Event()
+        self._prompt_session = PromptSession(key_bindings=_make_key_bindings())
 
     def _print_stream_flush(self):
         if self._streaming:
@@ -122,14 +144,54 @@ class Repl:
                     return
                 time.sleep(POLL_INTERVAL)
 
+    def _switch_session(self) -> None:
+        """Left-arrow was pressed on an empty line — list all sessions (what's
+        running, what's idle) and let the user jump into a different one
+        without restarting the process."""
+        try:
+            sessions = self.client.list_sessions()
+        except ApiError as exc:
+            self.console.print(f"[red]couldn't list sessions: {escape(str(exc))}[/red]")
+            return
+        if not sessions:
+            self.console.print("[dim](no other sessions)[/dim]")
+            return
+        self.console.print("\n[bold]sessions[/bold] [dim](left-arrow again to cancel)[/dim]")
+        for i, s in enumerate(sessions[:20]):
+            marker = "*" if s["id"] == self.sid else " "
+            self.console.print(f" {marker}{i}: [{s['status']}] {s['title'] or '(untitled)'} — {s['id']}")
+        try:
+            choice = self._prompt_session.prompt("switch to > ")
+        except (EOFError, KeyboardInterrupt):
+            return
+        if not choice.strip() or choice == SWITCH_SENTINEL:
+            return
+        try:
+            target = sessions[int(choice)]["id"]
+        except (ValueError, IndexError):
+            self.console.print("[red]invalid choice[/red]")
+            return
+        if target == self.sid:
+            return
+        self.sid = target
+        self._after = -1
+        self.console.print(f"[green]switched to session {self.sid}[/green]")
+        self._drain_events()
+
     def run(self) -> None:
-        self.console.print(f"[bold]session {self.sid}[/bold] — type a message, Ctrl-C to stop a run, /quit to exit\n")
+        self.console.print(
+            f"[bold]session {self.sid}[/bold] — type a message, left-arrow (on an "
+            "empty line) to switch sessions, Ctrl-C to stop a run, /quit to exit\n"
+        )
         while True:
             try:
-                text = Prompt.ask("[bold cyan]>[/bold cyan]")
+                text = self._prompt_session.prompt([("class:prompt", "> ")])
             except (EOFError, KeyboardInterrupt):
                 self.console.print()
                 break
+            if text == SWITCH_SENTINEL:
+                self._switch_session()
+                continue
             if not text.strip():
                 continue
             if text.strip() in ("/quit", "/exit"):

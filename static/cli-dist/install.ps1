@@ -7,13 +7,20 @@
 $ErrorActionPreference = "Stop"
 
 $CmServer = if ($env:CM_SERVER) { $env:CM_SERVER } else { "https://codemonkeys.fly.dev" }
-$WheelUrl = "$($CmServer.TrimEnd('/'))/static/cli-dist/codemonkeys_cli-0.1.0-py3-none-any.whl"
+$WheelUrl = "$($CmServer.TrimEnd('/'))/static/cli-dist/codemonkeys_cli-0.1.2-py3-none-any.whl"
 
-if (-not (Get-Command python -ErrorAction SilentlyContinue) -and -not (Get-Command python3 -ErrorAction SilentlyContinue)) {
-    Write-Error "python (3.10+) is required but was not found on PATH."
+# Get-Command finds Windows' python.exe "App Execution Alias" stub even when no
+# real Python is installed, so probe by actually running it rather than trusting
+# Get-Command alone.
+function Test-RealPython($name) {
+    if (-not (Get-Command $name -ErrorAction SilentlyContinue)) { return $false }
+    try { & $name --version *> $null; return $LASTEXITCODE -eq 0 } catch { return $false }
+}
+$py = if (Test-RealPython "python3") { "python3" } elseif (Test-RealPython "python") { "python" } else { $null }
+if (-not $py) {
+    Write-Error "python (3.10+) is required but was not found on PATH. If 'python --version' prints a Microsoft Store prompt, disable that alias under Settings > Apps > Advanced app settings > App execution aliases, then install Python from python.org or 'winget install Python.Python.3.12'."
     exit 1
 }
-$py = if (Get-Command python3 -ErrorAction SilentlyContinue) { "python3" } else { "python" }
 
 $tmp = Join-Path $env:TEMP "codemonkeys-cli-install"
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
@@ -27,7 +34,8 @@ Write-Host "Installing with pip (--user) ..."
 
 Write-Host ""
 Write-Host "Installed. Run:"
-Write-Host "  codemonkeys --server $CmServer"
+Write-Host "  monkey --server $CmServer"
+Write-Host "('cm' and 'codemonkeys' also work, same command)"
 Write-Host "(first run prompts for username + MFA code, then caches the token in ~/.codemonkeys/cli.json)"
 Write-Host ""
 Write-Host "If 'codemonkeys' isn't found, make sure your Python user Scripts dir is on PATH"
