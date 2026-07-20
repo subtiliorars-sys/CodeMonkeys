@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from rich.console import Console
@@ -17,7 +18,13 @@ from . import config
 from .client import ApiError, Client
 from .repl import Repl
 
-DEFAULT_SERVER = "http://127.0.0.1:8000"
+# Owner report (2026-07-20): a fresh `monkey` install with no prior config and
+# no --server flag tried localhost:8000, which nobody's running, and crashed
+# with a raw connection traceback. install.sh/install.ps1 already default
+# CM_SERVER to codemonkeys.fly.dev — match that here so the common "download
+# and just run monkey" path works out of the box. Local dev / self-host still
+# override via $CM_SERVER or --server.
+DEFAULT_SERVER = os.environ.get("CM_SERVER", "https://codemonkeys.fly.dev")
 
 
 def _login(console: Console, client: Client) -> None:
