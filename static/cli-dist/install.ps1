@@ -7,7 +7,7 @@
 $ErrorActionPreference = "Stop"
 
 $CmServer = if ($env:CM_SERVER) { $env:CM_SERVER } else { "https://codemonkeys.fly.dev" }
-$WheelUrl = "$($CmServer.TrimEnd('/'))/static/cli-dist/codemonkeys_cli-0.1.2-py3-none-any.whl"
+$WheelUrl = "$($CmServer.TrimEnd('/'))/static/cli-dist/codemonkeys_cli-0.1.3-py3-none-any.whl"
 
 $tmp = Join-Path $env:TEMP "codemonkeys-cli-install"
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
