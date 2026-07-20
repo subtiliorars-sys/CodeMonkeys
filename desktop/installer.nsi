@@ -18,22 +18,20 @@
 !define PRODUCT_WEB_SITE      "https://github.com/subtiliorars-sys/CodeMonkeys"
 !define PRODUCT_DIR_REGKEY    "Software\Microsoft\Windows\CurrentVersion\App Paths\CodeMonkeys.exe"
 !define PRODUCT_UNINST_KEY    "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
-!define PRODUCT_UNINST_ROOT   "HKLM"
+!define PRODUCT_UNINST_ROOT   "SHCTX"
 
 ; ---- Compiler & output -----------------------------------------------
 SetCompressor lzma
 
 Name "${PRODUCT_NAME}"
-OutFile "dist\installers\CodeMonkeys-Desktop-Setup-${PRODUCT_VERSION}.exe"
+OutFile "..\dist\installers\CodeMonkeys-Desktop-Setup-${PRODUCT_VERSION}.exe"
 Caption "${PRODUCT_NAME} ${PRODUCT_VERSION} Setup"
 
 RequestExecutionLevel admin
 XPStyle on
 
-; ---- Paths -----------------------------------------------------------
-; Expects to be run from the repo root so that dist/CodeMonkeys/ exists.
-!define APP_DIR   "dist\CodeMonkeys"
-!define ICON_FILE "desktop\codemonkeys.ico"
+!define APP_DIR   "..\dist\CodeMonkeys"
+!define ICON_FILE "codemonkeys.ico"
 
 ; ---- Version info ----------------------------------------------------
 VIProductVersion  "0.2.1.0"
@@ -45,6 +43,17 @@ VIAddVersionKey   "CompanyName"      "${PRODUCT_PUBLISHER}"
 VIAddVersionKey   "LegalCopyright"   "Copyright © ${PRODUCT_PUBLISHER}"
 VIAddVersionKey   "Comments"         "Visit ${PRODUCT_WEB_SITE}"
 
+; ---- MultiUser -------------------------------------------------------
+!define MULTIUSER_EXECUTIONLEVEL Highest
+!define MULTIUSER_MUI
+!define MULTIUSER_INSTALLMODE_DEFAULT_REGISTRY_VALUENAME "InstallMode"
+!define MULTIUSER_INSTALLMODE_DEFAULT_REGISTRY_KEY "Software\CodeMonkeys"
+!define MULTIUSER_INSTALLMODE_DEFAULT_REGISTRY_ROOT "SHCTX"
+!define MULTIUSER_INSTALLMODE_INSTDIR "CodeMonkeys"
+!define MULTIUSER_INSTALLMODE_INSTDIR_REGISTRY_KEY "${PRODUCT_DIR_REGKEY}"
+!define MULTIUSER_INSTALLMODE_INSTDIR_REGISTRY_VALUENAME ""
+!include "MultiUser.nsh"
+
 ; ---- Modern UI 2 -----------------------------------------------------
 !include "MUI2.nsh"
 
@@ -55,7 +64,6 @@ VIAddVersionKey   "Comments"         "Visit ${PRODUCT_WEB_SITE}"
 
 ; ---- Interface settings ----------------------------------------------
 InstallDir "$PROGRAMFILES64\CodeMonkeys"
-InstallDirRegKey HKLM "${PRODUCT_DIR_REGKEY}" ""
 
 ShowInstDetails  show
 ShowUninstDetails show
@@ -63,6 +71,7 @@ BrandingText "CodeMonkeys Desktop ${PRODUCT_VERSION}"
 
 ; ---- Pages -----------------------------------------------------------
 !insertmacro MUI_PAGE_WELCOME
+!insertmacro MULTIUSER_PAGE_INSTALLMODE
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
@@ -71,6 +80,14 @@ BrandingText "CodeMonkeys Desktop ${PRODUCT_VERSION}"
 !insertmacro MUI_UNPAGE_INSTFILES
 
 !insertmacro MUI_LANGUAGE "English"
+
+Function .onInit
+    !insertmacro MULTIUSER_INIT
+FunctionEnd
+
+Function un.onInit
+    !insertmacro MULTIUSER_UNINIT
+FunctionEnd
 
 ; ---- Sections --------------------------------------------------------
 
@@ -107,7 +124,7 @@ Section "MainApplication" SEC_MAIN
     WriteRegDword ${PRODUCT_UNINST_ROOT} "${PRODUCT_UNINST_KEY}" "NoRepair"          1
 
     ; -- Registry: App Paths --------------------------------------------
-    WriteRegStr HKLM "${PRODUCT_DIR_REGKEY}" "" "$INSTDIR\CodeMonkeys.exe"
+    WriteRegStr ${PRODUCT_UNINST_ROOT} "${PRODUCT_DIR_REGKEY}" "" "$INSTDIR\CodeMonkeys.exe"
 SectionEnd
 
 ; ---- Uninstaller -----------------------------------------------------
@@ -123,5 +140,5 @@ Section "Uninstall"
 
     ; Remove registry keys.
     DeleteRegKey ${PRODUCT_UNINST_ROOT} "${PRODUCT_UNINST_KEY}"
-    DeleteRegKey HKLM "${PRODUCT_DIR_REGKEY}"
+    DeleteRegKey ${PRODUCT_UNINST_ROOT} "${PRODUCT_DIR_REGKEY}"
 SectionEnd

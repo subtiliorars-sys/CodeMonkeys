@@ -63,6 +63,42 @@ The installer:
 Requires **NSIS 3.x** ([nsis.sourceforge.io](https://nsis.sourceforge.io)) and
 **Microsoft Edge WebView2 Runtime** (already on most Win10/11 installs).
 
+### Linux AppImage & Tarball
+
+To build a Linux AppImage or a standalone tarball:
+
+```bash
+bash scripts/build-linux.sh
+# Options:
+#   --skip-install  Skip installing pip dependencies on the build host
+#   --no-appimage   Skip generating the AppImage (tarball only)
+```
+
+This generates:
+- A standalone folder: `dist/CodeMonkeys/`
+- A compressed tarball: `dist/CodeMonkeys-linux.tar.gz`
+- An AppImage installer: `dist/installers/CodeMonkeys-Desktop-<version>-x86_64.AppImage`
+
+#### Linux Build Machine Dependencies
+To build the application, the build host requires:
+- **Node.js** (for Tailwind compilation via `npx`)
+- **Python 3.12+**
+- **pywebview's GTK dependencies**:
+  ```bash
+  sudo apt-get install -y python3-gi python3-gi-cairo gir1.2-gtk-3.0 \
+    gir1.2-webkit2-4.1 libcairo2-dev
+  ```
+
+#### Linux End-User Run Requirements
+To run the packaged application or AppImage, users require:
+- **WebKitGTK runtime** (GTK3 + `webkit2gtk`):
+  ```bash
+  # Debian/Ubuntu
+  sudo apt-get install gir1.2-webkit2-4.1
+  ```
+If WebKitGTK is not present, the application will automatically start in headless/server mode. Users can open the printed URL `http://127.0.0.1:<port>/` in any modern web browser.
+
+
 ### Icon conversion (SVG → ICO)
 
 The source icon lives at `desktop/icon.svg`.  Convert to `.ico` for PyInstaller
