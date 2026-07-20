@@ -59,6 +59,127 @@ def _healthy_tree(root) -> str:
     return d
 
 
+# ------------------------------------------------ receipt schema contract (#179)
+
+_VALID_STATUSES = {"pass", "fail", "absent"}
+
+
+def _assert_valid_receipt(rec: dict) -> None:
+    """The receipt schema contract: required fields + types. Any drift here
+    (a field renamed/dropped/retyped) must fail this assertion, since
+    downstream tooling (drill-history, any external consumer) trusts this
+    shape."""
+    assert isinstance(rec, dict)
+    assert rec.get("event") == "backup_drill"
+    assert isinstance(rec.get("ts"), int)
+    assert isinstance(rec.get("by"), str) and rec["by"]
+    assert isinstance(rec.get("ok"), bool)
+    assert isinstance(rec.get("checked"), int)
+    assert isinstance(rec.get("absent"), int)
+    assert isinstance(rec.get("failed"), list)
+    assert all(isinstance(s, str) for s in rec["failed"])
+    assert isinstance(rec.get("stores"), list) and rec["stores"]
+    for entry in rec["stores"]:
+        assert isinstance(entry, dict)
+        assert isinstance(entry.get("store"), str) and entry["store"]
+        assert entry.get("status") in _VALID_STATUSES
+        if entry["status"] == "fail":
+            assert isinstance(entry.get("reason"), str) and entry["reason"]
+
+
+def test_receipt_matches_schema_contract(tmp_path):
+    """A real receipt from a healthy drill satisfies the contract."""
+    d = _healthy_tree(tmp_path)
+    server.run_backup_drill(by="owner", data_dir=d)
+    with open(os.path.join(d, "backup_drill_receipts.jsonl")) as f:
+        rec = json.loads(f.readline())
+    _assert_valid_receipt(rec)
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda r: r.pop("ts"),
+    lambda r: r.__setitem__("ts", "not-an-int"),
+    lambda r: r.pop("event"),
+    lambda r: r.__setitem__("event", "wrong_event_name"),
+    lambda r: r.pop("ok"),
+    lambda r: r.__setitem__("ok", "yes"),
+    lambda r: r.pop("checked"),
+    lambda r: r.pop("failed"),
+    lambda r: r.__setitem__("failed", "users.json"),  # not a list
+    lambda r: r.pop("stores"),
+    lambda r: r.__setitem__("stores", []),  # empty - nothing was actually checked
+    lambda r: r["stores"][0].__setitem__("status", "ok"),  # not a valid status
+    lambda r: r["stores"][0].pop("store"),
+])
+def test_malformed_receipt_fails_the_contract(tmp_path, mutation):
+    """Acceptance: a malformed receipt fails the contract test - prove the
+    contract actually rejects drift instead of rubber-stamping any dict."""
+    d = _healthy_tree(tmp_path)
+    server.run_backup_drill(by="owner", data_dir=d)
+    with open(os.path.join(d, "backup_drill_receipts.jsonl")) as f:
+        rec = json.loads(f.readline())
+    mutation(rec)
+    with pytest.raises(AssertionError):
+        _assert_valid_receipt(rec)
+
+
+def test_receipt_file_is_append_only_never_truncates(tmp_path):
+    """Running the drill repeatedly must only ever grow the receipt file -
+    prior lines are byte-for-byte preserved, never rewritten or truncated."""
+    d = _healthy_tree(tmp_path)
+    path = os.path.join(d, "backup_drill_receipts.jsonl")
+
+    server.run_backup_drill(by="owner", data_dir=d)
+    with open(path, "rb") as f:
+        first_write = f.read()
+    size_after_first = os.path.getsize(path)
+
+    server.run_backup_drill(by="owner", data_dir=d)
+    size_after_second = os.path.getsize(path)
+    assert size_after_second > size_after_first
+
+    with open(path, "rb") as f:
+        after_second = f.read()
+    # The bytes from the first write are an unmodified prefix of the file now.
+    assert after_second.startswith(first_write)
+
+    # A third drill, this time with a corrupted store - receipt still only
+    # appends, even when the drill result itself reports a failure.
+    with open(os.path.join(d, "users.json"), "w") as f:
+        f.write("{broken")
+    server.run_backup_drill(by="owner", data_dir=d)
+    with open(path, "rb") as f:
+        after_third = f.read()
+    assert after_third.startswith(after_second)
+    with open(path) as f:
+        lines = [json.loads(x) for x in f if x.strip()]
+    assert len(lines) == 3
+    for rec in lines:
+        _assert_valid_receipt(rec)
+
+
+def test_receipt_never_contains_secret_marker_across_all_failure_modes(tmp_path):
+    """Belt-and-suspenders on top of the per-scenario leak checks above: plant
+    the marker in several different stores in the same tree, corrupt all of
+    them, and assert it never reaches the persisted receipt file."""
+    d = _healthy_tree(tmp_path)
+    with open(os.path.join(d, "users.json"), "w") as f:
+        f.write('{"pin_hash": "' + SECRET_MARKER + '"')  # truncated
+    with open(os.path.join(d, "erasure_receipts.jsonl"), "a") as f:
+        f.write("not json " + SECRET_MARKER + "\n")
+    with open(os.path.join(d, "future_store.json"), "w") as f:
+        f.write(SECRET_MARKER + " {not json")
+
+    out = server.run_backup_drill(by="owner", data_dir=d)
+    assert out["ok"] is False
+    assert SECRET_MARKER not in json.dumps(out)
+    with open(os.path.join(d, "backup_drill_receipts.jsonl")) as f:
+        contents = f.read()
+    assert SECRET_MARKER not in contents
+    rec = json.loads(contents.splitlines()[-1])
+    _assert_valid_receipt(rec)
+
+
 # ------------------------------------------------ drill fundamentals
 
 def test_healthy_tree_all_pass_and_receipt_written(tmp_path):
