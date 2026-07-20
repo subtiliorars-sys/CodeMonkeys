@@ -53,6 +53,33 @@ fly deploy
 fly open        # opens https://<app>.fly.dev
 ```
 
+## 4b. Health & readiness probes (#174)
+
+The app exposes two unauthenticated probes (no login, no secrets in the body —
+just status, uptime, session count, and boolean checks):
+
+| Probe | Purpose | 200 when | Non-200 behavior |
+|---|---|---|---|
+| `GET /healthz` | **liveness** — is the process alive? | always 200 while the interpreter is up | only a dead/hung process fails it |
+| `GET /readyz` | **readiness** — can the app actually serve? | deps healthy: `/data` writable, ≥10 MB disk free, crypto key usable | `503` + `{"status":"not ready"}` when a required check fails |
+
+`/readyz` also reports `provider_configured` (is at least one model key set?),
+but that one is **warning-only** — a missing key makes `status` `"not ready"`
+yet still returns `200`, so the app stays routable while the owner adds a key
+post-deploy. It never 503s alone.
+
+They're wired for the orchestrators:
+
+- **Fly** (`fly.toml`): both `/healthz` and `/readyz` are `http_service.checks`
+  — Fly uses a 2xx to route traffic to a Machine and routes around a non-2xx
+  (it does **not** restart the Machine on a failed check).
+- **Docker** (`Dockerfile`): `HEALTHCHECK` hits `/healthz`. Docker restarts the
+  container after repeated liveness failures. `/readyz` is intentionally **not**
+  the Docker HEALTHCHECK: a transient 503 (e.g. a momentarily unwritable volume)
+  should steer traffic away, not kill and restart the process.
+
+Local dev: `curl http://localhost:8080/healthz` / `.../readyz`.
+
 ## 5. First login (do this immediately)
 
 1. Click **Register the Owner account** → choose username + PIN (4+ digits).

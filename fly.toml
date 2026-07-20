@@ -23,14 +23,28 @@ primary_region = "dfw"
   auto_start_machines = true
   min_machines_running = 0     # scale-to-zero: ~$0.15/mo when idle
 
-  # Liveness probe hits the unauthenticated /healthz (W1) — leaks nothing
-  # (status/uptime/session-count only). grace_period covers cold boot.
+  # Service-level checks (#174). Fly's http_service.checks are readiness/routing
+  # probes: a 2xx lets the proxy route traffic to this Machine, a non-2xx routes
+  # around it (it does NOT restart the Machine — Docker HEALTHCHECK handles that).
+  #
+  # /healthz (liveness): always 200 while the interpreter is up — guards against
+  #   a hung/stuck process. grace_period covers cold boot.
+  # /readyz (readiness): 200 only when deps are healthy (data dir writable, disk
+  #   space, crypto key usable). A 503 here steers traffic away from a Machine
+  #   that's up but can't serve — e.g. a detached/bad /data volume — without
+  #   killing it, so it can recover instead of restart-looping.
   [[http_service.checks]]
     interval = "30s"
     timeout = "5s"
     grace_period = "10s"
     method = "GET"
     path = "/healthz"
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+    method = "GET"
+    path = "/readyz"
 
 [[vm]]
   memory = "512mb"
