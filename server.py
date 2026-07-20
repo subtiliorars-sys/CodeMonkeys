@@ -527,6 +527,80 @@ def _bootstrap_master_key() -> None:
 
 _bootstrap_master_key()
 
+# --- startup config validation ------------------------------------------------
+
+def _validate_startup_config() -> list[str]:
+    """Validate critical config before app boots. Returns a list of warnings;
+    raises RuntimeError on hard-fail conditions that would corrupt data."""
+    import logging as _vl
+    _lerr = _vl.getLogger(__name__)
+    warnings: list[str] = []
+
+    # 1. DATA_DIR must exist and be writable
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=DATA_DIR, prefix=".startup_")
+        os.close(fd)
+        os.unlink(tmp)
+    except OSError as e:
+        raise RuntimeError(
+            f"DATA_DIR ({DATA_DIR}) is not writable: {e}. "
+            "Set DATA_DIR to a writable path or check permissions."
+        ) from e
+
+    # 2. Validate numeric env vars are within sane ranges
+    _numeric_checks = [
+        ("SESSION_BUDGET_USD", SESSION_BUDGET_USD, 0.01, 1000.0),
+        ("SESSION_BUDGET_MAX_USD", SESSION_BUDGET_MAX_USD, 0.01, 1000.0),
+        ("MEMBER_SESSION_BUDGET_MAX_USD", MEMBER_SESSION_BUDGET_MAX_USD, 0.0, 1000.0),
+    ]
+    for name, value, lo, hi in _numeric_checks:
+        if not (isinstance(value, (int, float)) and not (value != value)):
+            warnings.append(f"{name} is not a valid number (got {value!r}); using default")
+        elif value < lo or value > hi:
+            warnings.append(f"{name}={value} outside [{lo}, {hi}]; verify intent")
+
+    if SPEND_DAILY_CAP_USD != 0.0:
+        if not (isinstance(SPEND_DAILY_CAP_USD, (int, float)) and not (SPEND_DAILY_CAP_USD != SPEND_DAILY_CAP_USD)):
+            warnings.append(f"SPEND_DAILY_CAP_USD is not a valid number (got {SPEND_DAILY_CAP_USD!r}); cap disabled")
+        elif SPEND_DAILY_CAP_USD < 0.01:
+            warnings.append(f"SPEND_DAILY_CAP_USD={SPEND_DAILY_CAP_USD} is very low; verify intent")
+
+    # 3. CM_MASTER_KEY consistency
+    if CM_MASTER_KEY and not _FERNET_AVAILABLE:
+        raise RuntimeError(
+            "CM_MASTER_KEY is set but cryptography package is unavailable; "
+            "pip install cryptography and restart."
+        )
+    if CM_MASTER_KEY and len(CM_MASTER_KEY) < 16:
+        raise RuntimeError(
+            "CM_MASTER_KEY is too short (<16 chars); use a 32+ byte random value."
+        )
+
+    # 4. Ensure critical subdirectories exist
+    for d in (SESSIONS_DIR, WORKSPACE_DIR):
+        try:
+            os.makedirs(d, exist_ok=True)
+        except OSError as e:
+            _lerr.warning("Could not create %s: %s", d, e)
+
+    # 5. Report summary
+    _lerr.info(
+        "Startup config validated — DATA_DIR=%s CM_MASTER_KEY=%s Fernet=%s daily_cap=%s",
+        DATA_DIR,
+        "set" if CM_MASTER_KEY else "unset",
+        "available" if _FERNET_AVAILABLE else "missing",
+        f"${SPEND_DAILY_CAP_USD:.2f}" if SPEND_DAILY_CAP_USD else "none",
+    )
+    return warnings
+
+
+_STARTUP_WARNINGS = _validate_startup_config()
+if _STARTUP_WARNINGS:
+    for _w in _STARTUP_WARNINGS:
+        _log.warning("Startup config: %s", _w)
+
+
 app = FastAPI(title="CodeMonkeys")
 _BOOT_TIME = int(time.time())
 
