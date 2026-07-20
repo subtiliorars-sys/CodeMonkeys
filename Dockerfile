@@ -36,6 +36,16 @@ RUN npx --yes tailwindcss@3.4.17 \
 
 ENV DATA_DIR=/data PORT=8080
 EXPOSE 8080
+
+# Docker liveness probe (#174). Hits the unauthenticated /healthz (process-up
+# signal, always 200 while the interpreter is alive — leaks nothing sensitive).
+# Docker restarts the container after `retries` consecutive failures. Use
+# /readyz separately for routing/readiness, not for container restarts: a 503
+# from /readyz (e.g. a momentarily unwritable /data) should route traffic away,
+# not kill the process. curl is installed above (apt-get line).
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -fsS http://localhost:8080/healthz || exit 1
+
 # --proxy-headers lets uvicorn trust the Fly proxy's X-Forwarded-Proto/Host headers
 # so request.base_url resolves to the real https URL (needed for correct redirect_uri
 # derivation in the OAuth flow). --forwarded-allow-ips is scoped to Fly's private 6PN
