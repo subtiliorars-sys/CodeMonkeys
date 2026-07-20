@@ -2536,7 +2536,7 @@ _BACKUP_DRILL_STORES = (
     ("push_vapid.json",         "PUSH_VAPID_FILE",        "json"),
     ("feedback_status.json",    "FEEDBACK_STATUS_FILE",   "json"),
     ("model_catalog.json",      "MODEL_CATALOG_FILE",     "json"),
-    ("mcp_config.json",         "MCP_CONFIG_FILE",        "json-list"),
+    ("mcp_config.json",         "MCP_CONFIG_FILE",        "enc-json"),
     ("model_config.json",       "MODELS_FILE",            "enc-json"),
     ("mcp_tokens.json",         "MCP_TOKENS_FILE",        "enc-json"),
     ("erasure_receipts.jsonl",  "ERASURE_RECEIPTS_FILE",  "jsonl"),
@@ -4269,13 +4269,27 @@ def _mcp_slug(name: str) -> str:
 
 
 def _load_mcp_config() -> list:
+    """Load the MCP server list (endpoints + OAuth client_secret per server).
+
+    Fail-soft: encrypted + wrong/missing key -> [] + _DECRYPT_FAILED flag,
+    same contract as _load_mcp_tokens.
+    """
     with _MCP_LOCK:
-        return _load_json(MCP_CONFIG_FILE, [])
+        data, needs_migrate = _read_enc_file(MCP_CONFIG_FILE, [])
+        if needs_migrate and data:
+            # Plaintext file + CM_MASTER_KEY now set -> encrypt in place.
+            _write_enc_file(MCP_CONFIG_FILE, data)
+        return data
 
 
 def _save_mcp_config(servers: list):
+    """Write the MCP server list, Fernet-encrypted when CM_MASTER_KEY is set.
+
+    Holds each server OAuth client_secret, so this uses the same enc-json
+    path as mcp_tokens.json rather than plain _save_json.
+    """
     with _MCP_LOCK:
-        _save_json(MCP_CONFIG_FILE, servers)
+        _write_enc_file(MCP_CONFIG_FILE, servers, clear_decrypt_failed=True)
 
 
 # ---- OAuth token store (separate from mcp_config; never returned/logged) ----
@@ -4319,6 +4333,10 @@ def _warm_encrypt_configs() -> None:
         _load_mcp_tokens()
     except Exception:
         _log.exception("mcp token load during at-rest encryption warm-up failed")
+    try:
+        _load_mcp_config()
+    except Exception:
+        _log.exception("mcp config load during at-rest encryption warm-up failed")
 
 
 _warm_encrypt_configs()
@@ -5016,8 +5034,8 @@ def mcp_add(req: McpCreate, _: str = Depends(verify_owner)):
                     "authorize_url": az,
                     "token_url": tz,
                     "client_id": cid,
-                    # client_secret stored in config (plaintext on /data — consistent
-                    # with existing bearer token policy; see SECURITY.md)
+                    # client_secret stored in mcp_config.json, Fernet-encrypted
+                    # at rest when CM_MASTER_KEY is set (see _load/_save_mcp_config)
                     "client_secret": req.oauth.client_secret,
                     "scope": req.oauth.scope.strip(),
                 },
