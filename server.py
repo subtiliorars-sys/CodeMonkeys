@@ -601,7 +601,9 @@ if _STARTUP_WARNINGS:
         _log.warning("Startup config: %s", _w)
 
 
-app = FastAPI(title="CodeMonkeys")
+app = FastAPI(title="CodeMonkeys", version="0.3.0",
+              docs_url="/api/docs", redoc_url="/api/redoc",
+              openapi_url="/api/openapi.json")
 _BOOT_TIME = int(time.time())
 
 
