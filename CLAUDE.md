@@ -26,6 +26,7 @@ Before starting work, check the fleet hub:
 ## Deploy
 - Deploys are manual (`fly deploy`) for now. If auto-deploy-on-push lands, copy
   MeniscusMaximus's `.githooks/` guards first and treat every push as a deploy.
+- Full deploy/rollback/incident-triage checklist: `docs/RUNBOOK.md` (deep-dive fixes in `docs/RECOVERY.md`).
 
 ## Style
 - Token-efficient, surgical changes; match existing idiom (stdlib-first, no new

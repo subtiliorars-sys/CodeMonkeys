@@ -64,6 +64,8 @@ See above. `scripts/deploy.ps1` is now the standard deploy entrypoint.
 
 ## Deploy
 
+Full deploy/rollback/incident-triage steps: **`docs/RUNBOOK.md`**.
+
 ```powershell
 ./scripts/deploy.ps1
 ```
