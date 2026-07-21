@@ -153,6 +153,28 @@ console as it arrives. Off by default; set `STREAM_ENABLED=1` on the server.
 Chunks are redacted server-side before emission (same `_redact` path as
 non-streaming output).
 
+## API docs / OpenAPI schema
+
+FastAPI auto-serves interactive docs from the live route table — no extra
+setup:
+
+- Swagger UI: `http://localhost:8080/docs`
+- ReDoc: `http://localhost:8080/redoc`
+- Raw schema: `http://localhost:8080/openapi.json`
+
+> These are unauthenticated by default (FastAPI's stock behavior — no
+> `docs_url` override in `server.py`), so the full route/schema surface is
+> visible to anyone who can reach the server. Fine for `localhost`-only dev;
+> worth a deliberate decision before this is ever exposed beyond loopback.
+
+To export a versioned schema artifact for a typed-client generator or a
+schema diff between releases:
+
+```powershell
+pwsh scripts/export-openapi.ps1
+# writes dist/openapi/openapi-<version>.json and openapi-latest.json
+```
+
 ```bash
 DATA_DIR=./data STREAM_ENABLED=1 ./.venv/bin/uvicorn server:app --reload --port 8080
 ```
