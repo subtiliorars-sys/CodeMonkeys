@@ -65,6 +65,18 @@ except ImportError:  # biometric login disabled until installed
     Fido2Server = None
 
 try:
+    from opentelemetry import trace as _otel_trace
+    from opentelemetry.sdk.resources import Resource as _OtelResource
+    from opentelemetry.sdk.trace import TracerProvider as _OtelTracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor as _OtelBatchSpanProcessor
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+        OTLPSpanExporter as _OtelOTLPSpanExporter)
+    _OTEL_AVAILABLE = True
+except Exception:
+    _OTEL_AVAILABLE = False
+
+
+try:
     import segno          # pure-python QR; renders the TOTP secret locally
 except ImportError:       # falls back to manual-entry (never to an external CDN)
     segno = None
@@ -529,6 +541,74 @@ _bootstrap_master_key()
 
 app = FastAPI(title="CodeMonkeys")
 _BOOT_TIME = int(time.time())
+
+# #176 - OpenTelemetry request tracing. Export is OFF by default (opt-in via
+# OTEL_EXPORTER_OTLP_ENDPOINT) - unset, spans are still created (tracer API
+# needs a provider to exist so start_as_current_span works uniformly) but
+# never leave the process: no processor is attached, so there is nowhere for
+# a span to go. If the opentelemetry packages fail to import for any reason
+# (e.g. a packaging issue in a PyInstaller build), tracing no-ops entirely -
+# this must never be able to take the server down.
+_OTEL_TRACER = None
+if _OTEL_AVAILABLE:
+    try:
+        _otel_provider = _OtelTracerProvider(
+            resource=_OtelResource.create({"service.name": "codemonkeys"}))
+        _otel_endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+        if _otel_endpoint:
+            _otel_provider.add_span_processor(_OtelBatchSpanProcessor(
+                _OtelOTLPSpanExporter(endpoint=_otel_endpoint)))
+        _otel_trace.set_tracer_provider(_otel_provider)
+        _OTEL_TRACER = _otel_trace.get_tracer("codemonkeys.server")
+    except Exception:
+        _log.exception("OpenTelemetry setup failed - tracing disabled this boot")
+        _OTEL_TRACER = None
+
+
+@app.middleware("http")
+async def _trace_request(request: Request, call_next):
+    """Wraps every request in a span (when tracing is available) and stamps
+    an X-Request-ID on the response either way - a correlation id for
+    matching a support report / log line to a specific request, independent
+    of whether OTel export is configured.
+
+    call_next(request) is invoked EXACTLY ONCE no matter what - a tracing
+    failure must never cause the request to run twice (e.g. a double side
+    effect) or be swallowed. Only span setup/teardown is guarded; call_next's
+    own exceptions propagate normally to FastAPI's handling."""
+    req_id = uuid.uuid4().hex[:16]
+    span_cm, span = None, None
+    if _OTEL_TRACER is not None:
+        try:
+            span_cm = _OTEL_TRACER.start_as_current_span(
+                f"{request.method} {request.url.path}")
+            span = span_cm.__enter__()
+            # Path only - deliberately no query string (may carry secrets in
+            # some client-side flows) and no body.
+            span.set_attribute("http.method", request.method)
+            span.set_attribute("http.route", request.url.path)
+            span.set_attribute("request.id", req_id)
+        except Exception:
+            _log.exception("Tracing span setup failed - serving untraced")
+            span_cm, span = None, None
+
+    response = None
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        if span is not None and response is not None:
+            try:
+                span.set_attribute("http.status_code", response.status_code)
+            except Exception:
+                pass
+        if span_cm is not None:
+            try:
+                span_cm.__exit__(None, None, None)
+            except Exception:
+                _log.exception("Tracing span teardown failed")
+        if response is not None:
+            response.headers["X-Request-ID"] = req_id
 
 
 @app.get("/healthz")

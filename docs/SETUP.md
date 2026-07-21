@@ -153,6 +153,30 @@ console as it arrives. Off by default; set `STREAM_ENABLED=1` on the server.
 Chunks are redacted server-side before emission (same `_redact` path as
 non-streaming output).
 
+## Request tracing (OpenTelemetry)
+
+Every request gets an `X-Request-ID` response header (a short correlation id)
+regardless of anything below - useful for matching a support report or a log
+line to a specific request with zero setup.
+
+Full OpenTelemetry spans are created for every request but **export is off
+by default** - spans exist in-process only until you opt in:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces
+```
+
+Spans carry `http.method`, `http.route` (path only — deliberately no query
+string or body, which can carry secrets), `http.status_code`, and
+`request.id` (the same value as the `X-Request-ID` header, for correlating a
+trace back to a specific request/response pair).
+
+If the `opentelemetry-*` packages fail to import for any reason (e.g. a
+packaging issue), tracing silently no-ops — `server.py`'s import is
+try/except-guarded and this can never take the server down. A broken/
+unreachable OTLP endpoint likewise can never block a request: the exporter's
+own async batching/retry happens off the request path.
+
 ```bash
 DATA_DIR=./data STREAM_ENABLED=1 ./.venv/bin/uvicorn server:app --reload --port 8080
 ```
