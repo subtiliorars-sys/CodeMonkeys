@@ -5,6 +5,13 @@ on:
   issues:
     types: [assigned, unassigned]
 
+# Default GITHUB_TOKEN is read-only on pull-requests/issues, which made every
+# `gh pr edit --add-label` / `gh issue edit --add-label` call below fail with
+# a permissions error on every single run. Grant exactly what the 4 steps use.
+permissions:
+  pull-requests: write
+  issues: write
+
 jobs:
   label:
     runs-on: ubuntu-latest
