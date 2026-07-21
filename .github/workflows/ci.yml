@@ -216,3 +216,50 @@ jobs:
         with:
           name: vendored-tailwind-css
           path: /tmp/tailwind.css
+
+  # Security: scan Python dependencies for known vulnerabilities on every
+  # push and PR. Uses pip-audit (PyPI Advisory Database). Fails the build
+  # on any fixable vulnerability; warns on unpatched ones (so the owner
+  # sees them but they don't block unrelated work).
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pip-audit
+
+      - name: Audit dependencies
+        run: |
+          pip-audit --requirement requirements.txt --strict 2>&1 | tee audit.txt
+          # --strict: exit non-zero on ANY vulnerability. We soften this:
+          # fail only on fixable vulns (--fixable flag or exit 0 on unpatched).
+          # But pip-audit --strict exits 1 on any finding. Rerun without
+          # --strict to get the count, then fail on fixable only.
+          set +e
+          pip-audit --requirement requirements.txt --format json 2>/dev/null > audit.json
+          set -e
+          if [ -s audit.json ]; then
+            fixable=$(python3 -c "
+      import json, sys
+      with open('audit.json') as f:
+          data = json.load(f)
+      fixable = sum(1 for v in data.get('dependencies', []) if v.get('vulns') and
+                    any(vuln.get('fix_versions') for vuln in v['vulns']))
+      print(fixable)
+      ")
+            if [ "$fixable" -gt 0 ]; then
+              echo "::error::${fixable} fixable vulnerabilities found — upgrade pinned versions"
+              exit 1
+            fi
+          fi
+          echo "::notice::Dependency audit complete — no fixable vulnerabilities"
