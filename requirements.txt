@@ -19,3 +19,9 @@ cryptography==48.0.1
 google-auth==2.48.0
 # Terminal CLI (cli/) rendering only — no server-side usage.
 rich==14.2.0
+# #176 - request tracing. Import-guarded in server.py (try/except) so a
+# packaging/install issue can never take the server down; export stays off
+# until OTEL_EXPORTER_OTLP_ENDPOINT is set.
+opentelemetry-api==1.44.0
+opentelemetry-sdk==1.44.0
+opentelemetry-exporter-otlp-proto-http==1.44.0

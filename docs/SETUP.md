@@ -155,26 +155,29 @@ non-streaming output).
 
 ## API docs / OpenAPI schema
 
-FastAPI auto-serves interactive docs from the live route table — no extra
-setup:
+FastAPI auto-serves interactive docs from the live route table — no extra setup:
 
-- Swagger UI: `http://localhost:8080/docs`
-- ReDoc: `http://localhost:8080/redoc`
-- Raw schema: `http://localhost:8080/openapi.json`
+- **Swagger UI:** `/api/docs`
+- **ReDoc:** `/api/redoc`
+- **Raw schema:** `/api/openapi.json`
 
-> These are unauthenticated by default (FastAPI's stock behavior — no
-> `docs_url` override in `server.py`), so the full route/schema surface is
-> visible to anyone who can reach the server. Fine for `localhost`-only dev;
-> worth a deliberate decision before this is ever exposed beyond loopback.
-
-To export a versioned schema artifact for a typed-client generator or a
-schema diff between releases:
+To export a versioned schema artifact:
 
 ```powershell
 pwsh scripts/export-openapi.ps1
-# writes dist/openapi/openapi-<version>.json and openapi-latest.json
 ```
 
+## Request tracing (OpenTelemetry)
+
+Every request gets an `X-Request-ID` response header regardless of anything below.
+Full OpenTelemetry spans are created for every request but **export is off by default**:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318/v1/traces
+```
+
+Spans carry `http.method`, `http.route`, `http.status_code`, and `request.id`.
+If the `opentelemetry-*` packages fail to import, tracing silently no-ops.
 ```bash
 DATA_DIR=./data STREAM_ENABLED=1 ./.venv/bin/uvicorn server:app --reload --port 8080
 ```
