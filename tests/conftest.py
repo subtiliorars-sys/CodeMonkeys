@@ -11,6 +11,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import warnings
+
+import pytest
 
 os.environ.setdefault("DATA_DIR", tempfile.mkdtemp(prefix="cm_test_"))
 os.environ.setdefault("FLEET_TOKEN", "fleet-test-token-123456")   # ≥16 chars
@@ -47,4 +51,51 @@ IS_WINDOWS = sys.platform == "win32"
 
 # Re-export for test modules that need them.
 pytest_helpers = {"BASH_AVAILABLE": BASH_AVAILABLE, "IS_WINDOWS": IS_WINDOWS}
+
+
+@pytest.fixture(autouse=True)
+def _join_background_threads():
+    """CI issue #212: join every real `threading.Thread` a test starts before
+    the test returns, so none can outlive it.
+
+    server.py's route handlers (e.g. `/api/specs/{slug}/execute`,
+    `/api/sessions/{sid}/message`, `/api/sessions/{sid}/resume`) dispatch
+    `run_session_message` -> `agent_loop` on a fire-and-forget daemon thread
+    to answer the HTTP request immediately. A test that hits one of these
+    routes without neutralizing the thread (some tests substitute their own
+    inert Thread stand-in, which is unaffected by this fixture since it isn't
+    a `threading.Thread` instance) would otherwise return to pytest while
+    that thread keeps running in the background, mutating shared
+    module-level state in server.py (`_DECRYPT_FAILED`, model config,
+    provider cooldown dicts, ...) while a LATER, unrelated test is running.
+    That produced a different, unpredictable test failure on each CI run.
+
+    This fixture wraps `threading.Thread.start` for the duration of each
+    test, records every thread actually started, and joins them all (with a
+    timeout, so a genuinely hung thread doesn't wedge the whole suite) at
+    teardown -- before the next test can begin.
+    """
+    started = []
+    real_start = threading.Thread.start
+
+    def _tracking_start(self, *args, **kwargs):
+        started.append(self)
+        return real_start(self, *args, **kwargs)
+
+    threading.Thread.start = _tracking_start
+    try:
+        yield
+    finally:
+        threading.Thread.start = real_start
+        for t in started:
+            if t is threading.main_thread() or not t.is_alive():
+                continue
+            t.join(timeout=5)
+            if t.is_alive():
+                warnings.warn(
+                    f"background thread {t.name!r} was still running 5s "
+                    "after its test finished; it may leak shared server.py "
+                    "state into a later test (see issue #212)",
+                    stacklevel=1,
+                )
 
