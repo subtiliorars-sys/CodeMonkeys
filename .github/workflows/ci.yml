@@ -240,23 +240,11 @@ jobs:
 
       - name: Audit dependencies
         run: |
-          pip-audit --requirement requirements.txt --strict 2>&1 | tee audit.txt
-          # --strict: exit non-zero on ANY vulnerability. We soften this:
-          # fail only on fixable vulns (--fixable flag or exit 0 on unpatched).
-          # But pip-audit --strict exits 1 on any finding. Rerun without
-          # --strict to get the count, then fail on fixable only.
           set +e
           pip-audit --requirement requirements.txt --format json 2>/dev/null > audit.json
           set -e
           if [ -s audit.json ]; then
-            fixable=$(python3 -c "
-      import json, sys
-      with open('audit.json') as f:
-          data = json.load(f)
-      fixable = sum(1 for v in data.get('dependencies', []) if v.get('vulns') and
-                    any(vuln.get('fix_versions') for vuln in v['vulns']))
-      print(fixable)
-      ")
+            fixable=$(python3 .github/scripts/count_fixable_vulns.py audit.json)
             if [ "$fixable" -gt 0 ]; then
               echo "::error::${fixable} fixable vulnerabilities found — upgrade pinned versions"
               exit 1
