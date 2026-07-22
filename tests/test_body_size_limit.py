@@ -26,8 +26,14 @@ MAX_BYTES = server.MAX_REQUEST_BODY_BYTES
 
 def _oversized_body() -> bytes:
     """Return a JSON payload just over the limit."""
-    # Smallest possible valid JSON that exceeds the cap: a string of null bytes
-    payload = '{"x":"' + "x" * (MAX_BYTES - 8) + '"}'
+    # '{"x":"' (6 bytes) + filler + '"}' (2 bytes) = 8 fixed bytes. The
+    # original `MAX_BYTES - 8` filler landed the total at EXACTLY MAX_BYTES,
+    # not over it - the middleware's `> MAX_REQUEST_BODY_BYTES` check (both
+    # the Content-Length fast path and the streaming fallback) correctly
+    # let an exactly-at-the-limit body through, so it fell through to the
+    # real (auth-gated) route and got 401 instead of 413. +1 byte of filler
+    # makes this genuinely exceed the cap, matching the docstring's intent.
+    payload = '{"x":"' + "x" * (MAX_BYTES - 7) + '"}'
     return payload.encode()
 
 
