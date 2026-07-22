@@ -1,4 +1,4 @@
-# CodeMonkeys — Setup (zero to coding, step by step)
+﻿# CodeMonkeys â€” Setup (zero to coding, step by step)
 
 Written so a fresh person on a Chromebook can deploy from nothing. Commands run
 in the Crostini Linux terminal unless noted.
@@ -11,7 +11,7 @@ curl -L https://fly.io/install.sh | sh
 # add to PATH if the installer tells you to, then:
 fly auth login        # opens a browser to log in
 
-# gh (GitHub CLI) — usually already installed; if not:
+# gh (GitHub CLI) â€” usually already installed; if not:
 sudo apt install gh
 gh auth login
 ```
@@ -20,10 +20,10 @@ gh auth login
 
 The agents clone and push your repos with a token. Make a **fine-grained PAT**:
 
-1. github.com → Settings → Developer settings → Fine-grained tokens → *Generate new token*
-2. Repository access: **Only select repositories** → pick the repos the agents may touch
-3. Permissions → Repository → **Contents: Read and write**
-4. Copy the token (starts `github_pat_…`). You'll paste it in step 3.
+1. github.com â†’ Settings â†’ Developer settings â†’ Fine-grained tokens â†’ *Generate new token*
+2. Repository access: **Only select repositories** â†’ pick the repos the agents may touch
+3. Permissions â†’ Repository â†’ **Contents: Read and write**
+4. Copy the token (starts `github_pat_â€¦`). You'll paste it in step 3.
 
 ## 2. Launch the Fly app (no deploy yet)
 
@@ -43,8 +43,8 @@ fly secrets set GITHUB_TOKEN=github_pat_XXXX
 fly secrets set SESSION_BUDGET_USD=2.00
 ```
 
-Model API keys do **NOT** go in Fly secrets — you paste them later in the UI
-(⚙ Models & keys); they're stored on the /data volume.
+Model API keys do **NOT** go in Fly secrets â€” you paste them later in the UI
+(âš™ Models & keys); they're stored on the /data volume.
 
 ## 4. Deploy
 
@@ -55,23 +55,23 @@ fly open        # opens https://<app>.fly.dev
 
 ## 4b. Health & readiness probes (#174)
 
-The app exposes two unauthenticated probes (no login, no secrets in the body —
+The app exposes two unauthenticated probes (no login, no secrets in the body â€”
 just status, uptime, session count, and boolean checks):
 
 | Probe | Purpose | 200 when | Non-200 behavior |
 |---|---|---|---|
-| `GET /healthz` | **liveness** — is the process alive? | always 200 while the interpreter is up | only a dead/hung process fails it |
-| `GET /readyz` | **readiness** — can the app actually serve? | deps healthy: `/data` writable, ≥10 MB disk free, crypto key usable | `503` + `{"status":"not ready"}` when a required check fails |
+| `GET /healthz` | **liveness** â€” is the process alive? | always 200 while the interpreter is up | only a dead/hung process fails it |
+| `GET /readyz` | **readiness** â€” can the app actually serve? | deps healthy: `/data` writable, â‰¥10 MB disk free, crypto key usable | `503` + `{"status":"not ready"}` when a required check fails |
 
 `/readyz` also reports `provider_configured` (is at least one model key set?),
-but that one is **warning-only** — a missing key makes `status` `"not ready"`
+but that one is **warning-only** â€” a missing key makes `status` `"not ready"`
 yet still returns `200`, so the app stays routable while the owner adds a key
 post-deploy. It never 503s alone.
 
 They're wired for the orchestrators:
 
 - **Fly** (`fly.toml`): both `/healthz` and `/readyz` are `http_service.checks`
-  — Fly uses a 2xx to route traffic to a Machine and routes around a non-2xx
+  â€” Fly uses a 2xx to route traffic to a Machine and routes around a non-2xx
   (it does **not** restart the Machine on a failed check).
 - **Docker** (`Dockerfile`): `HEALTHCHECK` hits `/healthz`. Docker restarts the
   container after repeated liveness failures. `/readyz` is intentionally **not**
@@ -82,113 +82,81 @@ Local dev: `curl http://localhost:8080/healthz` / `.../readyz`.
 
 ## 5. First login (do this immediately)
 
-1. Click **Register the Owner account** → choose username + PIN (4+ digits).
+1. Click **Register the Owner account** â†’ choose username + PIN (4+ digits).
 2. A QR code appears. **Scan it into Google Authenticator / Aegis / 1Password
    NOW.** You cannot log in without it. (Locked out anyway? See Troubleshooting.)
-3. Click *I've scanned it — enter console*.
+3. Click *I've scanned it â€” enter console*.
 
 The first account becomes **Owner**; registration closes automatically after it.
 
 ## 6. Add a model key (pick one or more)
 
-Open **⚙ Models & keys**. Presets exist for all of these — click *edit*, paste
-the key, *Save provider*, then ★ to make one the main model.
+Open **âš™ Models & keys**. Presets exist for all of these â€” click *edit*, paste
+the key, *Save provider*, then â˜… to make one the main model.
 
 | Provider | Get a key | Cost |
 |---|---|---|
-| **Gemini** (`gemini-flash`) | aistudio.google.com → *Get API key* | Free tier ~1,500 req/day on Flash |
-| **OpenRouter** (`openrouter-free`) | openrouter.ai → Keys | $0 models (Qwen3 Coder etc.), no card needed |
+| **Gemini** (`gemini-flash`) | aistudio.google.com â†’ *Get API key* | Free tier ~1,500 req/day on Flash |
+| **OpenRouter** (`openrouter-free`) | openrouter.ai â†’ Keys | $0 models (Qwen3 Coder etc.), no card needed |
 | **Anthropic** (`claude-sonnet`/`claude-opus`) | console.anthropic.com | paid |
 
-Recommended: `gemini-flash` as main (★), `openrouter-free` enabled as t0,
+Recommended: `gemini-flash` as main (â˜…), `openrouter-free` enabled as t0,
 Claude Sonnet/Opus enabled if you have credits (subagent tiers will use them
 only where doctrine demands).
 
 ## 6b. Optional: add a passkey / biometric login
 
-Once logged in, sidebar → **👆 Add passkey / biometric** → approve on your device
+Once logged in, sidebar â†’ **ðŸ‘† Add passkey / biometric** â†’ approve on your device
 (fingerprint, face, or device PIN). After that, the login screen's
 **Sign in with biometrics** button works on that device: enter username, tap,
-done — no PIN or authenticator code needed (the device's biometric check is the
+done â€” no PIN or authenticator code needed (the device's biometric check is the
 second factor). Register a passkey on each device you use.
 
 ## 6c. Optional: invite your developers (including Android friends)
 
-**Terminal (recommended for Android):** see **`docs/FRIENDS_ANDROID.md`** — run
+**Terminal (recommended for Android):** see **`docs/FRIENDS_ANDROID.md`** â€” run
 `python3 scripts/friend_invite.py --base-url https://<your-app>.fly.dev` for a
 QR + copy-paste text message. Friends open **`/m`** (mobile-lite: chat, sessions,
 approvals only), scan authenticator, add passkey, **Add to Home screen**.
 
-**UI:** Sidebar → **👥 Invite developers** (Owner only). Type a username (or
-leave blank for an auto one) → **Create invite**. Hand the username out-of-band
+**UI:** Sidebar â†’ **ðŸ‘¥ Invite developers** (Owner only). Type a username (or
+leave blank for an auto one) â†’ **Create invite**. Hand the username out-of-band
 (Signal, in person).
 
-First login: username only (leave MFA blank) → setup walks them through
+First login: username only (leave MFA blank) â†’ setup walks them through
 authenticator + optional passkey. After that they're a **Member**: console,
 sessions, and their own workspace folder, but **cannot** see/edit your API keys
 or invite others. Remove anyone anytime from the same panel.
 
-⚠️ Members share the server's GitHub token and can run agent commands — invite
+âš ï¸ Members share the server's GitHub token and can run agent commands â€” invite
 only people you'd trust with that access.
 
 ## 7. Clone a repo and code
 
-1. Sidebar → Repos → paste `https://github.com/you/yourrepo` → **clone**
-2. Type what you want built (or hit 🎤 and say it). Enter to send.
+1. Sidebar â†’ Repos â†’ paste `https://github.com/you/yourrepo` â†’ **clone**
+2. Type what you want built (or hit ðŸŽ¤ and say it). Enter to send.
 3. Watch the agents work. When the agent wants to `git push` you'll get a gold
-   **APPROVAL REQUIRED** card — read the command, click APPROVE or DENY.
+   **APPROVAL REQUIRED** card â€” read the command, click APPROVE or DENY.
 
 ## Local development
 
 ```bash
 cd ~/CodeMonkeys
 python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
-./scripts/build-css.sh   # required once — builds static/forge/tailwind.css (gitignored)
+./scripts/build-css.sh   # required once â€” builds static/forge/tailwind.css (gitignored)
 DATA_DIR=./data ./.venv/bin/uvicorn server:app --reload --port 8080
 # browse http://localhost:8080
 ```
 
-Optional: enable live token streaming (N5) — partial model text appears in the
+Optional: enable live token streaming (N5) â€” partial model text appears in the
 console as it arrives. Off by default; set `STREAM_ENABLED=1` on the server.
 Chunks are redacted server-side before emission (same `_redact` path as
 non-streaming output).
 
 ## API docs / OpenAPI schema
 
-FastAPI auto-serves interactive docs from the live route table — no extra
-setup:
+FastAPI auto-serves interactive docs via /api/docs (Swagger), /api/redoc, and /api/openapi.json.
 
-- Swagger UI: `http://localhost:8080/docs`
-- ReDoc: `http://localhost:8080/redoc`
-- Raw schema: `http://localhost:8080/openapi.json`
+## Feature flags
 
-> These are unauthenticated by default (FastAPI's stock behavior — no
-> `docs_url` override in `server.py`), so the full route/schema surface is
-> visible to anyone who can reach the server. Fine for `localhost`-only dev;
-> worth a deliberate decision before this is ever exposed beyond loopback.
-
-To export a versioned schema artifact for a typed-client generator or a
-schema diff between releases:
-
-```powershell
-pwsh scripts/export-openapi.ps1
-# writes dist/openapi/openapi-<version>.json and openapi-latest.json
-```
-
-```bash
-DATA_DIR=./data STREAM_ENABLED=1 ./.venv/bin/uvicorn server:app --reload --port 8080
-```
-
-## Troubleshooting
-
-- **Locked out (lost authenticator):**
-  `fly ssh console -a <app>` then
-  `python /app/scripts/reset_access.py reset-mfa <username>` — it prints a new
-  otpauth URI; turn it into a QR at any QR generator or enter the secret manually.
-- **"No enabled model provider":** open ⚙ Models & keys, make sure at least one
-  provider has a key AND is enabled, and ★ a main model.
-- **Budget halt:** sessions stop at `SESSION_BUDGET_USD` (default $1). Raise the
-  secret and `fly deploy`, or start a new session.
-- **App asleep:** `min_machines_running = 0` means first request takes a few
-  seconds to wake the machine. That's the cheap setting working as intended.
-- **Logs:** `fly logs -a <app>`.
+Risky features ship disabled-by-default behind config-backed toggles (see docs/FEATURE_FLAGS.md).
