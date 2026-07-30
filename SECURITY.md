@@ -35,15 +35,10 @@ keep that radius away from everything else.
   bounded across *all* usernames it tries, and a system-wide global ceiling
   (`LOGIN_GLOBAL_MAX_FAILS`) as a circuit-breaker for distributed guessing. The
   state is **persisted** (`data/login_throttle.json`, write-through) so locks and
-  counters survive a restart. Invited (`must_reset`) accounts log in
-  username-only (owner-ratified 2026-07-17, replacing the C-2 setup PIN; MFA
-  not yet enrolled) — the throttle bounds username guessing and is deliberately
-  not cleared until `/api/account/setup` completes. The token issued to a
-  pending account is scope-limited: `verify_token` rejects `must_reset`
-  accounts, so it only works for `/api/account/setup`. Residual (accepted):
-  someone who learns a pending invite username before its owner first logs in
-  can claim that account; auto-generated `dev-<hex>` names keep the window
-  unguessable. See "Known limitations" for tunables and residuals.
+  counters survive a restart. Invited (`must_reset`) accounts log in PIN-only
+  (MFA not yet enrolled) — the throttle is their sole barrier and is deliberately
+  not cleared until `/api/account/setup` completes. See "Known limitations" for
+  tunables and residuals.
 - Passkeys are self-service revocable: `GET /api/webauthn/credentials` lists the
   caller's own passkeys (handles only — no key material) and `DELETE
   /api/webauthn/credentials/{cred_id}` removes one. The filter only ever touches
@@ -154,22 +149,6 @@ keep that radius away from everything else.
   org-level consent, absent → allowed; explicit revocation still always
   blocks). An unrecognised value falls back to `explicit`, never open. See
   issue #67 "Owner-reserved" for the ratification.
-- **Frontend** (`static/forge/`): a just-in-time modal (`#modal-egress-consent`
-  in `index.html`, driven by `egress-consent.js`) checks `GET
-  /api/me/consent/egress` before the one frontend call that can trigger
-  `call_model` (`POST /api/sessions/{sid}/message` — the choke point shared by
-  the main app, workbench, and Agents Hub via `window.api`) and blocks with a
-  plain-language grant/decline prompt when consent isn't already granted. The
-  standalone terminal page (`terminal.html`/`terminal.js`, which has no shared
-  DOM with the main app) reuses the same `egress-consent.js` module but falls
-  back to a blocking `confirm()` prompt plus a `/consent [grant|revoke]`
-  command, since it has no modal markup of its own. Settings → Account has a
-  toggle to revoke (or re-grant) consent at any time, calling the same
-  `POST /api/me/consent/egress` endpoint. A mid-run `EgressConsentError` (e.g.
-  consent revoked from another tab while a run is in flight) is detected by
-  its fixed message prefix and rendered with its own "Grant cloud-egress
-  access" action instead of a generic error. None of this changes the backend
-  gate itself — it's UI in front of an already fail-closed `_require_egress_consent`.
 
 ## MCP connectors
 
