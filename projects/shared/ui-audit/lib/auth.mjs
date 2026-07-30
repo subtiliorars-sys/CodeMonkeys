@@ -1,8 +1,8 @@
 /** Auth helpers for server-backed apps (dev/audit accounts only). */
 
-export async function loginCodeMonkeys(page, base, { user = "ui-audit", pin = "9999", mfa = "" }) {
+export async function loginCodeMonkeys(page, base, { user = "ui-audit", mfa = "" }) {
   const res = await page.request.post(`${base}/api/login`, {
-    data: { username: user, pin, mfa_code: mfa },
+    data: { username: user, mfa_code: mfa },
   });
   if (!res.ok()) throw new Error(`CodeMonkeys login ${res.status()}: ${await res.text()}`);
   const data = await res.json();
