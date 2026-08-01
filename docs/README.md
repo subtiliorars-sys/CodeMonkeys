@@ -17,6 +17,8 @@ Start on demand. Forge UI work: read **[FORGE_HYGIENE.md](FORGE_HYGIENE.md)** fi
 |-----|------------|
 | [FORGE_HYGIENE.md](FORGE_HYGIENE.md) | **Maintainer checklist** — paths, Tailwind build, streaming flags, verify |
 | [TERMINAL_DESIGN.md](TERMINAL_DESIGN.md) | Web terminal (default OFF) |
+| [../SECURITY.md](../SECURITY.md) | Security canon — owner-gated |
+| `static/forge/swarm_viz.html` | Colony swarm visualizer — canvas ring + tree modes |
 | design/[N12-model-catalog.md](design/N12-model-catalog.md) | Model catalog spec |
 | design/[N8-context-compaction.md](design/N8-context-compaction.md) | Context compaction |
 | design/[PER_USER_ISOLATION.md](design/PER_USER_ISOLATION.md) | Per-user isolation direction |

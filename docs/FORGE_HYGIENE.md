@@ -17,6 +17,7 @@ automation PR that touches streaming or frontend assets.
 | `agents-hub.js` | Agents hub (sessions, automations, personas, rules) |
 | `terminal.html`, `terminal.js` | Web terminal (gated OFF by default) |
 | `swarm.html`, `swarm.js` | Live swarm view |
+| `swarm_viz.html`, `swarm-viz.js` | Colony standalone visualizer (canvas, ring + tree modes) |
 | `feedback.js`, `field-report.js`, `three-card-triage.*` | Field Report / triage |
 | `push.js`, `pwa.js`, `sw.js`, `manifest.webmanifest` | PWA + push |
 | `tailwind.input.css` | Tailwind source directives |
