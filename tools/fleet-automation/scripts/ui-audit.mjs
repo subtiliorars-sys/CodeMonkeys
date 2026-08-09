@@ -174,9 +174,30 @@ async function auditProfile(browser, profile) {
   const p = profile.name;
   const vh = profile.height;
 
+  // pageerror fires ONLY on uncaught JS exceptions in the page — the class of bug
+  // where a script load-order error (#186) silently kills event-handler wiring.
+  // It does NOT fire on console.warn/console.log/console.error, so known-safe
+  // console warnings never produce false positives.
+  let pageErrorSeen = false;
+  let currentScenario = "initial-load";
+  page.on("pageerror", (err) => {
+    pageErrorSeen = true;
+    const msg = String(err && err.message ? err.message : err);
+    logIssue(p, "pageerror", `${currentScenario}: ${msg}`);
+  });
+  // Fail-fast: once the page's JS state is untrusted, stop the remaining scenarios
+  // for this profile instead of clicking around a broken page. main() continues to
+  // the next profile; the pageerror is already captured in the issues report above.
+  const abortIfPageError = () => {
+    if (pageErrorSeen) console.warn(`[${p}] pageerror during "${currentScenario}" — aborting profile (fail-fast)`);
+    return pageErrorSeen;
+  };
+
   await page.goto(`${base}/`, { waitUntil: "domcontentloaded" });
   await page.evaluate(() => localStorage.clear());
   await page.reload({ waitUntil: "domcontentloaded" });
+  if (abortIfPageError()) { await ctx.close(); return; }
+  currentScenario = "login-layout";
 
   // Login layout
   iteration++;
@@ -187,11 +208,13 @@ async function auditProfile(browser, profile) {
   await shot(page, resolve(shotDir, `${p}-login.png`));
 
   await enterMainShell(page);
+  currentScenario = "main-idle";
   await checkMainRegions(page, p, vh, "main-idle");
   await shot(page, resolve(shotDir, `${p}-main-idle.png`));
 
   // Composer + simulated keyboard (mobile only — desktop unaffected in prod)
   if (profile.isMobile) {
+    currentScenario = "composer-focus";
     await page.locator("#msg").focus();
     await page.waitForTimeout(120);
     await checkMainRegions(page, p, vh, "composer-focus");
@@ -212,6 +235,7 @@ async function auditProfile(browser, profile) {
 
   // Mobile-lite route
   if (profile.isMobile) {
+    currentScenario = "route-/m";
     await page.goto(`${base}/m`, { waitUntil: "domcontentloaded" });
     await enterMainShell(page);
     await checkMainRegions(page, p, vh, "route-/m");
@@ -221,6 +245,8 @@ async function auditProfile(browser, profile) {
     await closeOverlays(page);
   }
 
+  if (abortIfPageError()) { await ctx.close(); return; }
+  currentScenario = "button-sweep";
   // Button sweep
   await page.goto(`${base}/`, { waitUntil: "domcontentloaded" });
   await enterMainShell(page);
@@ -232,11 +258,14 @@ async function auditProfile(browser, profile) {
     "#btn-new-session", "#wb-toggle-fleet", "#wb-toggle-term", "#fb-fab",
   ];
   for (const sel of targets) {
+    if (pageErrorSeen) break;
+    currentScenario = `click:${sel}`;
     await safeClick(page, p, sel, sel);
     await checkMainRegions(page, p, vh, `click-${sel}`);
     await closeOverlays(page);
   }
 
+  if (abortIfPageError()) { await ctx.close(); return; }
   // Owner modals (direct open — no API)
   const modals = [
     ["#modal-models", "#modal-close"],
@@ -244,6 +273,8 @@ async function auditProfile(browser, profile) {
     ["#modal-corps", "#corps-close"],
   ];
   for (const [modal, close] of modals) {
+    if (pageErrorSeen) break;
+    currentScenario = `modal:${modal}`;
     iteration++;
     await page.evaluate((m) => document.querySelector(m)?.classList.remove("hidden"), modal);
     await page.waitForTimeout(80);
@@ -255,11 +286,15 @@ async function auditProfile(browser, profile) {
     await page.locator(close).click().catch(() => {});
   }
 
+  if (abortIfPageError()) { await ctx.close(); return; }
+  currentScenario = "stress";
   // Stress focus cycles (~150 iterations)
   const stress = ["#msg", "#session-filter", "#btn-mobile-menu", "#btn-send", "#btn-settings", "#landing-new-session"];
   for (let i = 0; i < 50; i++) {
+    if (pageErrorSeen) break;
     iteration++;
     const sel = stress[i % stress.length];
+    currentScenario = `stress:${sel}`;
     const loc = page.locator(sel).first();
     if (await loc.isVisible().catch(() => false)) {
       if (sel === "#msg") {
