@@ -1,0 +1,32 @@
+﻿#!/usr/bin/env bash
+#
+# pre-commit.d/15-malice-guard — BLOCKING (agent-corps git-guards kit).
+# M-3: blocks staged code that looks like invasive / behavioral malware shapes —
+# shell-out from app code, persistence tricks (rm -rf), exfil sockets, obfuscated
+# eval. This repo legit .mjs/.js/.py never use child_process/exec/eval; a match
+# is almost always a mistake or an injection attempt. Universal rule, safe here.
+# Bypass intentionally (rare, audited): git commit --no-verify
+#
+set -uo pipefail
+
+# High-signal invasive patterns (grep -E). Realistic code forms only, so no
+# false positives on existing ui-audit.mjs/cli/server.py.
+MALICE_PATTERNS='child_process\.(exec|execSync|spawnSync)|execSync\(|spawn\(|Shell\("bash"\)|Shell\("sh"\)|eval\(|new Function\(|rm -rf |/dev/tcp/|nc -e|/bin/sh -i|atob\(|Buffer\.from\([^)]*base64|fromCharCode|powershell.*-enc|cmd\.exe|/c (del|copy|move|curl|powershell)'
+
+# Only inspect lines being ADDED (ignore +++ headers + context). Mirrors the
+# exact idiom from 10-secret-scan for consistency.
+added_lines="$(git diff --cached --diff-filter=ACM -U0 | grep '^+' | grep -v '^+++' || true)"
+hits="$(printf '%s\n' "$added_lines" | grep -E "$MALICE_PATTERNS" || true)"
+
+if [ -n "$hits" ]; then
+  echo ""
+  echo "🚫  COMMIT BLOCKED — staged source contains an invasive / suspicious pattern:"
+  echo ""
+  printf '%s\n' "$hits" | sed -E 's/(github_pat_|ghp_|gho_|ghs_|AIza[0-9A-Za-z_-]{30,}|sk-[A-Za-z0-9_-]{20,})/***REDACTED***/g' | head -40
+  echo ""
+  echo "Review the highlighted line(s). If audited and intentional:"
+  echo "    git commit --no-verify"
+  echo ""
+  exit 1
+fi
+exit 0
