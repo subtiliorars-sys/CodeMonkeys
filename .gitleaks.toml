@@ -1,0 +1,17 @@
+# Allowlist for secrets detection.
+# This repo legitimately stores example values (`.env.example`, test fixtures)
+# and references GitHub infrastructure tokens in workflow templates. List those
+# here so gitleaks does not fail CI on known-safe content.
+title = "gitleaks config"
+[allowlist]
+  description = "Known-safe strings for CodeMonkeys"
+  paths = [
+    ".env.example",
+    "tests/",
+  ]
+  # Strings shown here are skipped globally.
+  stopwords = [
+    "example",
+    "placeholder",
+    "test",
+  ]
