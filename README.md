@@ -14,7 +14,7 @@ Self-host stays free. Details: [`docs/COMMERCIAL.md`](docs/COMMERCIAL.md).
 ## Features
 
 - **Agent loop** — read/write/edit/glob/grep/bash tools, jailed to a workspace volume
-- **Daystrom agent corps** — 15 specialized subagents (recon, engineering, QA,
+- **Daystrom agent corps** — 19 specialized subagents (recon, engineering, QA,
   red-team, planning) with military mission-command doctrine, tool allowlists,
   and spawn caps (`corps/`)
 - **Any model** — OpenAI-compatible endpoints (Gemini, OpenRouter incl. **$0 free
