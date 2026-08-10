@@ -13,9 +13,10 @@ pydantic==2.13.4
 requests==2.34.2
 pyotp==2.9.0
 anthropic==0.106.0
-fido2==2.2.0
+fido2==2.2.1
 segno==1.6.6
-cryptography==48.0.1
+# Security: PYSEC-2026-3552 / PYSEC-2026-3553 fixed in 50.0.0 (pip-audit).
+cryptography==50.0.0
 google-auth==2.48.0
 # Terminal CLI (cli/) rendering only — no server-side usage.
 rich==14.2.0
