@@ -4,6 +4,7 @@
     python -m cli --server URL       # connect to a specific server
     python -m cli --new "title"      # start a fresh session
     python -m cli --logout           # forget the saved token
+    python -m cli -p "prompt"        # non-interactive: send prompt, print reply, exit
 """
 from __future__ import annotations
 
@@ -64,11 +65,47 @@ def _pick_or_create_session(console: Console, client: Client, new_title: str | N
         sys.exit(1)
 
 
+def _run_print_mode(console: Console, client: Client, sid: str, prompt_text: str) -> int:
+    """Non-interactive one-shot: send PROMPT, stream/print the reply, exit.
+    Mirrors `claude -p` — for scripts and pipelines, no REPL, no approval UI
+    (auto-denies any approval so a scripted run never hangs waiting on a
+    human)."""
+    from .repl import Repl
+
+    repl = Repl(client, sid, console)
+    # Route approval prompts to a safe non-interactive default (deny) instead
+    # of blocking on stdin, which would hang a script forever.
+    repl._render_event_orig = repl._render_event
+
+    def _render_event_noninteractive(e: dict) -> None:
+        if e.get("type") == "approval":
+            console.print(f"[yellow]⚠ approval required, auto-denied in --print mode:[/yellow] {e.get('command') or ''}", style="dim")
+            try:
+                client.approve(sid, e["approval_id"], False)
+            except ApiError:
+                pass
+            return
+        repl._render_event_orig(e)
+
+    repl._render_event = _render_event_noninteractive
+    try:
+        client.send_message(sid, prompt_text)
+        repl.wait_for_turn()
+    except ApiError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="codemonkeys")
     parser.add_argument("--server", help="server base URL (default: last used, or " + DEFAULT_SERVER)
     parser.add_argument("--new", metavar="TITLE", nargs="?", const="", default=None, help="start a new session")
     parser.add_argument("--logout", action="store_true", help="forget the saved token and exit")
+    parser.add_argument(
+        "-p", "--print", dest="print_prompt", metavar="PROMPT", default=None,
+        help="non-interactive mode: send PROMPT, print the assistant's reply, exit (for scripts/pipes)",
+    )
     args = parser.parse_args(argv)
 
     console = Console()
@@ -103,6 +140,9 @@ def main(argv: list[str] | None = None) -> int:
     except ApiError as exc:
         console.print(f"[red]{exc}[/red]")
         return 1
+
+    if args.print_prompt is not None:
+        return _run_print_mode(console, client, sid, args.print_prompt)
 
     Repl(client, sid, console).run()
     return 0

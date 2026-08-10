@@ -25,7 +25,7 @@ SWITCH_SENTINEL = "\x00SWITCH_SESSION\x00"
 
 def _make_key_bindings() -> KeyBindings:
     """Left-arrow opens the session switcher, but only when the input line is
-    empty — otherwise it's needed for normal cursor movement while editing."""
+    empty Ã¢â‚¬â€ otherwise it's needed for normal cursor movement while editing."""
     kb = KeyBindings()
 
     @kb.add("left")
@@ -78,11 +78,11 @@ class Repl:
             self._print_stream_flush()
         elif t == "tool":
             self._print_stream_flush()
-            self.console.print(f"[yellow]⚙ {escape(e.get('name') or '')}[/yellow] [dim]{escape(e.get('detail') or '')}[/dim]")
+            self.console.print(f"[yellow]Ã¢Å¡â„¢ {escape(e.get('name') or '')}[/yellow] [dim]{escape(e.get('detail') or '')}[/dim]")
         elif t == "tool_result":
             self._print_stream_flush()
             mark = "[green]ok[/green]" if e.get("ok") else "[red]FAIL[/red]"
-            self.console.print(f"  ↳ {mark} [dim]{escape(e.get('detail') or '')}[/dim]")
+            self.console.print(f"  Ã¢â€ Â³ {mark} [dim]{escape(e.get('detail') or '')}[/dim]")
             if e.get("diff"):
                 for line in e["diff"].splitlines():
                     if line.startswith("+") and not line.startswith("+++"):
@@ -96,19 +96,19 @@ class Repl:
         elif t == "lint":
             self._print_stream_flush()
             style = "dim" if e.get("ok") else "yellow"
-            self.console.print(f"[{style}]lint {escape(e.get('linter') or '')} · {escape(e.get('path') or '')} {escape(e.get('detail') or '')}[/{style}]")
+            self.console.print(f"[{style}]lint {escape(e.get('linter') or '')} Ã‚Â· {escape(e.get('path') or '')} {escape(e.get('detail') or '')}[/{style}]")
         elif t == "agent_start":
             self._print_stream_flush()
-            self.console.print(f"[magenta]\U0001f412 deployed {escape(e.get('agent') or '')}[/magenta] [dim][{escape(e.get('tier') or '')} · {escape(e.get('model') or '')}][/dim] — {escape(e.get('task') or '')}")
+            self.console.print(f"[magenta]\U0001f412 deployed {escape(e.get('agent') or '')}[/magenta] [dim][{escape(e.get('tier') or '')} Ã‚Â· {escape(e.get('model') or '')}][/dim] Ã¢â‚¬â€ {escape(e.get('task') or '')}")
         elif t == "agent_end":
             self._print_stream_flush()
             self.console.print(f"[dim]\U0001f412 {escape(e.get('agent') or '')} reported back[/dim]")
         elif t == "cost":
             self._print_stream_flush()
-            self.console.print(f"[dim]{escape(e.get('model') or '')} · {e.get('in_tokens')}→{e.get('out_tokens')} tok · ${e.get('usd', 0):.4f}[/dim]")
+            self.console.print(f"[dim]{escape(e.get('model') or '')} Ã‚Â· {e.get('in_tokens')}Ã¢â€ â€™{e.get('out_tokens')} tok Ã‚Â· ${e.get('usd', 0):.4f}[/dim]")
         elif t == "approval":
             self._print_stream_flush()
-            self.console.print(f"[bold yellow]⚠ APPROVAL REQUIRED[/bold yellow]")
+            self.console.print(f"[bold yellow]Ã¢Å¡Â  APPROVAL REQUIRED[/bold yellow]")
             self.console.print(f"  {escape(e.get('command') or '')}")
             ok = Confirm.ask("  Approve?", default=False)
             try:
@@ -117,7 +117,7 @@ class Repl:
                 self.console.print(f"[red]approve failed: {escape(str(exc))}[/red]")
         elif t == "approval_result":
             self._print_stream_flush()
-            self.console.print("[green]✓ approved[/green]" if e.get("approved") else "[red]✗ denied[/red]")
+            self.console.print("[green]Ã¢Å“â€œ approved[/green]" if e.get("approved") else "[red]Ã¢Å“â€” denied[/red]")
         elif t == "error":
             self._print_stream_flush()
             self.console.print(f"[bold red]error:[/bold red] {escape(e.get('message') or '')}")
@@ -125,7 +125,7 @@ class Repl:
             self.console.print(f"[dim]waiting on provider: {escape(e.get('reason') or '')}[/dim]")
         elif t == "done":
             self._print_stream_flush()
-            self.console.print("[dim]— done —[/dim]")
+            self.console.print("[dim]Ã¢â‚¬â€ done Ã¢â‚¬â€[/dim]")
 
     def _drain_events(self) -> str:
         """Fetch and render events since last seen; returns the session status."""
@@ -145,7 +145,7 @@ class Repl:
                 time.sleep(POLL_INTERVAL)
 
     def _switch_session(self) -> None:
-        """Left-arrow was pressed on an empty line — list all sessions (what's
+        """Left-arrow was pressed on an empty line Ã¢â‚¬â€ list all sessions (what's
         running, what's idle) and let the user jump into a different one
         without restarting the process."""
         try:
@@ -159,7 +159,7 @@ class Repl:
         self.console.print("\n[bold]sessions[/bold] [dim](left-arrow again to cancel)[/dim]")
         for i, s in enumerate(sessions[:20]):
             marker = "*" if s["id"] == self.sid else " "
-            self.console.print(f" {marker}{i}: [{s['status']}] {s['title'] or '(untitled)'} — {s['id']}")
+            self.console.print(f" {marker}{i}: [{s['status']}] {s['title'] or '(untitled)'} Ã¢â‚¬â€ {s['id']}")
         try:
             choice = self._prompt_session.prompt("switch to > ")
         except (EOFError, KeyboardInterrupt):
@@ -180,7 +180,7 @@ class Repl:
 
     def run(self) -> None:
         self.console.print(
-            f"[bold]session {self.sid}[/bold] — type a message, left-arrow (on an "
+            f"[bold]session {self.sid}[/bold] Ã¢â‚¬â€ type a message, left-arrow (on an "
             "empty line) to switch sessions, Ctrl-C to stop a run, /quit to exit\n"
         )
         while True:
@@ -194,8 +194,32 @@ class Repl:
                 continue
             if not text.strip():
                 continue
-            if text.strip() in ("/quit", "/exit"):
+            cmd = text.strip()
+            if cmd in ("/quit", "/exit"):
                 break
+            if cmd == "/help":
+                self.console.print(
+                    "[bold]commands[/bold]\n"
+                    "  /help       show this help\n"
+                    "  /new        start a fresh session and switch to it\n"
+                    "  /sessions   list sessions and switch (same as left-arrow on an empty line)\n"
+                    "  /quit /exit leave the REPL\n"
+                    "  Ctrl-C      stop the current run\n"
+                )
+                continue
+            if cmd == "/sessions":
+                self._switch_session()
+                continue
+            if cmd == "/new":
+                try:
+                    s = self.client.create_session(title="")
+                except ApiError as exc:
+                    self.console.print(f"[red]couldn't create session: {escape(str(exc))}[/red]")
+                    continue
+                self.sid = s["id"]
+                self._after = -1
+                self.console.print(f"[green]switched to new session {self.sid}[/green]")
+                continue
             try:
                 self.client.send_message(self.sid, text)
             except ApiError as exc:
