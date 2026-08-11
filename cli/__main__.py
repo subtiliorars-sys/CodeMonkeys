@@ -17,6 +17,7 @@ from rich.prompt import Prompt
 
 from . import config
 from .client import ApiError, Client
+from .dashboard import render_dashboard
 from .repl import Repl
 
 # Owner report (2026-07-20): a fresh `monkey` install with no prior config and
@@ -39,7 +40,7 @@ def _login(console: Console, client: Client) -> None:
     console.print(f"[green]logged in as {data['username']} ({data['role']})[/green]")
 
 
-def _pick_or_create_session(console: Console, client: Client, new_title: str | None) -> str:
+def _pick_or_create_session(console: Console, client: Client, new_title: str | None, username: str = "") -> str:
     if new_title is not None:
         s = client.create_session(title=new_title)
         console.print(f"[green]created session {s['id']}[/green]")
@@ -49,20 +50,23 @@ def _pick_or_create_session(console: Console, client: Client, new_title: str | N
         s = client.create_session(title="")
         console.print(f"[green]created session {s['id']}[/green]")
         return s["id"]
-    console.print("[bold]sessions:[/bold]")
+    render_dashboard(console, sessions, client.base_url, username)
+    console.print("[dim](pick a number to resume, or describe a new task)[/dim]")
     for i, s in enumerate(sessions[:20]):
         console.print(f"  {i}: [{s['status']}] {s['title'] or '(untitled)'} — {s['id']}")
-    console.print(f"  n: new session")
-    choice = Prompt.ask("pick", default="0")
-    if choice.strip().lower() == "n":
+    choice = Prompt.ask("describe a task for a new session", default="")
+    if not choice.strip():
         s = client.create_session(title="")
         console.print(f"[green]created session {s['id']}[/green]")
         return s["id"]
     try:
         return sessions[int(choice)]["id"]
     except (ValueError, IndexError):
-        console.print("[red]invalid choice[/red]")
-        sys.exit(1)
+        # Not a valid index -- treat free text as a new session's opening
+        # title, matching Claude Code's "describe a task for a new session".
+        s = client.create_session(title=choice.strip())
+        console.print(f"[green]created session {s['id']}[/green]")
+        return s["id"]
 
 
 def _run_print_mode(console: Console, client: Client, sid: str, prompt_text: str) -> int:
@@ -136,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         config.save({**cfg, "server": server})
 
     try:
-        sid = _pick_or_create_session(console, client, args.new)
+        sid = _pick_or_create_session(console, client, args.new, username=cfg.get("username", ""))
     except ApiError as exc:
         console.print(f"[red]{exc}[/red]")
         return 1
