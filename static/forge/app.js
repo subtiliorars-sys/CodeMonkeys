@@ -873,8 +873,10 @@ async function refreshRepos() {
 }
 
 $("btn-new-session").onclick = async () => {
-  const title = prompt("Session title (optional):") || "";
-  const d = await api("/api/sessions", "POST", { title });
+  // No blocking prompt() -- title is left blank so the server derives one
+  // dynamically from the first chat message; double-click the tab title to
+  // rename manually at any time (session-rename handler elsewhere in this file).
+  const d = await api("/api/sessions", "POST", { title: "" });
   await refreshSessions(); openSession(d.id);
 };
 
@@ -1249,6 +1251,7 @@ async function send() {
     await api(`/api/sessions/${state.sid}/message`, "POST",
       { text, files: state.files, mode: state.mode });
     $("msg").value = ""; state.files = []; renderChips();
+    refreshSessions();   // picks up the server's auto-derived title as the chat evolves
     startPolling(true);
   } catch (e) { alert(e.message);
   } finally { _sendInflight = false; $("btn-send").disabled = false; }
