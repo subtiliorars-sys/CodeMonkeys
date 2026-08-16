@@ -79,50 +79,7 @@ document.getElementById("settings-tabs")?.addEventListener("click", function (e)
   setTimeout(syncTabs, 3000);
 })();
 
-/* ── Left Taskbar: contextual tool shortcuts ─────────────────────────── */
-(function () {
-  const taskbar = document.getElementById("left-taskbar");
-  if (!taskbar) return;
 
-  const TOOLS = [
-    { id: "tb-terminal", emoji: "⌨", label: "Terminal", action: () => document.getElementById("wb-toggle-term")?.click() },
-    { id: "tb-browser", emoji: "🌐", label: "Browser", action: () => document.getElementById("wb-toggle-browser")?.click() },
-    { id: "tb-agents", emoji: "🤖", label: "Agents", action: () => document.getElementById("btn-agents-hub")?.click() },
-    { id: "tb-gremlins", emoji: "👹", label: "Gremlins", action: () => document.getElementById("btn-gremlin-raid")?.click() },
-  ];
-
-  function buildTaskbar(sessionActive) {
-    taskbar.querySelectorAll(".taskbar-item").forEach((el) => el.remove());
-    if (!sessionActive) return;
-
-    TOOLS.forEach((tool) => {
-      const btn = document.createElement("button");
-      btn.id = tool.id;
-      btn.className = "taskbar-item";
-      btn.title = tool.label;
-      btn.setAttribute("aria-label", tool.label);
-      btn.textContent = tool.emoji;
-      btn.addEventListener("click", tool.action);
-      const spacer = taskbar.querySelector(".taskbar-spacer");
-      taskbar.insertBefore(btn, spacer || null);
-    });
-  }
-
-  const hdrTitle = document.getElementById("hdr-title");
-
-  function checkSessionState() {
-    const title = hdrTitle?.textContent?.trim() || "";
-    const isActive = title !== "no session" && title !== "";
-    buildTaskbar(isActive);
-  }
-
-  if (hdrTitle) {
-    const obs = new MutationObserver(checkSessionState);
-    obs.observe(hdrTitle, { childList: true, characterData: true, subtree: true });
-  }
-
-  setTimeout(checkSessionState, 2000);
-})();
 
 /* ── Account tab: sync proxy element updates to Settings modal ─────── */
 (function () {
@@ -148,7 +105,7 @@ document.getElementById("settings-tabs")?.addEventListener("click", function (e)
     obs.observe(src, { childList: true, subtree: true });
   }
   watchAndSyncHTML("passkey-list", "stn-passkey-list");
-  watchAndSyncHTML("memory-list", "memory-list-modal");
+  watchAndSyncHTML("memory-list", "stn-memory-list");
 
   document.getElementById("stn-btn-passkey")?.addEventListener("click", () => {
     document.getElementById("btn-passkey")?.click();

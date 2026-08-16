@@ -1153,6 +1153,32 @@ nav.main-nav {
 .settings-action-btn:hover {
   background: rgba(234,179,8,.14);
 }
+.settings-subsection-title {
+  font-size: 0.62rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--jg-banana, #fbbf24);
+  opacity: 0.75;
+  margin-bottom: 0.35rem;
+}
+.settings-action-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.85rem;
+  border-radius: 0.4rem;
+  border: 1px dashed rgba(234,179,8,.3);
+  color: var(--jg-banana, #fbbf24);
+  font-size: 0.75rem;
+  background: rgba(234,179,8,.04);
+  text-decoration: none;
+  transition: background 0.15s;
+}
+.settings-action-link:hover {
+  background: rgba(234,179,8,.12);
+}
 
 /* ══════════════════════════════════════════════
    SETTINGS MODAL — Additional polish

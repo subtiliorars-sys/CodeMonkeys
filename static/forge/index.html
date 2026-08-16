@@ -45,23 +45,6 @@
     html.cm-kb-active #landing-welcome { display: none !important; }
     html.cm-kb-active #enc-banner { display: none !important; }
     html.cm-kb-active #stream { flex: 1 1 auto !important; min-height: 0 !important; }
-    #fb-fab {
-      bottom: calc(env(safe-area-inset-bottom, 0px) + 5rem) !important;
-      right: 0.75rem !important;
-    }
-    html.cm-kb-active #fb-fab {
-      bottom: calc(env(safe-area-inset-bottom, 0px) + 0.75rem) !important;
-      left: 0.75rem !important;
-      right: auto !important;
-    }
-    #steady-ground-btn {
-      bottom: calc(env(safe-area-inset-bottom, 0px) + 6.5rem) !important;
-    }
-    html.cm-kb-active #steady-ground-btn {
-      bottom: calc(env(safe-area-inset-bottom, 0px) + 4.25rem) !important;
-      left: 0.75rem !important;
-      right: auto !important;
-    }
   }
 </style>
 <style>
@@ -353,13 +336,7 @@
 </style>
 <body class="scanlines h-screen overflow-hidden">
 
-<!-- ============ STEADY GROUND — always-present crisis exit (self-contained, offline-safe) ============ -->
-<!-- Present on EVERY screen. No app/JS-bundle dependency, no network needed. Discreet label (anti-outing). -->
-<button id="steady-ground-btn" type="button" aria-label="Get crisis help now" style="z-index:99998"
-  onclick="document.getElementById('steady-ground-modal').classList.remove('hidden')"
-  class="fixed bottom-[128px] right-4 bg-slate-900/90 hover:bg-slate-800 border border-rose-700/70 text-rose-200 text-xs font-semibold px-3 py-2 rounded-full shadow-lg backdrop-blur-sm flex items-center gap-1.5 transition">
-  <span aria-hidden="true">🫂</span> Steady Ground
-</button>
+<!-- ============ STEADY GROUND — crisis exit modal (accessible via Settings menu) ============ -->
 <div id="steady-ground-modal" class="hidden fixed inset-0 flex items-center justify-center p-6 bg-black/70 backdrop-blur-sm" style="z-index:99999"
   onclick="if(event.target===this)this.classList.add('hidden')">
   <div class="w-full max-w-sm bg-slate-900 border border-slate-700 rounded-2xl p-6 shadow-2xl text-slate-200">
@@ -384,7 +361,7 @@
       <div class="text-4xl monkey mb-2">🐒</div>
       <h1 class="wordmark text-2xl font-bold">CodeMonkeyz</h1>
       <p class="text-xs text-slate-500 mt-1">Your agents. Any model. Playful console.</p>
-      <p class="text-[.65rem] text-slate-600 mt-2">$1/mo hosted seats when subscriptions are live · free models wired for you</p>
+      <p class="text-[.65rem] text-slate-600 mt-2">$10/mo hosted seats when subscriptions are live · free models wired for you</p>
     </div>
     <div class="space-y-3">
       <input id="lg-user" class="input w-full rounded px-3 py-2 text-sm" placeholder="username" autocomplete="username">
@@ -399,7 +376,7 @@
       <div id="lg-subscribe-box" class="hidden border-t border-slate-800 pt-3 mt-1 space-y-2">
         <p id="lg-subscribe-blurb" class="text-[.7rem] text-slate-500 text-center leading-relaxed"></p>
         <input id="sub-user" class="input w-full rounded px-3 py-2 text-sm" placeholder="pick a username" autocomplete="username">
-        <button id="lg-subscribe" type="button" class="gold-btn w-full rounded py-2 text-sm">Subscribe — $1/mo</button>
+        <button id="lg-subscribe" type="button" class="gold-btn w-full rounded py-2 text-sm">Subscribe — $10/mo</button>
         <p id="sub-msg" class="text-xs text-red-400 min-h-[1rem]"></p>
       </div>
       <p id="lg-msg" class="text-xs text-red-400 min-h-[1rem]"></p>
@@ -520,12 +497,6 @@
 <!-- ============ MAIN ============ -->
 <div id="view-main" class="hidden h-full flex">
   <div id="sidebar-overlay" class="hidden" aria-hidden="true"></div>
-  <!-- LEFT TASKBAR (jungle redesign) — slim 52px dynamic sidebar -->
-  <nav id="left-taskbar" class="left-taskbar" aria-label="Task shortcuts">
-    <!-- JS injects .taskbar-item buttons here contextually -->
-    <div class="taskbar-spacer"></div>
-  </nav>
-
   <!-- sidebar -->
   <aside id="sidebar" class="w-60 shrink-0 panel border-r border-yellow-900/40 flex flex-col">
     <div class="p-3 border-b border-yellow-900/40 flex items-center gap-2">
@@ -599,7 +570,7 @@
         <button id="btn-attach" title="Attach files" class="gold-border rounded px-2 py-2 text-sm hover:bg-yellow-900/20">📎</button>
         <input id="file-input" type="file" multiple class="hidden">
         <button id="btn-mic" title="Voice input" class="gold-border rounded px-2 py-2 text-sm hover:bg-yellow-900/20">🎤</button>
-        <button id="btn-gremlin-raid" title="Unleash Code Gremlins on this session" class="gold-border rounded px-2 py-2 text-sm hover:bg-red-900/30 text-red-300/90">👹</button>
+        <button id="btn-gremlin-raid" title="Unleash Code Gremlins on this session" class="hidden">👹</button>
         <textarea id="msg" rows="2" class="input flex-1 rounded px-3 py-2 text-sm resize-none"
           placeholder="Tell the monkeys what to build… (Enter to send, Shift+Enter for newline. Paste or drag-drop images/files here.)"></textarea>
         <button id="btn-stop" class="hidden rounded px-3 py-2 text-sm bg-red-900/60 hover:bg-red-800">■</button>
@@ -610,126 +581,248 @@
 </div>
 
 <!-- ============ MODELS MODAL ============ -->
-<div id="modal-models" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-  <div class="panel gold-border rounded-lg p-5 w-full max-w-2xl max-h-[90vh] overflow-y-auto text-sm">
-    <div class="flex items-center gap-2 mb-3">
-      <h2 class="wordmark font-bold flex-1">Models &amp; API keys <span id="modal-active-model" class="text-slate-500 font-normal text-xs"></span></h2>
-      <button id="btn-clear-errors" class="hidden text-red-400/70 hover:text-red-400 text-xs border border-red-900/40 rounded px-2 py-0.5" title="Clear last_error on all providers">✕ errors</button>
-      <button id="btn-cost-calc" class="text-slate-500 hover:text-slate-300 text-xs border border-slate-700 rounded px-2 py-0.5" title="Estimate cost for given token counts">⊕ calc</button>
-      <button id="btn-compare" class="text-slate-500 hover:text-slate-300 text-xs border border-slate-700 rounded px-2 py-0.5" title="Side-by-side model comparison table">⊞ compare</button>
-      <button id="btn-export-config" class="text-slate-500 hover:text-slate-300 text-xs border border-slate-700 rounded px-2 py-0.5" title="Copy config JSON to clipboard (keys excluded)">⎘ export</button>
-      <button id="btn-import-config" class="text-slate-500 hover:text-slate-300 text-xs border border-slate-700 rounded px-2 py-0.5" title="Paste exported JSON to restore providers (keys not overwritten)">⤵ import</button>
-      <span id="export-msg" class="text-xs text-slate-500"></span>
-      <button id="modal-close" class="text-slate-400 hover:text-white ml-1">✕</button>
-    </div>
-    <div id="spend-sparkline-wrap" class="owner-only hidden mb-3 text-xs">
-      <div class="flex items-end gap-0.5 h-8" id="spend-sparkline-bars" title="7-day spend"></div>
-      <div id="spend-sparkline-label" class="text-slate-600 mt-0.5"></div>
-    </div>
-    <div class="flex flex-col gap-2 mb-3 bg-yellow-900/10 gold-border rounded px-3 py-2 text-xs">
-      <div class="flex items-center gap-4 flex-wrap">
-        <span class="font-semibold text-[var(--gold-bright)]">Routing Mode:</span>
-        <label class="flex items-center gap-1 cursor-pointer" title="Always use the manually selected ★ provider">
-          <input type="radio" name="route-mode" id="route-manual" value="manual" class="accent-yellow-500">
-          <span>Manual (★ provider)</span>
-        </label>
-        <label class="flex items-center gap-1 cursor-pointer" title="Automatically start with the cheapest provider you've keyed">
-          <input type="radio" name="route-mode" id="route-cheapest" value="cheapest" class="accent-yellow-500">
-          <span>Auto (Cheapest-first)</span>
-        </label>
-        <label class="flex items-center gap-1 cursor-pointer" title="Automatically select the most capable/expensive provider you've keyed">
-          <input type="radio" name="route-mode" id="route-best" value="best" class="accent-yellow-500">
-          <span>Auto (Best-model)</span>
-        </label>
+<div id="modal-models" class="hidden fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center z-50 p-3 md:p-6" onclick="if(event.target===this)this.classList.add('hidden')">
+  <div class="panel gold-border rounded-xl p-5 w-full max-w-3xl max-h-[92vh] flex flex-col text-sm shadow-2xl overflow-hidden bg-slate-900/95">
+    
+    <!-- Modal Header -->
+    <div class="flex items-center justify-between gap-3 pb-3 border-b border-yellow-900/30 shrink-0">
+      <div class="flex items-center gap-2">
+        <h2 class="wordmark font-bold text-base">🤖 AI Models &amp; Providers</h2>
+        <span id="modal-active-model" class="text-xs text-yellow-400/80 font-mono bg-yellow-950/40 border border-yellow-800/40 rounded px-2 py-0.5"></span>
       </div>
-      <div id="route-preview" class="text-slate-500"></div>
+      <button id="modal-close" type="button" class="text-slate-400 hover:text-white text-lg leading-none transition px-2 py-1" aria-label="Close" onclick="document.getElementById('modal-models').classList.add('hidden')">✕</button>
     </div>
-    <div class="flex items-center gap-2 mb-1">
-      <p class="text-xs text-slate-500 flex-1">One API key per provider — then pick any model from it. ★ = main provider (when Auto is off). ✓ = include in the cheapest-first cascade.</p>
-      <input id="provider-search" type="text" class="input rounded px-2 py-0.5 text-xs w-28" placeholder="search models…" title="Filter providers by model name (global)">
-      <button id="btn-filter-all" class="text-xs border rounded px-2 py-0.5" title="Show all providers">all</button>
-      <button id="btn-filter-free" class="text-xs border rounded px-2 py-0.5" title="Show only providers with free models">⚡</button>
-      <button id="btn-filter-keyed" class="text-xs border rounded px-2 py-0.5" title="Show only providers with a key set">keyed</button>
-      <button id="btn-filter-auto" class="text-xs border rounded px-2 py-0.5" title="Show only auto-cascade providers">auto</button>
-      <span class="text-slate-700 text-xs">|</span>
-      <button id="btn-sort-keyed" class="text-xs border rounded px-2 py-0.5" title="Sort: keyed first, then cost">keyed</button>
-      <button id="btn-sort-cost" class="text-xs border rounded px-2 py-0.5" title="Sort by cost (cheapest first)">cost</button>
-      <button id="btn-sort-name" class="text-xs border rounded px-2 py-0.5" title="Sort alphabetically">A-Z</button>
-      <button id="btn-sort-used" class="text-xs border rounded px-2 py-0.5" title="Sort by last manually selected">recent</button>
-      <button id="btn-collapse-all" class="text-slate-500 hover:text-slate-300 text-xs border border-slate-700 rounded px-2 py-0.5" title="Collapse all">▶▶</button>
-      <button id="btn-expand-all" class="text-slate-500 hover:text-slate-300 text-xs border border-slate-700 rounded px-2 py-0.5" title="Expand all">▼▼</button>
+
+    <!-- Models Modal Sub-Tabs Navigation -->
+    <div class="flex gap-1 py-2 border-b border-slate-800 shrink-0 overflow-x-auto text-xs" id="mmodal-nav">
+      <button type="button" class="mmodal-tab px-3 py-1.5 rounded font-medium bg-yellow-900/30 text-yellow-300 border border-yellow-700/50" onclick="window.switchModelsTab('providers', this)">🔑 Configured Providers</button>
+      <button type="button" class="mmodal-tab px-3 py-1.5 rounded font-medium text-slate-400 hover:text-slate-200 border border-transparent" onclick="window.switchModelsTab('add', this)">➕ Add / Connect Provider</button>
+      <button type="button" class="mmodal-tab px-3 py-1.5 rounded font-medium text-slate-400 hover:text-slate-200 border border-transparent" onclick="window.switchModelsTab('free', this)">⚡ Free Models Catalog</button>
+      <button type="button" class="mmodal-tab px-3 py-1.5 rounded font-medium text-slate-400 hover:text-slate-200 border border-transparent" onclick="window.switchModelsTab('tools', this)">🛠 Tools &amp; Export</button>
     </div>
-    <div id="provider-rows" class="space-y-1 mb-4 text-xs"></div>
-    <div id="cost-calc-section" class="hidden border-t border-slate-800 pt-3 mb-3">
-      <div class="flex items-center gap-3 mb-2">
-        <span class="text-slate-400 font-semibold text-xs">Cost estimate</span>
-        <label class="flex items-center gap-1 text-xs text-slate-500">In <input id="calc-in" type="number" class="input rounded px-1 py-0.5 w-20 text-xs" value="1000" min="0"></label>
-        <label class="flex items-center gap-1 text-xs text-slate-500">Out <input id="calc-out" type="number" class="input rounded px-1 py-0.5 w-20 text-xs" value="500" min="0"></label>
-        <span class="text-slate-600 text-xs">tokens</span>
+
+    <!-- Modal Content Scroll Area -->
+    <div class="flex-1 overflow-y-auto py-3 space-y-4 pr-1 text-xs">
+      
+      <!-- TAB 1: Configured Providers -->
+      <div id="mview-providers" class="mview-tab space-y-3">
+        <!-- Routing Mode Banner -->
+        <div class="bg-slate-950/60 border border-slate-800 rounded-lg p-3 space-y-2">
+          <div class="flex items-center gap-4 flex-wrap text-xs">
+            <span class="font-semibold text-[var(--gold-bright)]">Routing Mode:</span>
+            <label class="flex items-center gap-1.5 cursor-pointer text-slate-300" title="Always use the manually selected ★ provider">
+              <input type="radio" name="route-mode" id="route-manual" value="manual" class="accent-yellow-500">
+              <span>Manual (★ provider)</span>
+            </label>
+            <label class="flex items-center gap-1.5 cursor-pointer text-slate-300" title="Automatically start with the cheapest provider you've keyed">
+              <input type="radio" name="route-mode" id="route-cheapest" value="cheapest" class="accent-yellow-500">
+              <span>Auto (Cheapest-first)</span>
+            </label>
+            <label class="flex items-center gap-1.5 cursor-pointer text-slate-300" title="Automatically select the most capable/expensive provider you've keyed">
+              <input type="radio" name="route-mode" id="route-best" value="best" class="accent-yellow-500">
+              <span>Auto (Best-model)</span>
+            </label>
+          </div>
+          <div id="route-preview" class="text-slate-400 text-[11px]"></div>
+        </div>
+
+        <!-- Filter & Search Toolbar -->
+        <div class="flex items-center gap-2 flex-wrap bg-slate-950/40 p-2 rounded border border-slate-800/80">
+          <input id="provider-search" type="text" class="input rounded px-2.5 py-1 text-xs flex-1 min-w-[140px]" placeholder="🔍 search providers &amp; models…">
+          <div class="flex items-center gap-1">
+            <button id="btn-filter-all" class="px-2 py-0.5 rounded border border-slate-700 bg-slate-800/60 hover:bg-slate-700 text-slate-300">All</button>
+            <button id="btn-filter-keyed" class="px-2 py-0.5 rounded border border-slate-700 bg-slate-800/60 hover:bg-slate-700 text-slate-300">Keyed</button>
+            <button id="btn-filter-free" class="px-2 py-0.5 rounded border border-slate-700 bg-slate-800/60 hover:bg-slate-700 text-slate-300">⚡ Free</button>
+            <button id="btn-filter-auto" class="px-2 py-0.5 rounded border border-slate-700 bg-slate-800/60 hover:bg-slate-700 text-slate-300">Auto</button>
+          </div>
+          <span class="text-slate-700">|</span>
+          <div class="flex items-center gap-1">
+            <button id="btn-sort-keyed" class="px-2 py-0.5 rounded border border-slate-700 bg-slate-800/60 hover:bg-slate-700 text-slate-300" title="Sort: keyed first, then cost">Keyed</button>
+            <button id="btn-sort-cost" class="px-2 py-0.5 rounded border border-slate-700 bg-slate-800/60 hover:bg-slate-700 text-slate-300" title="Sort by cost">Cost</button>
+            <button id="btn-sort-name" class="px-2 py-0.5 rounded border border-slate-700 bg-slate-800/60 hover:bg-slate-700 text-slate-300" title="Sort alphabetically">A-Z</button>
+            <button id="btn-sort-used" class="px-2 py-0.5 rounded border border-slate-700 bg-slate-800/60 hover:bg-slate-700 text-slate-300" title="Sort by last used">Recent</button>
+            <button id="btn-collapse-all" class="px-1.5 py-0.5 rounded border border-slate-700 bg-slate-800/60 hover:bg-slate-700 text-slate-400" title="Collapse all">▶▶</button>
+            <button id="btn-expand-all" class="px-1.5 py-0.5 rounded border border-slate-700 bg-slate-800/60 hover:bg-slate-700 text-slate-400" title="Expand all">▼▼</button>
+          </div>
+        </div>
+
+        <!-- Provider Rows List -->
+        <div id="provider-rows" class="space-y-1.5 text-xs"></div>
       </div>
-      <div id="calc-results" class="text-xs space-y-0.5"></div>
-    </div>
-    <div id="compare-section" class="hidden border-t border-slate-800 pt-3 mb-3">
-      <p class="text-slate-400 font-semibold text-xs mb-2">Model comparison</p>
-      <div id="compare-table" class="text-xs"></div>
-    </div>
-    <div id="free-models-section" class="border-t border-slate-800 pt-3 mb-4">
-      <div class="flex items-center gap-2 mb-2">
-        <button id="btn-toggle-free" class="text-slate-500 hover:text-slate-300 text-xs w-4" title="Toggle section">▼</button>
-        <span class="text-[var(--gold-bright)] font-semibold">⚡ Free models</span>
-        <button id="btn-or-refresh" class="text-slate-400 hover:text-[var(--gold)] text-xs border border-slate-700 rounded px-2 py-0.5">↻ Refresh</button>
-        <span id="free-models-msg" class="text-xs text-slate-500 flex-1"></span>
-        <label class="flex items-center gap-1 text-xs text-slate-500 cursor-pointer" title="Automatically add all free models after each refresh">
-          <input id="chk-auto-add-free" type="checkbox" class="accent-yellow-500">auto-add
-        </label>
-        <button id="btn-add-all-free" class="hidden gold-btn rounded px-3 py-0.5 text-xs">Add all free →</button>
-        <button id="btn-use-cheapest-free" class="hidden text-green-400/80 hover:text-green-300 text-xs border border-green-900/40 rounded px-2 py-0.5" title="Set active model to cheapest free model in OR's list">★ use cheapest</button>
-        <button id="btn-remove-free" class="hidden text-red-500/60 hover:text-red-400 text-xs border border-slate-700 rounded px-2 py-0.5">Remove :free</button>
-      </div>
-      <div id="free-models-list" class="text-xs text-slate-500 italic">Click ↻ Refresh to fetch free models from OpenRouter.</div>
-    </div>
-    <div class="border-t border-slate-800 pt-3 mb-4">
-      <p class="text-xs text-slate-500 mb-2">Quick-add free-tier providers (paste your key after pre-filling):</p>
-      <div id="preset-btns" class="flex flex-wrap gap-1 text-xs"></div>
-    </div>
-    <div class="border-t border-slate-800 pt-3 mb-4">
-      <p class="text-xs text-slate-500 mb-2">Bulk-add model IDs to a provider (one per line):</p>
-      <div class="flex gap-2 text-xs">
-        <select id="bulk-add-pid" class="input rounded px-2 py-1 w-36"></select>
-        <textarea id="bulk-add-models" class="input rounded px-2 py-1 flex-1 h-16 resize-none text-xs"
-          placeholder="model-id-1&#10;model-id-2&#10;…"></textarea>
-        <div class="flex flex-col gap-1">
-          <button id="btn-bulk-add" class="gold-btn rounded px-3 py-1">Add</button>
-          <span id="bulk-add-msg" class="text-slate-500 text-[.65rem]"></span>
+
+      <!-- TAB 2: Add / Connect Provider -->
+      <div id="mview-add" class="mview-tab hidden space-y-4">
+        <!-- Quick Presets -->
+        <div class="bg-slate-950/60 border border-slate-800 rounded-lg p-3 space-y-2">
+          <span class="font-semibold text-slate-300 block">Quick-Select Popular Providers:</span>
+          <p class="text-[11px] text-slate-500">Click a preset to populate configuration details:</p>
+          <div class="flex flex-wrap gap-1.5 mb-2">
+            <button class="pv-preset px-2 py-1 rounded bg-slate-800 hover:bg-yellow-900/40 border border-slate-700 hover:border-yellow-600/60 text-slate-200 transition" data-id="groq" data-base="https://api.groq.com/openai/v1" data-kind="openai">⚡ Groq (Ultra-Fast)</button>
+            <button class="pv-preset px-2 py-1 rounded bg-slate-800 hover:bg-yellow-900/40 border border-slate-700 hover:border-yellow-600/60 text-slate-200 transition" data-id="deepseek" data-base="https://api.deepseek.com" data-kind="openai">🐋 DeepSeek</button>
+            <button class="pv-preset px-2 py-1 rounded bg-slate-800 hover:bg-yellow-900/40 border border-slate-700 hover:border-yellow-600/60 text-slate-200 transition" data-id="anthropic" data-base="" data-kind="anthropic">🧠 Anthropic Claude</button>
+            <button class="pv-preset px-2 py-1 rounded bg-slate-800 hover:bg-yellow-900/40 border border-slate-700 hover:border-yellow-600/60 text-slate-200 transition" data-id="mistral" data-base="https://api.mistral.ai/v1" data-kind="openai">🌊 Mistral AI</button>
+            <button class="pv-preset px-2 py-1 rounded bg-slate-800 hover:bg-yellow-900/40 border border-slate-700 hover:border-yellow-600/60 text-slate-200 transition" data-id="together" data-base="https://api.together.xyz/v1" data-kind="openai">🤝 Together AI</button>
+            <button class="pv-preset px-2 py-1 rounded bg-slate-800 hover:bg-yellow-900/40 border border-slate-700 hover:border-yellow-600/60 text-slate-200 transition" data-id="fireworks" data-base="https://api.fireworks.ai/inference/v1" data-kind="openai">🎆 Fireworks</button>
+          </div>
+          <div id="preset-btns" class="flex flex-wrap gap-1 text-[11px] pt-1"></div>
+        </div>
+
+        <!-- Custom Provider Form -->
+        <div class="bg-slate-950/60 border border-slate-800 rounded-lg p-3 space-y-3">
+          <span class="font-semibold text-slate-300 block">Custom Endpoint Configuration:</span>
+          <div class="grid grid-cols-2 gap-2 text-xs">
+            <div>
+              <label class="text-[10px] text-slate-500 uppercase tracking-wider block mb-1">Provider ID</label>
+              <input id="pv-id" class="input rounded px-2.5 py-1.5 w-full" placeholder="e.g. groq or local-ollama">
+            </div>
+            <div>
+              <label class="text-[10px] text-slate-500 uppercase tracking-wider block mb-1">API Protocol</label>
+              <select id="pv-kind" class="input rounded px-2.5 py-1.5 w-full bg-slate-900 text-slate-200">
+                <option value="openai">OpenAI-Compatible</option>
+                <option value="anthropic">Anthropic Native</option>
+              </select>
+            </div>
+            <div class="col-span-2">
+              <label class="text-[10px] text-slate-500 uppercase tracking-wider block mb-1">Base URL (Leave blank for Anthropic)</label>
+              <input id="pv-base" class="input rounded px-2.5 py-1.5 w-full" placeholder="https://api.example.com/v1">
+            </div>
+            <div>
+              <label class="text-[10px] text-slate-500 uppercase tracking-wider block mb-1">Default Model ID</label>
+              <input id="pv-model" class="input rounded px-2.5 py-1.5 w-full" placeholder="e.g. llama-3.3-70b-versatile">
+            </div>
+            <div>
+              <label class="text-[10px] text-slate-500 uppercase tracking-wider block mb-1">API Key</label>
+              <input id="pv-key" type="password" class="input rounded px-2.5 py-1.5 w-full" placeholder="sk-...">
+            </div>
+            <div>
+              <label class="text-[10px] text-slate-500 uppercase tracking-wider block mb-1">Input Price ($/M tokens)</label>
+              <input id="pv-in" class="input rounded px-2.5 py-1.5 w-full" placeholder="0.50">
+            </div>
+            <div>
+              <label class="text-[10px] text-slate-500 uppercase tracking-wider block mb-1">Output Price ($/M tokens)</label>
+              <input id="pv-out" class="input rounded px-2.5 py-1.5 w-full" placeholder="1.50">
+            </div>
+            <div class="col-span-2 pt-1 flex items-center gap-3">
+              <button id="pv-save" class="gold-btn rounded px-4 py-2 text-xs font-semibold">Save Provider</button>
+              <p id="pv-msg" class="text-xs text-slate-400"></p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Bulk Model Addition -->
+        <div class="bg-slate-950/60 border border-slate-800 rounded-lg p-3 space-y-2">
+          <span class="font-semibold text-slate-300 block">Bulk-Add Model IDs:</span>
+          <p class="text-[11px] text-slate-500">Add multiple model identifiers to a provider at once (one per line):</p>
+          <div class="flex gap-2">
+            <select id="bulk-add-pid" class="input rounded px-2.5 py-1.5 w-40 bg-slate-900 text-slate-200"></select>
+            <textarea id="bulk-add-models" class="input rounded px-2.5 py-1.5 flex-1 h-16 resize-none text-xs font-mono" placeholder="model-id-1&#10;model-id-2&#10;..."></textarea>
+            <div class="flex flex-col gap-1">
+              <button id="btn-bulk-add" class="gold-btn rounded px-3 py-1.5 text-xs font-semibold">Add Models</button>
+              <span id="bulk-add-msg" class="text-slate-400 text-[10px]"></span>
+            </div>
+          </div>
         </div>
       </div>
-    </div>
-    <div class="border-t border-slate-800 pt-3">
-      <p class="text-xs text-slate-500 mb-1">Add a custom provider (any OpenAI-compatible endpoint):</p>
-      <div class="flex flex-wrap gap-1 mb-2">
-        <button class="pv-preset text-[.6rem] border border-slate-700/60 rounded px-1.5 py-0.5 text-slate-400 hover:text-[var(--gold)]" data-id="groq" data-base="https://api.groq.com/openai/v1" data-kind="openai">Groq</button>
-        <button class="pv-preset text-[.6rem] border border-slate-700/60 rounded px-1.5 py-0.5 text-slate-400 hover:text-[var(--gold)]" data-id="together" data-base="https://api.together.xyz/v1" data-kind="openai">Together</button>
-        <button class="pv-preset text-[.6rem] border border-slate-700/60 rounded px-1.5 py-0.5 text-slate-400 hover:text-[var(--gold)]" data-id="fireworks" data-base="https://api.fireworks.ai/inference/v1" data-kind="openai">Fireworks</button>
-        <button class="pv-preset text-[.6rem] border border-slate-700/60 rounded px-1.5 py-0.5 text-slate-400 hover:text-[var(--gold)]" data-id="mistral" data-base="https://api.mistral.ai/v1" data-kind="openai">Mistral</button>
-        <button class="pv-preset text-[.6rem] border border-slate-700/60 rounded px-1.5 py-0.5 text-slate-400 hover:text-[var(--gold)]" data-id="deepseek" data-base="https://api.deepseek.com" data-kind="openai">DeepSeek</button>
-        <button class="pv-preset text-[.6rem] border border-slate-700/60 rounded px-1.5 py-0.5 text-slate-400 hover:text-[var(--gold)]" data-id="anthropic" data-base="" data-kind="anthropic">Anthropic</button>
-      </div>
-      <div class="grid grid-cols-2 gap-2 text-xs">
-        <input id="pv-id" class="input rounded px-2 py-1" placeholder="id (e.g. groq)">
-        <select id="pv-kind" class="input rounded px-2 py-1"><option value="openai">openai-compatible</option><option value="anthropic">anthropic</option></select>
-        <input id="pv-base" class="input rounded px-2 py-1 col-span-2" placeholder="base_url (blank for anthropic)">
-        <input id="pv-model" class="input rounded px-2 py-1" placeholder="model id">
-        <input id="pv-key" type="password" class="input rounded px-2 py-1" placeholder="API key">
-        <div class="flex gap-2">
-          <input id="pv-in" class="input rounded px-2 py-1 w-1/2" placeholder="$/M in">
-          <input id="pv-out" class="input rounded px-2 py-1 w-1/2" placeholder="$/M out">
+
+      <!-- TAB 3: Free Models Catalog -->
+      <div id="mview-free" class="mview-tab hidden space-y-3">
+        <div class="bg-slate-950/60 border border-slate-800 rounded-lg p-3 space-y-3">
+          <div class="flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <span class="font-semibold text-[var(--gold-bright)] text-sm">⚡ OpenRouter Free Models Catalog</span>
+              <p class="text-[11px] text-slate-400">Discover and use zero-cost models without credit consumption.</p>
+            </div>
+            <div class="flex items-center gap-2">
+              <button id="btn-or-refresh" class="px-3 py-1 text-xs border border-slate-700 hover:border-yellow-600 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 transition">↻ Refresh Catalog</button>
+              <label class="flex items-center gap-1.5 text-xs text-slate-400 cursor-pointer">
+                <input id="chk-auto-add-free" type="checkbox" class="accent-yellow-500">
+                <span>Auto-add newly found</span>
+              </label>
+            </div>
+          </div>
+          <div class="flex items-center gap-2">
+            <button id="btn-add-all-free" class="hidden gold-btn rounded px-3 py-1 text-xs">Add All Free →</button>
+            <button id="btn-use-cheapest-free" class="hidden text-green-400 hover:text-green-300 text-xs border border-green-900/60 rounded px-2.5 py-1" title="Set active model to cheapest free model">★ Use Cheapest</button>
+            <button id="btn-remove-free" class="hidden text-red-400 hover:text-red-300 text-xs border border-red-900/40 rounded px-2.5 py-1">Remove :free</button>
+            <span id="free-models-msg" class="text-xs text-slate-400 flex-1"></span>
+          </div>
+          <div id="free-models-list" class="bg-black/40 border border-slate-800/80 rounded p-3 text-xs text-slate-400 italic max-h-60 overflow-y-auto">
+            Click ↻ Refresh Catalog to query current free tier models from OpenRouter.
+          </div>
         </div>
-        <button id="pv-save" class="gold-btn rounded py-1">Add provider</button>
-        <p id="pv-msg" class="col-span-2 text-xs text-slate-400"></p>
       </div>
+
+      <!-- TAB 4: Tools & Export -->
+      <div id="mview-tools" class="mview-tab hidden space-y-4">
+        <!-- 7-day spend chart -->
+        <div id="spend-sparkline-wrap" class="owner-only hidden bg-slate-950/60 border border-slate-800 rounded-lg p-3">
+          <span class="font-semibold text-slate-300 block mb-2">7-Day Spend Trend</span>
+          <div class="flex items-end gap-1 h-10" id="spend-sparkline-bars" title="7-day spend"></div>
+          <div id="spend-sparkline-label" class="text-slate-500 text-[11px] mt-1"></div>
+        </div>
+
+        <!-- Cost Estimator -->
+        <div class="bg-slate-950/60 border border-slate-800 rounded-lg p-3 space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="font-semibold text-slate-300">Cost Estimator</span>
+            <button id="btn-cost-calc" class="text-xs border border-slate-700 rounded px-2 py-0.5 text-slate-400 hover:text-slate-200">Toggle Calc</button>
+          </div>
+          <div id="cost-calc-section" class="pt-2 space-y-2">
+            <div class="flex items-center gap-3">
+              <label class="flex items-center gap-1.5 text-slate-400">In tokens: <input id="calc-in" type="number" class="input rounded px-2 py-1 w-24" value="1000" min="0"></label>
+              <label class="flex items-center gap-1.5 text-slate-400">Out tokens: <input id="calc-out" type="number" class="input rounded px-2 py-1 w-24" value="500" min="0"></label>
+            </div>
+            <div id="calc-results" class="space-y-1 text-slate-300"></div>
+          </div>
+        </div>
+
+        <!-- Model Comparison -->
+        <div class="bg-slate-950/60 border border-slate-800 rounded-lg p-3 space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="font-semibold text-slate-300">Side-by-Side Model Comparison</span>
+            <button id="btn-compare" class="text-xs border border-slate-700 rounded px-2 py-0.5 text-slate-400 hover:text-slate-200">Toggle Comparison</button>
+          </div>
+          <div id="compare-section" class="pt-2">
+            <div id="compare-table" class="overflow-x-auto text-slate-300"></div>
+          </div>
+        </div>
+
+        <!-- Config Backup / Export & Error Maintenance -->
+        <div class="bg-slate-950/60 border border-slate-800 rounded-lg p-3 space-y-3">
+          <span class="font-semibold text-slate-300 block">Configuration Maintenance &amp; Backup</span>
+          <div class="flex items-center gap-2 flex-wrap">
+            <button id="btn-export-config" class="px-3 py-1.5 rounded border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-300" title="Export config JSON (keys excluded)">⎘ Export Config</button>
+            <button id="btn-import-config" class="px-3 py-1.5 rounded border border-slate-700 bg-slate-800 hover:bg-slate-700 text-slate-300" title="Import config JSON">⤵ Import Config</button>
+            <button id="btn-clear-errors" class="px-3 py-1.5 rounded border border-red-900/60 bg-red-950/30 hover:bg-red-900/40 text-red-300" title="Clear last_error flags on providers">✕ Clear Error Statuses</button>
+            <span id="export-msg" class="text-slate-400 text-xs"></span>
+          </div>
+        </div>
+      </div>
+
     </div>
+
+    <!-- Modal Footer -->
+    <div class="flex items-center justify-between pt-3 border-t border-slate-800 shrink-0">
+      <span class="text-[11px] text-slate-500">Press <kbd class="px-1.5 py-0.5 bg-slate-800 rounded text-slate-400 border border-slate-700">Esc</kbd> or click Close when finished</span>
+      <button type="button" class="gold-btn rounded px-4 py-1.5 text-xs font-semibold hover:brightness-110" onclick="document.getElementById('modal-models').classList.add('hidden')">Done / Close ✕</button>
+    </div>
+
   </div>
 </div>
+
+<script>
+window.switchModelsTab = function(tabName, btn) {
+  document.querySelectorAll('#mmodal-nav .mmodal-tab').forEach(b => {
+    b.className = 'mmodal-tab px-3 py-1.5 rounded font-medium text-slate-400 hover:text-slate-200 border border-transparent';
+  });
+  if (btn) {
+    btn.className = 'mmodal-tab px-3 py-1.5 rounded font-medium bg-yellow-900/30 text-yellow-300 border border-yellow-700/50';
+  }
+  document.querySelectorAll('.mview-tab').forEach(el => el.classList.add('hidden'));
+  const target = document.getElementById('mview-' + tabName);
+  if (target) target.classList.remove('hidden');
+};
+</script>
 
 <!-- ============ MCP MODAL ============ -->
 <div id="modal-mcp" class="hidden fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
@@ -950,7 +1043,7 @@
       <button class="settings-tab" data-tab="workspace">📁 Workspace</button>
       <button class="settings-tab" data-tab="team">👥 Team</button>
       <button class="settings-tab" data-tab="account">👤 Account</button>
-      <button class="settings-tab" data-tab="tools">🛠 Tools</button>
+      <button class="settings-tab" data-tab="advanced" title="Power-user controls, internal tools, diagnostics, and external views">🛠 Advanced</button>
     </div>
     <button class="ml-auto text-slate-400 hover:text-white text-lg leading-none"
       onclick="document.getElementById('modal-settings').classList.add('hidden');document.getElementById('modal-settings-backdrop').classList.add('hidden');">✕</button>
@@ -1029,18 +1122,45 @@
       <div class="settings-section-title mt-4 text-red-400/80">Sign out</div>
       <button id="stn-btn-logout" class="w-full rounded py-2 text-xs border border-red-900/40 text-red-300/80 hover:bg-red-900/20 mt-1" onclick="document.getElementById('btn-logout')?.click();">⏻ Log out</button>
     </div>
-    <!-- Tools tab -->
-    <div class="settings-panel hidden" id="stab-tools">
-      <div class="settings-section-title">Cost Dashboard</div>
+    <!-- Advanced tab (power-user controls grouped into clear sub-sections) -->
+    <div class="settings-panel hidden" id="stab-advanced">
+      <!-- External views -->
+      <div class="settings-subsection-title">🐵 Swarm &amp; Colony</div>
+      <p class="text-slate-500 text-xs mb-3">Multi-agent views and the Phase-1 colony overview.</p>
+      <a class="settings-action-link owner-only" href="/swarm">🌿 Swarm view →</a>
+      <div class="settings-section-title mt-5">💻 Terminal Console</div>
+      <p class="text-slate-500 text-xs mb-3">Claude Code-style REPL fallback for direct command entry.</p>
+      <a class="settings-action-link owner-only" href="/terminal">💻 Open Terminal console →</a>
+      <div class="settings-section-title mt-5">📋 Audit Log</div>
+      <p class="text-slate-500 text-xs mb-3">Tamper-evident history of sensitive configuration and erasure events.</p>
+      <a class="settings-action-link owner-only" href="/audit">📋 Open audit log →</a>
+
+      <!-- Data & memory -->
+      <div class="settings-section-title mt-5">🧠 Memory Boards</div>
+      <p class="text-slate-500 text-xs mb-3">Persistent knowledge boards the agent can reference across sessions.</p>
+      <button id="stn-btn-memory" class="settings-action-btn owner-only">🧠 Open memory boards →</button>
+      <div id="stn-memory-list" class="mt-2 space-y-1 text-xs"></div>
+
+      <!-- Cost & usage -->
+      <div class="settings-section-title mt-5">💵 Cost &amp; Usage</div>
       <p class="text-slate-500 text-xs mb-3">View spending by session, model, and day.</p>
       <button id="stn-btn-cost" class="settings-action-btn owner-only" onclick="document.getElementById('modal-cost').classList.remove('hidden');document.getElementById('modal-settings').classList.add('hidden');document.getElementById('modal-settings-backdrop').classList.add('hidden');">💰 Open Cost dashboard →</button>
-      <div class="settings-section-title mt-4">Feedback Inbox</div>
-      <p class="text-slate-500 text-xs mb-3">Review field reports submitted from sessions.</p>
+
+      <!-- Configuration -->
+      <div class="settings-section-title mt-5">🔧 Configuration</div>
+      <p class="text-slate-500 text-xs mb-3">Back up or restore your model/provider configuration.</p>
+      <button id="stn-btn-export-config" class="settings-action-btn" onclick="document.getElementById('btn-export-config')?.click();">⬇️ Export config →</button>
+      <button id="stn-btn-import-config" class="settings-action-btn mt-1" onclick="document.getElementById('btn-import-config')?.click();">⬆️ Import config →</button>
+
+      <!-- Feedback & support -->
+      <div class="settings-section-title mt-5">🗂 Feedback &amp; Support</div>
       <button id="stn-btn-feedback" class="settings-action-btn owner-only" onclick="document.getElementById('modal-feedback').classList.remove('hidden');document.getElementById('modal-settings').classList.add('hidden');document.getElementById('modal-settings-backdrop').classList.add('hidden');">📥 Open Feedback inbox →</button>
-      <div class="settings-section-title mt-4">Code Gremlins</div>
-      <p class="text-slate-500 text-xs mb-3">Unleash the feral red team to roast your code.</p>
-      <button id="stn-btn-gremlins" class="settings-action-btn" onclick="document.getElementById('modal-gremlins').classList.remove('hidden');document.getElementById('modal-settings').classList.add('hidden');document.getElementById('modal-settings-backdrop').classList.add('hidden');">👹 Open Code Gremlins →</button>
-      <div class="settings-section-title mt-4">Cursor Desk</div>
+      <button id="stn-btn-send-feedback" class="settings-action-btn mt-1" onclick="window.FeedbackFab?.open?.();document.getElementById('modal-settings').classList.add('hidden');document.getElementById('modal-settings-backdrop').classList.add('hidden');">💬 Send Feedback →</button>
+      <button id="stn-btn-gremlins" class="settings-action-btn mt-1" onclick="document.getElementById('modal-gremlins').classList.remove('hidden');document.getElementById('modal-settings').classList.add('hidden');document.getElementById('modal-settings-backdrop').classList.add('hidden');">👹 Open Code Gremlins →</button>
+      <button id="stn-btn-steady-ground" class="settings-action-btn mt-1" onclick="document.getElementById('steady-ground-modal').classList.remove('hidden');document.getElementById('modal-settings').classList.add('hidden');document.getElementById('modal-settings-backdrop').classList.add('hidden');">🫂 Steady Ground Resources →</button>
+
+      <!-- Deep integration -->
+      <div class="settings-section-title mt-5">🖥 Cursor Desk</div>
       <p class="text-slate-500 text-xs mb-3">Remote desktop / Cursor IDE integration.</p>
       <button id="stn-btn-desk-hub" class="settings-action-btn owner-only" onclick="document.getElementById('btn-desk-hub')?.click();document.getElementById('modal-settings').classList.add('hidden');document.getElementById('modal-settings-backdrop').classList.add('hidden');">🖥 Open Cursor Desk →</button>
     </div>
