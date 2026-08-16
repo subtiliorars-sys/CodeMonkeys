@@ -551,6 +551,89 @@ def readyz():
     return JSONResponse(content=body, status_code=status_code)
 
 
+# --- browser-extension compat endpoints -----------------------------------
+# The "CodeMonkeys Companion" MV3 extension (static/extension/) targets two
+# lightweight endpoints the extension expects: an unauthenticated health
+# probe (/api/health) and a synchronous single-turn chat (/api/chat) that
+# returns the model's reply directly in the JSON body. Neither existed in the
+# local desktop server, so the extension would show "offline" and its bubble
+# chat could not run. These are additive, do not alter existing auth, and
+# reuse the app's own model-routing machinery. Kept deliberately thin.
+
+
+@app.get("/api/health")
+def api_health():
+    """Extension connectivity probe. Mirrors /healthz but returns 200 even if
+    no model provider is configured yet, so the extension reads "online" and
+    the /api/chat endpoint can explain the missing-provider case in-band."""
+    try:
+        cfg = load_models()
+        provider_configured = bool(_usable(cfg))
+    except Exception:
+        provider_configured = False
+    return {
+        "status": "ok",
+        "uptime_s": int(time.time()) - _BOOT_TIME,
+        "sessions": len(SESSIONS),
+        "provider_configured": provider_configured,
+    }
+
+
+class ExtensionChatRequest(BaseModel):
+    message: str
+    source: str | None = None
+    url: str | None = None
+    title: str | None = None
+
+
+@app.post("/api/chat")
+def extension_chat(req: ExtensionChatRequest):
+    """Synchronous single-turn chat for the extension bubble.
+
+    Attributes the request to the instance Owner (the account that owns this
+    desktop and whose egress consent is on record), so the M-4 consent gate is
+    honored like any other provider call. Returns {response: <text>} — the
+    shape the extension expects. Fails soft with an explanatory message on
+    transient/gate errors rather than returning an HTTP 500 that the bubble
+    would surface as a generic "cannot reach server".
+    """
+    text = (req.message or "").strip()
+    if not text:
+        return {"response": "Please enter a message."}
+
+    # Resolve the instance Owner to attribute the call (consent, cost ledger).
+    owner = None
+    try:
+        for uname, rec in load_users().items():
+            if rec.get("role") == "Owner":
+                owner = uname
+                break
+    except Exception:
+        owner = None
+
+    try:
+        cfg = load_models()
+        provider = main_provider(cfg, username=owner)
+        if not provider:
+            hint = ("No enabled model provider — add an API key in Models settings. "
+                    "The extension relays to this server's configured provider.")
+            return {"response": hint}
+        history = [{"role": "user", "text": text}]
+        system = (
+            "You are the CodeMonkeys agent, reached from the browser extension. "
+            "Answer the user's message concisely and helpfully. You do not have "
+            "workspace tool access in this compact chat; keep to direct answers."
+        )
+        reply = call_model(provider, system=system, history=history, tools=[],
+                           max_tokens=2048, username=owner)
+        return {"response": str(reply).strip()}
+    except Exception as e:
+        msg = getattr(e, "message", None) or str(e) or e.__class__.__name__
+        if "consent" in msg.lower() or "egress" in msg.lower():
+            msg = "Cloud-egress consent is not granted for this instance."
+        return {"response": f"\u26a0 {msg}"}
+
+
 @app.middleware("http")
 async def _security_headers(request, call_next):
     """Baseline browser-hardening for an auth-gated console that fronts a shell.
