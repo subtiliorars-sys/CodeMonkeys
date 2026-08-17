@@ -351,7 +351,7 @@
   html.cm-lite #btn-export-transcript,
   html.cm-lite #btn-copy-transcript { display: none !important; }
 </style>
-<body class="scanlines h-screen overflow-hidden">
+<body class="scanlines h-screen overflow-hidden flex flex-col">
 
 <!-- ============ STEADY GROUND — always-present crisis exit (self-contained, offline-safe) ============ -->
 <!-- Present on EVERY screen. No app/JS-bundle dependency, no network needed. Discreet label (anti-outing). -->
@@ -378,7 +378,7 @@
 <!-- ============ /STEADY GROUND ============ -->
 
 <!-- ============ LOGIN ============ -->
-<div id="view-login" class="h-full flex items-center justify-center">
+<div id="view-login" class="flex-1 min-h-0 flex items-center justify-center">
   <div class="panel gold-border rounded-lg p-8 w-full max-w-sm">
     <div class="text-center mb-6">
       <div class="text-4xl monkey mb-2">🐒</div>
@@ -431,7 +431,7 @@
 </div>
 
 <!-- ============ FIRST-TIME SETUP (invited dev) ============ -->
-<div id="view-setup" class="hidden h-full flex items-center justify-center">
+<div id="view-setup" class="hidden flex-1 min-h-0 flex items-center justify-center">
   <div class="panel gold-border rounded-lg p-8 w-full max-w-sm">
     <div class="text-center mb-5">
       <div class="text-3xl monkey mb-2">🐒</div>
@@ -518,7 +518,7 @@
   <button class="tab-new-btn" id="btn-new-tab" title="New conversation tab" aria-label="New conversation">+</button>
 </div>
 <!-- ============ MAIN ============ -->
-<div id="view-main" class="hidden h-full flex">
+<div id="view-main" class="hidden flex-1 min-h-0 flex">
   <div id="sidebar-overlay" class="hidden" aria-hidden="true"></div>
   <!-- LEFT TASKBAR (jungle redesign) — slim 52px dynamic sidebar -->
   <nav id="left-taskbar" class="left-taskbar" aria-label="Task shortcuts">
