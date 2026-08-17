@@ -6026,6 +6026,7 @@ def new_session(title="", repo="", budget_usd=None, username=None):
     with _SESSIONS_LOCK:
         SESSIONS[sid] = {
             "id": sid, "title": title or f"session-{sid[:6]}", "repo": repo,
+            "title_auto": not title,
             "created": int(time.time()), "status": "idle", "mode": "default",
             "events": [], "history": [], "spent_usd": 0.0,
             "budget_usd": _clamp_budget(budget_usd),
@@ -7985,6 +7986,10 @@ def session_message(sid: str, req: MessageRequest, username: str = Depends(verif
             names = _save_uploads(sid, req.files)
         if names:
             text += "\n\n[Attached files saved in workspace: " + ", ".join(names) + "]"
+        if s.get("title_auto"):
+            derived = text.strip()[:60]
+            if derived:
+                s["title"] = derived
         emit(s, "user", text=text)
         threading.Thread(target=run_session_message, args=(s, text), daemon=True).start()
     except BaseException:
@@ -8220,6 +8225,7 @@ def session_rename(sid: str, req: SessionRename, username: str = Depends(verify_
         raise HTTPException(400, "Title cannot be empty")
     with s["lock"]:
         s["title"] = title
+        s["title_auto"] = False
     _persist_index()
     return {"ok": True, "title": title}
 
