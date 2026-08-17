@@ -601,6 +601,7 @@ const AgentsHub = {
       + `<header class="ah-header flex items-center gap-3 px-4 py-3 border-b border-yellow-900/40">`
       + `<h2 class="wordmark font-bold text-sm flex-1">Agents</h2>`
       + `<span class="text-slate-600 text-[.65rem] hidden sm:inline">Ctrl+Shift+A</span>`
+      + `<button type="button" id="ah-settings" class="text-slate-400 hover:text-[var(--gold)] text-base leading-none" aria-label="Settings" title="Settings">⚙</button>`
       + `<button type="button" id="ah-close" class="text-slate-400 hover:text-white text-lg leading-none" aria-label="Close">✕</button>`
       + `</header>`
       + `<div class="flex flex-1 min-h-0">`
@@ -624,6 +625,10 @@ const AgentsHub = {
     document.body.appendChild(wrap);
 
     wrap.querySelector("#ah-close").onclick = () => this.close();
+    wrap.querySelector("#ah-settings").onclick = () => {
+      document.getElementById("modal-settings")?.classList.remove("hidden");
+      document.getElementById("modal-settings-backdrop")?.classList.remove("hidden");
+    };
     wrap.querySelector("#ah-new").onclick = () => this.newSession();
     wrap.querySelector("#ah-session-search")?.addEventListener("input", () => {
       document.getElementById("ah-session-list").innerHTML = this._renderSessionsList();
