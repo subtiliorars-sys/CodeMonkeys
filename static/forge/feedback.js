@@ -224,9 +224,5 @@ const FeedbackFab = {
   },
 };
 
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", () => { FeedbackFab.init(); FeedbackFab.syncWithAuthScreen(); });
-} else {
-  FeedbackFab.init();
-  FeedbackFab.syncWithAuthScreen();
-}
+// No floating action button — feedback is reachable via Settings → Send Feedback.
+window.FeedbackFab = FeedbackFab;

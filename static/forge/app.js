@@ -1424,9 +1424,6 @@ function updateLandingMode() {
 }
 // Wire landing buttons as shorthands to existing actions
 $("landing-new-session").onclick = $("btn-new-session").onclick;
-$("landing-models").onclick = () => {
-  $("btn-models").click();
-};
 // Update landing mode text when mode changes
 const _origRenderMode = renderMode;
 renderMode = function() {

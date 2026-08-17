@@ -320,7 +320,6 @@
   }
   /* Mobile-lite route (/m) — chat + sessions + approvals only */
   html.cm-lite #btn-gremlin-raid,
-  html.cm-lite #landing-models,
   html.cm-lite #landing-gremlins,
   html.cm-lite #btn-gremlins,
   html.cm-lite #btn-desk-hub,
@@ -545,12 +544,9 @@
         <div class="text-5xl monkey mb-4">🐒</div>
         <h2 class="wordmark text-xl font-bold mb-2">CodeMonkeyz</h2>
         <p class="text-slate-500 text-sm max-w-md mb-6">Your agents. Any model. Any browser.<br>Start a new session or pick one from the sidebar.</p>
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 w-full max-w-lg">
+        <div class="grid grid-cols-1 gap-3 w-full max-w-lg">
           <button id="landing-new-session" class="gold-btn rounded-lg py-3 text-sm font-bold flex items-center justify-center gap-2">
             <span>+</span><span>New Session</span>
-          </button>
-          <button id="landing-models" class="gold-border rounded-lg py-3 text-sm text-slate-300 hover:text-[var(--gold-bright)] flex items-center justify-center gap-2">
-            <span>⚙</span><span>Configure Models</span>
           </button>
           <button id="landing-gremlins" class="hidden" style="display:none"></button>
           <p id="gremlins-toast" class="hidden text-red-400/80 text-xs mt-3"></p>
@@ -1019,18 +1015,6 @@ window.switchModelsTab = function(tabName, btn) {
     </div>
   </div>
 </div>
-
-<!-- ============ JUNGLE MENU (collapsible bottom-left) ============ -->
-<button id="jungle-menu-btn" class="jungle-menu-trigger" aria-label="Open menu" aria-haspopup="true" aria-expanded="false" aria-controls="jungle-menu">🐒</button>
-<div id="jungle-menu" class="jungle-menu-panel" role="menu" aria-label="App menu">
-  <button class="jungle-menu-item" id="btn-jungle-swarm" role="menuitem"><span class="menu-icon">🌿</span> Swarm Visualizer</button>
-  <button class="jungle-menu-item" id="btn-jungle-automations" role="menuitem"><span class="menu-icon">⚡</span> Automations</button>
-  <div class="jungle-menu-separator"></div>
-  <button class="jungle-menu-item" id="btn-jungle-settings" role="menuitem"><span class="menu-icon">⚙</span> Settings</button>
-  <div class="jungle-menu-separator"></div>
-  <button class="jungle-menu-item logout" id="btn-jungle-logout" role="menuitem"><span class="menu-icon">⏻</span> Log out</button>
-</div>
-
 
 <!-- ============ SETTINGS MODAL ============ -->
 <div id="modal-settings-backdrop" class="hidden fixed inset-0 bg-black/70 z-[80]" onclick="document.getElementById('modal-settings').classList.add('hidden');document.getElementById('modal-settings-backdrop').classList.add('hidden');"></div>
