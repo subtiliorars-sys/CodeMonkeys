@@ -16,6 +16,9 @@ jobs:
   label:
     runs-on: ubuntu-latest
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Label opened PRs as "status:review"
         if: github.event_name == 'pull_request' && github.event.action == 'opened'
         run: |
