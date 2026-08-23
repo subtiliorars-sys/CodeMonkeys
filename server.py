@@ -164,6 +164,7 @@ MODELS_FILE = os.path.join(DATA_DIR, "model_config.json")
 MODEL_CATALOG_FILE = os.path.join(DATA_DIR, "model_catalog.json")
 MASTER_KEY_FILE = os.path.join(DATA_DIR, "master.key")
 MCP_CONFIG_FILE = os.path.join(DATA_DIR, "mcp_config.json")
+FEATURE_FLAGS_FILE = os.path.join(DATA_DIR, "feature_flags.json")
 SESSIONS_DIR = os.path.join(DATA_DIR, "sessions")
 WORKSPACE_DIR = os.environ.get("WORKSPACE_DIR", os.path.join(DATA_DIR, "workspace"))
 SECRET_FILE = os.path.join(DATA_DIR, "session_secret.key")
@@ -187,6 +188,28 @@ _OAUTH_STATE_TTL = 600
 
 SESSION_TTL = 7 * 24 * 3600
 OPEN_ENROLLMENT = os.environ.get("OPEN_ENROLLMENT", "false").lower() == "true"
+# Commercial hosted seats (docs/COMMERCIAL.md): $1/mo CodeMonkeys sold by
+# OmniTender Systems LLC. Fail-closed OFF until Stripe secrets are set AND
+# BILLING_ENABLED=true — self-host / desktop unchanged.
+STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY", "").strip()
+STRIPE_WEBHOOK_SECRET = os.environ.get("STRIPE_WEBHOOK_SECRET", "").strip()
+STRIPE_PRICE_ID = os.environ.get("STRIPE_PRICE_ID", "").strip()
+BILLING_ENABLED = (
+    os.environ.get("BILLING_ENABLED", "false").lower() == "true"
+    and bool(STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET and STRIPE_PRICE_ID)
+)
+BILLING_PRICE_USD = float(os.environ.get("BILLING_PRICE_USD", "1.00"))
+BILLING_SELLER = os.environ.get(
+    "BILLING_SELLER", "OmniTender Systems LLC"
+).strip() or "OmniTender Systems LLC"
+BILLING_PRODUCT = os.environ.get("BILLING_PRODUCT", "CodeMonkeys").strip() or "CodeMonkeys"
+SUBSCRIPTIONS_FILE = os.path.join(DATA_DIR, "subscriptions.json")
+_SUBSCRIPTIONS_LOCK = threading.Lock()
+_FREE_PACK_MODELS = [
+    "qwen/qwen3-coder:free",
+    "deepseek/deepseek-r1:free",
+    "openai/gpt-oss-120b:free",
+]
 # Login brute-force throttle (fail2ban-style; SECURITY.md "no login rate-limit"):
 # after LOGIN_MAX_FAILS bad attempts within LOGIN_WINDOW_SEC, lock that account
 # for LOGIN_LOCKOUT_SEC. PBKDF2+TOTP already make brute force slow; this bounds it.
@@ -217,6 +240,16 @@ _PUSH_LOCK = threading.Lock()
 # owner-auditable erasure RECEIPT. Both live under DATA_DIR (/data) like users.json.
 ERASED_FILE = os.path.join(DATA_DIR, "erased_accounts.json")          # tombstone
 ERASURE_RECEIPTS_FILE = os.path.join(DATA_DIR, "erasure_receipts.jsonl")  # receipts
+ROLE_RECEIPTS_FILE = os.path.join(DATA_DIR, "role_receipts.jsonl")    # promote/demote receipts
+# S-3 (issue #68) — hash-chained tamper-evident audit trail.  Every safelisted
+# security event (see _AUDIT_SAFELIST) and every erasure receipt is ALSO
+# appended to this chain: each entry commits to the previous entry's SHA-256,
+# so mutation/deletion/insertion/reorder of any entry is detectable by
+# verify_audit_chain() (owner endpoint /api/audit/verify, CLI
+# scripts/verify_audit_chain.py).  The head file records the current tail so
+# truncation of the newest entries is detectable too.
+AUDIT_CHAIN_FILE = os.path.join(DATA_DIR, "audit_chain.jsonl")
+AUDIT_CHAIN_HEAD_FILE = os.path.join(DATA_DIR, "audit_chain.head.json")
 # M-4 cloud-egress consent (Tier B invariant, issue #67): a recorded, revocable,
 # per-user consent decision gating any egress of a user's content to a
 # third-party model provider. The record lives under DATA_DIR like users.json;
@@ -235,6 +268,17 @@ ERASURE_RECEIPTS_FILE = os.path.join(DATA_DIR, "erasure_receipts.jsonl")  # rece
 EGRESS_CONSENT_FILE = os.path.join(DATA_DIR, "egress_consent.json")
 _EGRESS_CONSENT_MODES = ("byok-implied", "explicit")
 _EGRESS_CONSENT_HISTORY_CAP = 20   # bounded per-user grant/revoke audit trail
+# M-8 backup posture (Tier B invariant): GOVERNANCE.md requires the backup path
+# to be VERIFIED, not just documented — "test: restore drill + receipt". CM's
+# data lives on the Fly volume `cm_data` at /data (docs/RECOVERY.md); its backup
+# notion is the Fly volume snapshot. run_backup_drill() (below, near the M-7
+# receipt code) proves a tree is restorable-in-practice by reading back and
+# validating every structured store CM writes, and appends a timestamped receipt
+# here — same append-only JSONL idiom as erasure_receipts.jsonl. Owner-only
+# viewer: GET /api/backup/drill-history; trigger: POST /api/backup/drill or
+# scripts/backup_drill.py (fly ssh console, or against a restored snapshot copy).
+BACKUP_DRILL_RECEIPTS_FILE = os.path.join(DATA_DIR, "backup_drill_receipts.jsonl")
+_BACKUP_DRILL_HISTORY_CAP = 100    # newest receipts returned by the owner endpoint
 SESSION_BUDGET_USD = float(os.environ.get("SESSION_BUDGET_USD", "5.00"))
 # Ceiling for a per-session budget override (W10) — a client can't set a runaway cap.
 SESSION_BUDGET_MAX_USD = float(os.environ.get("SESSION_BUDGET_MAX_USD", "50.00"))
@@ -915,6 +959,12 @@ def _read_enc_file(path: str, default):
     return data, needs_migrate
 
 
+def _fchmod(fd: int, mode: int) -> None:
+    """Best-effort file mode; Windows Python has no os.fchmod."""
+    if hasattr(os, "fchmod"):
+        os.fchmod(fd, mode)  # type: ignore[attr-defined]
+
+
 def _write_enc_file(path: str, data, mode: int = 0o600,
                     clear_decrypt_failed: bool = False) -> None:
     """Atomic write of a JSON config file, Fernet-encrypted when CM_MASTER_KEY
@@ -938,7 +988,7 @@ def _write_enc_file(path: str, data, mode: int = 0o600,
     fd, tmp = tempfile.mkstemp(dir=dir_, prefix=".enc_cfg_")
     try:
         # Apply the desired mode before writing any content.
-        os.fchmod(fd, mode)
+        _fchmod(fd, mode)
         with os.fdopen(fd, "wb") as f:
             f.write(content)
             f.flush()
@@ -962,7 +1012,7 @@ def _write_enc_file(path: str, data, mode: int = 0o600,
                 _orig = _src.read()
             if _orig.startswith(_ENC_MAGIC):
                 bfd, btmp = tempfile.mkstemp(dir=dir_, prefix=".enc_bak_")
-                os.fchmod(bfd, 0o600)
+                _fchmod(bfd, 0o600)
                 with os.fdopen(bfd, "wb") as _bf:
                     _bf.write(_orig)
                 os.replace(btmp, path + ".undecryptable.bak")
@@ -1305,6 +1355,12 @@ def verify_user(username: str = Depends(verify_token)):
         raise HTTPException(403, "Finish first-time setup (authenticator) first")
     if user.get("role") not in ("Owner", "Member"):
         raise HTTPException(403, "Not authorized")
+    # Commercial gate: when billing is live, Members need an active sub.
+    # Owner is always exempt (runs the house). Invited comps can set
+    # subscription_status=active manually / via Owner tools later.
+    if BILLING_ENABLED and user.get("role") == "Member":
+        if (user.get("subscription_status") or "") != "active":
+            raise HTTPException(402, "Active $1/mo subscription required")
     return username
 
 
@@ -1652,6 +1708,350 @@ def invite(req: InviteRequest, _: str = Depends(verify_owner)):
     return {"username": uname, "setup_pin": setup_pin}
 
 
+# ------------------------------------------------- #182: config-backed feature-flag store
+# A tiny on/off switch for risky/experimental toggles, backed by FEATURE_FLAGS_FILE
+# (DATA_DIR/feature_flags.json — a flat {name: bool} map). Runtime-toggleable by
+# the Owner via /api/flags, no restart needed. _KNOWN_FLAGS is the allowlist: a
+# name not listed here can never be set (fail closed on typos / unknown flags),
+# and flag_enabled() defaults an unknown/unset flag to False. Every toggle is
+# also committed to the S-3 audit chain (feature_flag_set) for accountability.
+#
+# Lifecycle for a new flag: add it to _KNOWN_FLAGS (default off), gate the new
+# code path with flag_enabled(name), ship dark, flip on via the Owner API when
+# ready, remove the gate once it's proven and always-on.
+_KNOWN_FLAGS: dict[str, bool] = {
+    # Reference-only demo flag — proves the store's on/off + runtime-toggle
+    # mechanism (see GET /api/flags/example below). Not a real feature.
+    "example_reference_endpoint": False,
+}
+
+
+def _load_feature_flags() -> dict:
+    if not os.path.exists(FEATURE_FLAGS_FILE):
+        return {}
+    try:
+        with open(FEATURE_FLAGS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_feature_flags(data: dict) -> None:
+    os.makedirs(os.path.dirname(FEATURE_FLAGS_FILE) or ".", exist_ok=True)
+    tmp = FEATURE_FLAGS_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+    os.replace(tmp, FEATURE_FLAGS_FILE)
+
+
+def flag_enabled(name: str) -> bool:
+    """Current on/off state of a flag. Unknown/unset flags default to False —
+    fail closed."""
+    return bool(_load_feature_flags().get(name, _KNOWN_FLAGS.get(name, False)))
+
+
+@app.get("/api/flags")
+def flags_list(_: str = Depends(verify_owner)):
+    """Owner-only view of every known flag and its current state."""
+    stored = _load_feature_flags()
+    return {"flags": [
+        {"name": name, "enabled": stored.get(name, default)}
+        for name, default in sorted(_KNOWN_FLAGS.items())
+    ]}
+
+
+class FeatureFlagUpdate(BaseModel):
+    enabled: bool
+
+
+@app.post("/api/flags/{name}")
+def flags_set(name: str, req: FeatureFlagUpdate, owner: str = Depends(verify_owner)):
+    """Owner-only runtime toggle. Rejects any name not in _KNOWN_FLAGS —
+    fail-closed on typos so a flag can't be silently created out of thin air."""
+    if name not in _KNOWN_FLAGS:
+        raise HTTPException(404, "Unknown flag")
+    flags = _load_feature_flags()
+    flags[name] = bool(req.enabled)
+    _save_feature_flags(flags)
+    audit_chain_append({"type": "feature_flag_set", "flag": name,
+                        "enabled": bool(req.enabled), "by": owner,
+                        "ts": int(time.time())})
+    return {"name": name, "enabled": bool(req.enabled)}
+
+
+@app.get("/api/flags/example")
+def flags_example_endpoint():
+    """Reference-only demo route gated by example_reference_endpoint — exists
+    purely to prove the flag store's on/off + runtime-toggle mechanism."""
+    if not flag_enabled("example_reference_endpoint"):
+        raise HTTPException(404, "Not found")
+    return {"ok": True}
+
+
+# ------------------------------------------------- commercial billing (OmniTender → CodeMonkeys)
+# Ratified docs/COMMERCIAL.md. Fail-closed: routes that need Stripe raise 503
+# unless BILLING_ENABLED (secrets present). Public status always answers.
+
+def _load_subscriptions() -> dict:
+    if not os.path.exists(SUBSCRIPTIONS_FILE):
+        return {}
+    try:
+        with open(SUBSCRIPTIONS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_subscriptions(data: dict) -> None:
+    os.makedirs(DATA_DIR, exist_ok=True)
+    tmp = SUBSCRIPTIONS_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, sort_keys=True)
+    os.replace(tmp, SUBSCRIPTIONS_FILE)
+    try:
+        os.chmod(SUBSCRIPTIONS_FILE, 0o600)
+    except OSError:
+        pass
+
+
+def _billing_public_info() -> dict:
+    return {
+        "enabled": BILLING_ENABLED,
+        "product": BILLING_PRODUCT,
+        "seller": BILLING_SELLER,
+        "price_usd": BILLING_PRICE_USD,
+        "interval": "month",
+        "tagline": "Coding agents as entertainment - free models wired for you.",
+    }
+
+
+def _stripe_form_post(path: str, data: dict) -> dict:
+    if not STRIPE_SECRET_KEY:
+        raise HTTPException(503, "Billing not configured")
+    r = requests.post(
+        f"https://api.stripe.com/v1/{path}",
+        auth=(STRIPE_SECRET_KEY, ""),
+        data=data,
+        timeout=30,
+    )
+    if r.status_code >= 400:
+        detail = "Stripe error"
+        try:
+            detail = r.json().get("error", {}).get("message") or detail
+        except Exception:
+            pass
+        raise HTTPException(502, detail)
+    return r.json()
+
+
+def _verify_stripe_webhook(payload: bytes, sig_header: str) -> dict:
+    """Verify Stripe-Signature (t=…,v1=…) without the stripe SDK."""
+    if not STRIPE_WEBHOOK_SECRET:
+        raise HTTPException(503, "Billing not configured")
+    if not sig_header:
+        raise HTTPException(400, "Missing Stripe-Signature")
+    parts = {}
+    for item in sig_header.split(","):
+        if "=" in item:
+            k, v = item.split("=", 1)
+            parts.setdefault(k.strip(), []).append(v.strip())
+    try:
+        ts = parts["t"][0]
+        candidates = parts.get("v1") or []
+    except (KeyError, IndexError):
+        raise HTTPException(400, "Bad Stripe-Signature")
+    try:
+        if abs(time.time() - int(ts)) > 300:
+            raise HTTPException(400, "Webhook timestamp too old")
+    except ValueError:
+        raise HTTPException(400, "Bad Stripe-Signature timestamp")
+    signed = f"{ts}.".encode() + payload
+    expected = hmac.new(
+        STRIPE_WEBHOOK_SECRET.encode(), signed, hashlib.sha256
+    ).hexdigest()
+    if not any(hmac.compare_digest(expected, c) for c in candidates):
+        raise HTTPException(400, "Bad Stripe signature")
+    try:
+        return json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise HTTPException(400, "Bad JSON body")
+
+
+def _activate_subscriber(username: str, *, customer_id: str = "",
+                         subscription_id: str = "", status: str = "active") -> None:
+    """Create or refresh a Member seat for a paid username; seed free pack."""
+    uname = (username or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{2,32}", uname):
+        _log.warning("billing: ignoring bad username %r", username)
+        return
+    if _is_erased(uname):
+        _log.warning("billing: refusing erased username %s", uname)
+        return
+    with _USERS_LOCK:
+        users = load_users()
+        user = users.get(uname)
+        if user and user.get("role") == "Owner":
+            # Never demote / overwrite the Owner via Stripe metadata.
+            user["subscription_status"] = "active"
+            users[uname] = user
+        elif user:
+            user["subscription_status"] = status
+            if customer_id:
+                user["stripe_customer_id"] = customer_id
+            if subscription_id:
+                user["stripe_subscription_id"] = subscription_id
+            users[uname] = user
+        else:
+            users[uname] = {
+                "role": "Member",
+                "mfa_secret": "",
+                "must_reset": True,
+                "created": int(time.time()),
+                "subscription_status": status,
+                "stripe_customer_id": customer_id,
+                "stripe_subscription_id": subscription_id,
+                "source": "stripe",
+            }
+        save_users(users)
+    with _SUBSCRIPTIONS_LOCK:
+        subs = _load_subscriptions()
+        key = subscription_id or f"user:{uname}"
+        subs[key] = {
+            "username": uname,
+            "customer_id": customer_id,
+            "subscription_id": subscription_id,
+            "status": status,
+            "updated": int(time.time()),
+        }
+        _save_subscriptions(subs)
+    if status == "active":
+        try:
+            ensure_free_pack_ready()
+        except Exception as e:
+            _log.error("free pack seed failed: %s", e)
+
+
+def _deactivate_subscriber(username: str = "", subscription_id: str = "") -> None:
+    with _USERS_LOCK:
+        users = load_users()
+        target = username
+        if not target and subscription_id:
+            for u, d in users.items():
+                if d.get("stripe_subscription_id") == subscription_id:
+                    target = u
+                    break
+        if target and target in users and users[target].get("role") != "Owner":
+            users[target]["subscription_status"] = "canceled"
+            save_users(users)
+    if subscription_id:
+        with _SUBSCRIPTIONS_LOCK:
+            subs = _load_subscriptions()
+            if subscription_id in subs:
+                subs[subscription_id]["status"] = "canceled"
+                subs[subscription_id]["updated"] = int(time.time())
+                _save_subscriptions(subs)
+
+
+@app.get("/api/billing/status")
+def billing_status():
+    """Public commercial offer — always available (enabled may be false)."""
+    return _billing_public_info()
+
+
+class CheckoutRequest(BaseModel):
+    username: str
+    success_url: str = ""
+    cancel_url: str = ""
+
+
+@app.post("/api/billing/checkout")
+def billing_checkout(req: CheckoutRequest, request: Request):
+    """Start Stripe Checkout for a $1/mo CodeMonkeys seat (OmniTender seller)."""
+    if not BILLING_ENABLED:
+        raise HTTPException(503, "Subscriptions are not enabled on this host")
+    uname = req.username.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{2,32}", uname):
+        raise HTTPException(400, "Bad username")
+    if _is_erased(uname):
+        raise HTTPException(403, "That username was erased and cannot be reused")
+    users = load_users()
+    existing = users.get(uname)
+    if existing and existing.get("role") == "Owner":
+        raise HTTPException(400, "That username is reserved")
+    if existing and not existing.get("must_reset") and (
+            existing.get("subscription_status") == "active"):
+        raise HTTPException(409, "Username already has an active subscription")
+    # Build return URLs from the request host when not supplied.
+    base = str(request.base_url).rstrip("/")
+    success = (req.success_url or f"{base}/?subscribed=1&u={uname}").strip()
+    cancel = (req.cancel_url or f"{base}/?subscribe=cancel").strip()
+    session = _stripe_form_post("checkout/sessions", {
+        "mode": "subscription",
+        "line_items[0][price]": STRIPE_PRICE_ID,
+        "line_items[0][quantity]": "1",
+        "success_url": success,
+        "cancel_url": cancel,
+        "client_reference_id": uname,
+        "metadata[username]": uname,
+        "metadata[product]": BILLING_PRODUCT,
+        "metadata[seller]": BILLING_SELLER,
+        "subscription_data[metadata][username]": uname,
+        "allow_promotion_codes": "true",
+    })
+    url = session.get("url")
+    if not url:
+        raise HTTPException(502, "Stripe did not return a checkout URL")
+    return {"url": url, "session_id": session.get("id"), "username": uname}
+
+
+@app.post("/api/billing/webhook")
+async def billing_webhook(request: Request):
+    if not BILLING_ENABLED:
+        raise HTTPException(503, "Billing not configured")
+    payload = await request.body()
+    sig = request.headers.get("stripe-signature") or request.headers.get("Stripe-Signature") or ""
+    event = _verify_stripe_webhook(payload, sig)
+    etype = event.get("type") or ""
+    obj = (event.get("data") or {}).get("object") or {}
+    if etype == "checkout.session.completed":
+        uname = (obj.get("client_reference_id")
+                 or (obj.get("metadata") or {}).get("username") or "")
+        _activate_subscriber(
+            uname,
+            customer_id=obj.get("customer") or "",
+            subscription_id=obj.get("subscription") or "",
+            status="active",
+        )
+    elif etype in ("customer.subscription.updated", "customer.subscription.created"):
+        meta = obj.get("metadata") or {}
+        uname = meta.get("username") or ""
+        status = obj.get("status") or "active"
+        mapped = "active" if status in ("active", "trialing") else status
+        _activate_subscriber(
+            uname,
+            customer_id=obj.get("customer") or "",
+            subscription_id=obj.get("id") or "",
+            status=mapped,
+        )
+        if mapped not in ("active", "trialing"):
+            _deactivate_subscriber(username=uname, subscription_id=obj.get("id") or "")
+    elif etype == "customer.subscription.deleted":
+        meta = obj.get("metadata") or {}
+        _deactivate_subscriber(
+            username=meta.get("username") or "",
+            subscription_id=obj.get("id") or "",
+        )
+    return {"ok": True}
+
+
+@app.post("/api/billing/seed-free-pack")
+def billing_seed_free_pack(_: str = Depends(verify_owner)):
+    """Owner can re-run free-pack seeding without a Stripe event."""
+    return ensure_free_pack_ready()
+
+
 @app.get("/api/users")
 def users_list(_: str = Depends(verify_owner)):
     return {"users": sorted([
@@ -1883,6 +2283,10 @@ def _write_receipt(uname: str, by: str, stores: list, ts: int) -> None:
                                     "by": by, "stores": stores}) + "\n")
         except OSError as e:
             _log.error("M-7 erasure: receipt append failed for %r: %s", uname, e)
+    # S-3 (issue #68): commit the receipt to the tamper-evident hash chain too
+    # (same minimal fields as the receipt line — id + store names only).
+    audit_chain_append({"type": "erasure", "ts": ts, "user": uname, "by": by,
+                        "stores": list(stores)})
     _log.info("M-7 erasure receipt: user=%s by=%s stores=%s", uname, by, stores)
 
 
@@ -1915,6 +2319,70 @@ def users_delete(uname: str, owner: str = Depends(verify_owner)):
     return {"ok": True, "erased": uname, "stores": stores}
 
 
+def _write_role_receipt(uname: str, by: str, old_role: str, new_role: str) -> None:
+    """Owner-auditable role-change receipt (multi-admin, 2026-07-20): id + role
+    transition + who did it — no pin/salt/secret material. Mirrors _write_receipt's
+    shape and, like erasures, also lands on the S-3 tamper-evident hash chain."""
+    ts = int(time.time())
+    entry = {"ts": ts, "event": "role_change", "user": uname, "by": by,
+              "old_role": old_role, "new_role": new_role}
+    try:
+        with open(ROLE_RECEIPTS_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+    except OSError as e:
+        _log.error("role_change: receipt append failed for %r: %s", uname, e)
+    audit_chain_append(entry)
+    _log.info("role_change receipt: user=%s by=%s %s->%s", uname, by, old_role, new_role)
+
+
+@app.post("/api/users/{uname}/promote")
+def users_promote(uname: str, owner: str = Depends(verify_owner)):
+    """Grant Owner (admin) privileges to an existing Member. Owner-only, so
+    the very first privilege escalation always requires an already-trusted
+    Owner to act — self-service accounts (open enrollment or invite) can
+    never promote themselves.
+
+    Red-team finding (2026-07-20): a pending invite (must_reset=True) is an
+    unclaimed username — the invite doc's own accepted residual risk is that
+    someone who learns a pending username before its real owner first logs in
+    can claim it. That's an accepted risk at Member scope; promoting an
+    unclaimed username straight to Owner would let that same race claim Owner
+    privileges instead, a much bigger blast radius than what was ever
+    accepted. Require the account to have completed setup (must_reset false)
+    before it can be promoted."""
+    with _USERS_LOCK:
+        users = load_users()
+        if uname not in users:
+            raise HTTPException(404, "No such user")
+        if users[uname].get("role") == "Owner":
+            raise HTTPException(400, "Already an Owner")
+        if users[uname].get("must_reset"):
+            raise HTTPException(400, "Can't promote a pending invite that hasn't completed account setup yet")
+        users[uname]["role"] = "Owner"
+        save_users(users)
+    _write_role_receipt(uname, by=owner, old_role="Member", new_role="Owner")
+    return {"ok": True, "username": uname, "role": "Owner"}
+
+
+@app.post("/api/users/{uname}/demote")
+def users_demote(uname: str, owner: str = Depends(verify_owner)):
+    """Revoke Owner privileges from another admin, back to Member. An Owner
+    can never demote themself — prevents an accidental zero-Owner lockout,
+    same guard shape as users_delete's self-delete block."""
+    if uname == owner:
+        raise HTTPException(400, "You can't demote your own Owner account")
+    with _USERS_LOCK:
+        users = load_users()
+        if uname not in users:
+            raise HTTPException(404, "No such user")
+        if users[uname].get("role") != "Owner":
+            raise HTTPException(400, "Not an Owner")
+        users[uname]["role"] = "Member"
+        save_users(users)
+    _write_role_receipt(uname, by=owner, old_role="Owner", new_role="Member")
+    return {"ok": True, "username": uname, "role": "Member"}
+
+
 @app.get("/api/erasures")
 def erasures_list(_: str = Depends(verify_owner)):
     """Owner-only view of the erasure tombstone trail (M-7 receipt audit): the
@@ -1924,6 +2392,26 @@ def erasures_list(_: str = Depends(verify_owner)):
         ({"username": u, "erased_at": d.get("erased_at"), "by": d.get("by")}
          for u, d in erased.items()),
         key=lambda x: x.get("erased_at") or 0, reverse=True)}
+
+
+@app.get("/api/role-changes")
+def role_changes_list(_: str = Depends(verify_owner)):
+    """Owner-only view of the promote/demote receipt trail."""
+    entries = []
+    try:
+        with open(ROLE_RECEIPTS_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entries.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        pass
+    entries.sort(key=lambda x: x.get("ts") or 0, reverse=True)
+    return {"role_changes": entries}
 
 
 # ------------------------------------------------- M-4 cloud-egress consent
@@ -2049,6 +2537,312 @@ def me_egress_consent_set(req: EgressConsentUpdate,
     allowed, _reason = _egress_allowed(username)
     return {"ok": True, "status": rec["status"], "updated_at": rec["updated_at"],
             "mode": _egress_consent_mode(), "effective_allowed": allowed}
+
+
+# ------------------------------------------------- M-8 backup posture: restore drill
+# The drill answers ONE question with a receipt: "would the data tree under
+# DATA_DIR actually come back after a restore?" It reads back and validates
+# every structured store CM writes (JSON parse + expected shape, JSONL line
+# parse, CMENC1 decrypt under the current master key, S-3 chain integrity via
+# verify_audit_chain, the sessions tree), then appends the result to
+# BACKUP_DRILL_RECEIPTS_FILE and commits a summary to the S-3 hash chain —
+# the M-7 receipt idiom. It is READ-ONLY over the stores themselves (its only
+# write is its own receipt), and failure reasons carry exception class +
+# position ONLY, never file bytes, so a corrupted store cannot leak content
+# through a receipt or an API response. Run it against the LIVE tree
+# (round-trip readability) or a RESTORED snapshot copy via data_dir=
+# (scripts/backup_drill.py <dir>) — the actual restore drill.
+
+_BACKUP_DRILL_LOCK = threading.Lock()
+
+# Every structured store CM writes under DATA_DIR: (canonical name, the module
+# global holding its live path, checker kind). Live runs resolve the global (so
+# env overrides like USERS_FILE are honored); data_dir= runs join the canonical
+# name under the given tree. The audit chain + sessions tree are checked
+# separately below; anything NOT listed here is still caught by the generic
+# top-level *.json/*.jsonl sweep in run_backup_drill.
+_BACKUP_DRILL_STORES = (
+    ("users.json",              "USERS_FILE",             "json-dict"),
+    ("erased_accounts.json",    "ERASED_FILE",            "json-dict"),
+    ("egress_consent.json",     "EGRESS_CONSENT_FILE",    "json-dict"),
+    ("login_throttle.json",     "LOGIN_THROTTLE_FILE",    "json-dict"),
+    ("daily_spend.json",        "DAILY_SPEND_FILE",       "json-dict"),
+    ("desk_settings.json",      "DESK_SETTINGS_FILE",     "json-dict"),
+    ("push_subscriptions.json", "PUSH_SUBS_FILE",         "json-dict"),
+    ("subscriptions.json",      "SUBSCRIPTIONS_FILE",     "json-dict"),
+    ("push_vapid.json",         "PUSH_VAPID_FILE",        "json"),
+    ("feedback_status.json",    "FEEDBACK_STATUS_FILE",   "json"),
+    ("model_catalog.json",      "MODEL_CATALOG_FILE",     "json"),
+    ("mcp_config.json",         "MCP_CONFIG_FILE",        "json-list"),
+    ("model_config.json",       "MODELS_FILE",            "enc-json"),
+    ("mcp_tokens.json",         "MCP_TOKENS_FILE",        "enc-json"),
+    ("erasure_receipts.jsonl",  "ERASURE_RECEIPTS_FILE",  "jsonl"),
+    ("role_receipts.jsonl",     "ROLE_RECEIPTS_FILE",     "jsonl"),
+    ("feedback.jsonl",          "FEEDBACK_FILE",          "jsonl"),
+    ("backup_drill_receipts.jsonl", "BACKUP_DRILL_RECEIPTS_FILE", "jsonl"),
+    ("session_secret.key",      "SECRET_FILE",            "key"),
+    ("master.key",              "MASTER_KEY_FILE",        "key"),
+)
+
+
+def _drill_reason(exc: Exception) -> str:
+    """Terse, content-free failure reason. JSONDecodeError/UnicodeDecodeError
+    are reduced to class + position (their str() never embeds the document, but
+    we don't rely on that); OSError messages carry errno + path only."""
+    if isinstance(exc, json.JSONDecodeError):
+        return f"JSONDecodeError: line {exc.lineno} column {exc.colno}"
+    if isinstance(exc, UnicodeDecodeError):
+        return f"UnicodeDecodeError: byte offset {exc.start}"
+    return f"{type(exc).__name__}: {exc}"
+
+
+def _drill_check_json(path: str, want: type | None = None) -> dict:
+    """A plain-JSON store parses and (when known) has the expected top-level
+    shape. Absent is fine — a fresh volume simply hasn't written it yet."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return {"status": "absent"}
+    except (OSError, ValueError, UnicodeDecodeError) as e:
+        return {"status": "fail", "reason": _drill_reason(e)}
+    if want is not None and not isinstance(data, want):
+        return {"status": "fail",
+                "reason": f"expected {want.__name__}, got {type(data).__name__}"}
+    return {"status": "pass"}
+
+
+def _drill_check_jsonl(path: str) -> dict:
+    """Every non-blank line of an append-only JSONL store parses."""
+    try:
+        f = open(path, encoding="utf-8")
+    except FileNotFoundError:
+        return {"status": "absent"}
+    except OSError as e:
+        return {"status": "fail", "reason": _drill_reason(e)}
+    records = 0
+    line_no = 0
+    with f:
+        try:
+            for line_no, line in enumerate(f, start=1):
+                if not line.strip():
+                    continue
+                json.loads(line)
+                records += 1
+        except (ValueError, UnicodeDecodeError) as e:
+            return {"status": "fail",
+                    "reason": f"line {line_no}: {_drill_reason(e)}"}
+        except OSError as e:
+            return {"status": "fail", "reason": _drill_reason(e)}
+    return {"status": "pass", "records": records}
+
+
+def _drill_check_enc_json(path: str) -> dict:
+    """A config store that may be Fernet-encrypted (CMENC1) or plaintext JSON.
+    Unlike the runtime readers this is STRICT and side-effect-free: a file we
+    cannot decrypt is a drill FAILURE (after a restore that is exactly what the
+    Owner must find out), and the fail-soft _DECRYPT_FAILED banner flag is left
+    alone. Decryption uses the process's current master key (CM_MASTER_KEY env
+    or data/master.key) — the same key a restored volume would boot with."""
+    try:
+        with open(path, "rb") as f:
+            blob = f.read()
+    except FileNotFoundError:
+        return {"status": "absent"}
+    except OSError as e:
+        return {"status": "fail", "reason": _drill_reason(e)}
+    encrypted = blob.startswith(_ENC_MAGIC)
+    if encrypted:
+        fernet = _make_fernet()
+        if fernet is None:
+            return {"status": "fail", "reason":
+                    "encrypted (CMENC1) but no master key is available to decrypt"}
+        try:
+            blob = fernet.decrypt(blob[len(_ENC_MAGIC):])
+        except _FernetInvalidToken:
+            return {"status": "fail", "reason":
+                    "encrypted (CMENC1) but does not decrypt under the current master key"}
+    try:
+        json.loads(blob.decode())
+    except (ValueError, UnicodeDecodeError) as e:
+        return {"status": "fail", "reason": _drill_reason(e)}
+    return {"status": "pass", "encrypted": encrypted}
+
+
+def _drill_check_key(path: str) -> dict:
+    """Key material just has to be present-and-readable (absent is fine — both
+    keys are regenerated on first boot; content is deliberately not inspected)."""
+    try:
+        with open(path, "rb") as f:
+            blob = f.read()
+    except FileNotFoundError:
+        return {"status": "absent"}
+    except OSError as e:
+        return {"status": "fail", "reason": _drill_reason(e)}
+    if not blob.strip():
+        return {"status": "fail", "reason": "key file exists but is empty"}
+    return {"status": "pass"}
+
+
+def _drill_check_chain(chain_path: str, head_path: str) -> dict:
+    """The S-3 audit chain must not just parse — it must VERIFY (hash links,
+    sequence, tail-truncation). Reuses verify_audit_chain so drill and
+    /api/audit/verify can never drift apart."""
+    if not os.path.exists(chain_path) and not os.path.exists(head_path):
+        return {"status": "absent"}
+    res = verify_audit_chain(chain_path, head_path)
+    if res.get("ok"):
+        return {"status": "pass", "records": res.get("entries", 0)}
+    return {"status": "fail",
+            "reason": res.get("error", "chain verification failed")}
+
+
+def _drill_check_sessions(sessions_dir: str) -> dict:
+    """Every persisted session artifact (index.json, *.history.json,
+    *.events.jsonl) reads back. Reported as one store; a failure lists the
+    first few offending filenames (server-generated sids — no user content)."""
+    if not os.path.isdir(sessions_dir):
+        return {"status": "absent"}
+    try:
+        names = sorted(os.listdir(sessions_dir))
+    except OSError as e:
+        return {"status": "fail", "reason": _drill_reason(e)}
+    checked, bad = 0, []
+    for name in names:
+        path = os.path.join(sessions_dir, name)
+        if not os.path.isfile(path) or ".tmp." in name:
+            continue
+        if name.endswith(".jsonl"):
+            res = _drill_check_jsonl(path)
+        elif name.endswith(".json"):
+            res = _drill_check_json(path)
+        else:
+            continue
+        checked += 1
+        if res["status"] == "fail":
+            bad.append(f"{name}: {res.get('reason', '')}")
+    if bad:
+        suffix = f" (+{len(bad) - 5} more)" if len(bad) > 5 else ""
+        return {"status": "fail", "files": checked,
+                "reason": "; ".join(bad[:5]) + suffix}
+    return {"status": "pass", "files": checked}
+
+
+def run_backup_drill(by: str, data_dir: str | None = None) -> dict:
+    """M-8 restore drill. data_dir=None drills the LIVE tree (module-global
+    paths); a path drills a restored/copied tree laid out like /data. Appends a
+    receipt into the drilled tree and (live runs only) commits a summary to the
+    S-3 chain. Returns the full per-store result."""
+    checkers = {
+        "json":      _drill_check_json,
+        "json-dict": lambda p: _drill_check_json(p, dict),
+        "json-list": lambda p: _drill_check_json(p, list),
+        "jsonl":     _drill_check_jsonl,
+        "enc-json":  _drill_check_enc_json,
+        "key":       _drill_check_key,
+    }
+    base = data_dir if data_dir is not None else DATA_DIR
+    results, covered = [], set()
+    for name, attr, kind in _BACKUP_DRILL_STORES:
+        path = os.path.join(data_dir, name) if data_dir is not None else globals()[attr]
+        covered.add(os.path.normcase(os.path.abspath(path)))
+        results.append({"store": name, **checkers[kind](path)})
+    if data_dir is not None:
+        chain = os.path.join(data_dir, "audit_chain.jsonl")
+        head = os.path.join(data_dir, "audit_chain.head.json")
+        sessions = os.path.join(data_dir, "sessions")
+    else:
+        chain, head, sessions = AUDIT_CHAIN_FILE, AUDIT_CHAIN_HEAD_FILE, SESSIONS_DIR
+    covered.update(os.path.normcase(os.path.abspath(p)) for p in (chain, head))
+    results.append({"store": "audit_chain", **_drill_check_chain(chain, head)})
+    results.append({"store": "sessions/", **_drill_check_sessions(sessions)})
+    # Future-proofing sweep: a store added later (or landed out-of-band) still
+    # gets a generic parse check, so the drill can't silently under-cover.
+    try:
+        extras = sorted(os.listdir(base)) if os.path.isdir(base) else []
+    except OSError:
+        extras = []
+    for name in extras:
+        path = os.path.join(base, name)
+        if (not os.path.isfile(path)
+                or os.path.normcase(os.path.abspath(path)) in covered
+                or name.startswith(".") or ".tmp." in name
+                or name.endswith(".bak")):
+            continue
+        if name.endswith(".jsonl"):
+            results.append({"store": name, **_drill_check_jsonl(path)})
+        elif name.endswith(".json"):
+            results.append({"store": name, **_drill_check_enc_json(path)})
+    failed = [r["store"] for r in results if r["status"] == "fail"]
+    checked = sum(1 for r in results if r["status"] != "absent")
+    # A drill that verified NOTHING is not a pass: an empty tree is what
+    # restoring the wrong (or blank) volume looks like. Live trees always have
+    # at least session_secret.key, so this only bites a bad data_dir.
+    out = {"ok": not failed and checked > 0, "ts": int(time.time()), "by": by,
+           "data_dir": base, "checked": checked,
+           "absent": sum(1 for r in results if r["status"] == "absent"),
+           "failed": failed, "stores": results}
+    if checked == 0:
+        out["note"] = "no stores found — empty tree or wrong data_dir?"
+    _write_drill_receipt(out, data_dir=data_dir)
+    return out
+
+
+def _write_drill_receipt(result: dict, data_dir: str | None = None) -> None:
+    """Append the drill receipt (append-only JSONL — the M-7 receipt idiom).
+    Live runs also commit a summary to the S-3 hash chain, so 'a drill ran and
+    said X' is itself tamper-evident. Best-effort like _write_receipt: an
+    OSError is logged, never raised into the caller."""
+    path = (os.path.join(data_dir, "backup_drill_receipts.jsonl")
+            if data_dir is not None else BACKUP_DRILL_RECEIPTS_FILE)
+    line = {"ts": result["ts"], "event": "backup_drill", "by": result["by"],
+            "ok": result["ok"], "checked": result["checked"],
+            "absent": result["absent"], "failed": result["failed"],
+            "stores": result["stores"]}
+    with _BACKUP_DRILL_LOCK:
+        try:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(line) + "\n")
+        except OSError as e:
+            _log.error("M-8 drill: receipt append failed: %s", e)
+    if data_dir is None:
+        audit_chain_append({"type": "backup_drill", "ts": result["ts"],
+                            "by": result["by"], "ok": result["ok"],
+                            "checked": result["checked"],
+                            "failed": result["failed"]})
+    _log.info("M-8 backup drill: ok=%s checked=%s failed=%s by=%s",
+              result["ok"], result["checked"], result["failed"], result["by"])
+
+
+@app.post("/api/backup/drill")
+def backup_drill_run(owner: str = Depends(verify_owner)):
+    """M-8 — Owner-only restore drill over the live DATA_DIR. Read-only apart
+    from appending its own receipt; returns the full per-store result."""
+    return run_backup_drill(by=owner)
+
+
+@app.get("/api/backup/drill-history")
+def backup_drill_history(_: str = Depends(verify_owner)):
+    """Owner-only view of past drill receipts, newest first, bounded — the
+    GET /api/erasures idiom for the M-8 receipt trail."""
+    receipts, malformed = [], 0
+    try:
+        with open(BACKUP_DRILL_RECEIPTS_FILE, encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    receipts.append(json.loads(line))
+                except ValueError:
+                    malformed += 1
+    except FileNotFoundError:
+        pass
+    except OSError:
+        raise HTTPException(500, "drill receipt store unreadable")
+    receipts = receipts[-_BACKUP_DRILL_HISTORY_CAP:]
+    receipts.reverse()
+    return {"drills": receipts, "malformed_lines": malformed}
 
 
 class FirstSetup(BaseModel):
@@ -2871,15 +3665,73 @@ def _resolve(prov, pid=None, username=None):
             "vertex_username": username}
 
 
+def ensure_free_pack_ready() -> dict:
+    """Seed OpenRouter free models + Auto routing for the commercial free pack.
+
+    Idempotent. Does not touch Owner paid keys. Safe to call from Stripe
+    webhooks and Owner tools.
+    """
+    cfg = load_models()
+    providers = cfg.setdefault("providers", {})
+    base = json.loads(json.dumps(DEFAULT_PROVIDERS.get("openrouter", {})))
+    or_ = providers.get("openrouter") or base
+    models = list(or_.get("models") or [])
+    for mid in _FREE_PACK_MODELS:
+        if mid not in models:
+            models.append(mid)
+    or_["models"] = models
+    or_.setdefault("label", "OpenRouter")
+    or_.setdefault("kind", "openai")
+    or_.setdefault("base_url", "https://openrouter.ai/api/v1")
+    or_["auto"] = True
+    # Prefer a free model when no key is configured.
+    if not or_.get("key"):
+        cur = (or_.get("model") or "").strip()
+        if not cur.endswith(":free"):
+            or_["model"] = _FREE_PACK_MODELS[0]
+        for mid in _FREE_PACK_MODELS:
+            _upsert_catalog_entry(or_, mid, 0.0, 0.0, name=mid)
+    providers["openrouter"] = or_
+    cfg["providers"] = providers
+    cfg["selected"] = "auto"
+    cfg["auto_cheapest"] = True
+    save_models(cfg)
+    return {"ok": True, "models": list(or_.get("models") or [])}
+
+
 def _callable_provider(p, username=None):
     """The chat layer can actually call this entry: has a key, and openai-kind
     needs a base_url — blank would hit `requests.post("/chat/completions")`
-    (Invalid URL) and burn the full transient-retry backoff before escalation."""
+    (Invalid URL) and burn the full transient-retry backoff before escalation.
+
+    OpenRouter free-tier exception (docs/COMMERCIAL.md): models ending in
+    `:free` (or catalogued at $0/$0) are callable without a key — rate-limited
+    public free pack so subscribers don't need a client setup to start.
+    """
     if p.get("kind") == "vertex":
         return _user_can_use_vertex(username)
     if not p.get("key"):
-        return False
+        if not _openrouter_free_no_key_ok(p):
+            return False
     return p.get("kind") != "openai" or bool(str(p.get("base_url") or "").strip())
+
+
+def _openrouter_free_no_key_ok(p: dict) -> bool:
+    """True when this provider can use OpenRouter's unauthenticated free tier."""
+    base = (p.get("base_url") or "").lower()
+    if "openrouter.ai" not in base:
+        return False
+    model = (p.get("model") or "").strip()
+    if model.endswith(":free"):
+        return True
+    entry = _catalog_lookup(p, model) if model else None
+    if entry is not None:
+        try:
+            if float(entry.get("in") or 0) == 0 and float(entry.get("out") or 0) == 0:
+                return True
+        except (TypeError, ValueError):
+            pass
+    return False
 
 
 def _find_free_provider(cfg, username=None):
@@ -6233,6 +7085,14 @@ def emit(session, etype, **fields):
             f.write(json.dumps(evt) + "\n")
     except OSError:
         pass
+    # S-3 (issue #68): security-relevant events also go into the hash-chained
+    # tamper-evident trail — the SAME redacted projection /api/audit serves
+    # (safelisted types + safelisted fields only), so the chain never persists
+    # anything the audit surface wouldn't already expose.
+    if etype in _AUDIT_SAFELIST:
+        proj = _audit_filter_event(session["id"], evt)
+        if proj is not None:
+            audit_chain_append(proj)
     return evt
 
 
@@ -7497,6 +8357,187 @@ def _audit_filter_event(sid: str, evt: dict) -> dict | None:
                 v = v[:600]
             proj[k] = v
     return proj
+
+
+# ---- S-3 hash-chained tamper-evident receipts (issue #68) ---------------------
+# The in-memory aggregator above answers "what happened"; the chain below makes
+# the PERSISTED trail tamper-evident.  Every safelisted event (the same redacted
+# projection /api/audit serves — nothing new is exposed) and every M-7 erasure
+# receipt is appended to AUDIT_CHAIN_FILE as
+#     {"seq": n, "prev": <sha256 of entry n-1>, "event": {...}, "hash": <sha256>}
+# where hash = SHA-256(canonical JSON of {event, prev, seq}).  Entry 0 links to
+# a well-known genesis value.  AUDIT_CHAIN_HEAD_FILE records the current tail
+# (seq + hash) so deleting entries off the END of the file is also detectable.
+#
+# Threat model / limits: this is tamper-EVIDENCE, not tamper-proofing.  An
+# attacker with write access to /data who deletes the chain file AND the head
+# record together leaves an empty-but-valid trail — a self-contained log cannot
+# prove its own absence.  Anchoring the head hash externally (e.g. the owner
+# noting `verify`'s head value out-of-band) closes that; any partial edit is
+# caught by verify_audit_chain().  Access control is unchanged: the chain file
+# lives under DATA_DIR like the session event logs, and the verification
+# endpoint is verify_owner-gated like /api/audit itself.
+
+_AUDIT_CHAIN_GENESIS = "0" * 64
+_AUDIT_CHAIN_LOCK = threading.Lock()
+# Cached (seq, hash) of the newest chain entry; lazily loaded under the lock.
+_AUDIT_CHAIN_TAIL: dict = {"loaded": False, "seq": -1, "hash": _AUDIT_CHAIN_GENESIS}
+
+
+def _audit_chain_entry_hash(seq: int, prev: str, event: dict) -> str:
+    """Canonical SHA-256 for a chain entry: sorted-key, compact-separator JSON
+    of {event, prev, seq}.  Deterministic — the same entry always hashes the
+    same, so the verifier can recompute it from the persisted line."""
+    payload = json.dumps({"event": event, "prev": prev, "seq": seq},
+                         sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _audit_chain_load_tail() -> None:
+    """Populate _AUDIT_CHAIN_TAIL from the last line of the chain file (the
+    file, not the head record, is authoritative for appends — after a crash
+    between the two writes the next append re-syncs the head).  Caller must
+    hold _AUDIT_CHAIN_LOCK."""
+    if _AUDIT_CHAIN_TAIL["loaded"]:
+        return
+    seq, tail_hash = -1, _AUDIT_CHAIN_GENESIS
+    try:
+        last = None
+        with open(AUDIT_CHAIN_FILE, encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    last = line
+        if last is not None:
+            entry = json.loads(last)
+            seq, tail_hash = int(entry["seq"]), str(entry["hash"])
+    except (OSError, ValueError, KeyError, TypeError):
+        # No chain yet (fresh install) or a damaged tail — appends restart the
+        # numbering only in the fresh-install case; damage is what the verifier
+        # is for and it will still flag it.
+        pass
+    _AUDIT_CHAIN_TAIL.update(loaded=True, seq=seq, hash=tail_hash)
+
+
+def audit_chain_append(event: dict) -> dict | None:
+    """Append one already-redacted audit event to the S-3 hash chain.
+    Best-effort like emit()'s own persistence: an OSError is logged, never
+    raised into the request path.  Returns the appended entry, or None."""
+    with _AUDIT_CHAIN_LOCK:
+        _audit_chain_load_tail()
+        seq = _AUDIT_CHAIN_TAIL["seq"] + 1
+        prev = _AUDIT_CHAIN_TAIL["hash"]
+        entry = {"seq": seq, "prev": prev, "event": event,
+                 "hash": _audit_chain_entry_hash(seq, prev, event)}
+        try:
+            with open(AUDIT_CHAIN_FILE, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
+            with open(AUDIT_CHAIN_HEAD_FILE, "w", encoding="utf-8") as f:
+                json.dump({"seq": seq, "hash": entry["hash"]}, f)
+        except OSError as e:
+            _log.error("S-3 audit chain append failed: %s", e)
+            return None
+        _AUDIT_CHAIN_TAIL.update(seq=seq, hash=entry["hash"])
+        return entry
+
+
+def verify_audit_chain(chain_path: str | None = None,
+                       head_path: str | None = None) -> dict:
+    """S-3 verifier — walk the persisted chain and check every link.
+
+    Detects: mutation of any entry (recomputed hash mismatch), deletion or
+    insertion or reordering anywhere in the chain (sequence break or prev-hash
+    link break), malformed/garbled lines, and deletion of entries off the END
+    of the file (last entry must match the separately-persisted head record).
+
+    Returns {"ok": True, "entries": n, "head": <tail hash>, "head_checked":
+    bool} for an intact chain, or {"ok": False, "entries": <verified-so-far>,
+    "error": <why>, "line": <1-based line>, "seq": ...} at the first break.
+    """
+    chain_path = chain_path or AUDIT_CHAIN_FILE
+    head_path = head_path or AUDIT_CHAIN_HEAD_FILE
+
+    def _fail(error: str, line_no=None, seq=None, entries=0) -> dict:
+        out = {"ok": False, "entries": entries, "error": error}
+        if line_no is not None:
+            out["line"] = line_no
+        if seq is not None:
+            out["seq"] = seq
+        return out
+
+    entries = 0
+    prev_hash = _AUDIT_CHAIN_GENESIS
+    last_seq = -1
+    try:
+        f = open(chain_path, encoding="utf-8")
+    except OSError:
+        f = None
+    if f is not None:
+        with f:
+            for line_no, line in enumerate(f, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                    seq = int(entry["seq"])
+                    prev = str(entry["prev"])
+                    event = entry["event"]
+                    entry_hash = str(entry["hash"])
+                    if not isinstance(event, dict):
+                        raise TypeError("event must be an object")
+                except (ValueError, KeyError, TypeError) as e:
+                    return _fail(f"malformed chain entry: {e}",
+                                 line_no, entries=entries)
+                expected = last_seq + 1
+                if seq != expected:
+                    kind = ("entry deleted or chain reordered" if seq > expected
+                            else "entry inserted or chain reordered")
+                    return _fail(f"sequence break: expected seq {expected}, "
+                                 f"found {seq} ({kind})", line_no, seq, entries)
+                if prev != prev_hash:
+                    return _fail("prev-hash link broken: entry does not commit "
+                                 "to the prior entry (insertion, deletion, or "
+                                 "reorder)", line_no, seq, entries)
+                if _audit_chain_entry_hash(seq, prev, event) != entry_hash:
+                    return _fail("entry hash mismatch: event content was "
+                                 "mutated after it was chained",
+                                 line_no, seq, entries)
+                prev_hash, last_seq = entry_hash, seq
+                entries += 1
+
+    # Tail-truncation check against the separately persisted head record.
+    try:
+        with open(head_path, encoding="utf-8") as hf:
+            head = json.load(hf)
+    except OSError:
+        head = None
+    except ValueError:
+        return _fail("head record is malformed JSON", entries=entries)
+
+    if head is not None:
+        if entries == 0:
+            return _fail(f"head record expects seq {head.get('seq')} but the "
+                         "chain file is empty or missing (chain deleted or "
+                         "truncated)", entries=entries)
+        if head.get("seq") != last_seq or head.get("hash") != prev_hash:
+            return _fail(f"tail mismatch: head record expects seq "
+                         f"{head.get('seq')}, chain ends at seq {last_seq} "
+                         "(tail entries deleted, or head/chain out of sync)",
+                         seq=last_seq, entries=entries)
+    elif entries:
+        return _fail("chain has entries but the head record is missing "
+                     "(possible tail-truncation cover-up)", entries=entries)
+
+    return {"ok": True, "entries": entries,
+            "head": prev_hash if entries else None,
+            "head_checked": head is not None}
+
+
+@app.get("/api/audit/verify")
+def audit_chain_verify(_: str = Depends(verify_owner)):
+    """S-3 — owner-only tamper-evidence check of the persisted audit chain.
+    Returns only integrity metadata (ok/entries/head hash/failure reason);
+    never event content, so it exposes nothing beyond /api/audit."""
+    return verify_audit_chain()
 
 
 @app.get("/api/audit")
